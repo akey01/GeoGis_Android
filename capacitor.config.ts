@@ -6,6 +6,7 @@ export interface CapacitorConfig {
     url?: string;
     cleartext?: boolean;
     androidScheme?: string;
+    allowNavigation?: string[];
   };
 }
 
@@ -15,6 +16,11 @@ const config: CapacitorConfig = {
   webDir: 'public',
   server: {
     androidScheme: 'https',
+    allowNavigation: [
+      '*.onrender.com',
+      'geogis6-android.onrender.com',
+      'geotransformer-monolith-fniu.onrender.com',
+    ],
   },
 };
 
