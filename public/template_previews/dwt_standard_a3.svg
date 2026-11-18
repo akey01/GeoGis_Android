@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+  width="280" height="198"
+  viewBox="0 0 420 297">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3.0" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="420" height="297" fill="url(#bg)" rx="15"/>
+  <rect x="15" y="15" width="390" height="267"
+        fill="none" stroke="#334155" stroke-width="3.00" rx="2"/>
+  <line x1="256.8" y1="15" x2="256.8" y2="282"
+        stroke="#334155" stroke-width="1.50" stroke-dasharray="6.0"/>
+  <line x1="303.6" y1="15" x2="303.6" y2="143.16"
+        stroke="#334155" stroke-width="1.50" stroke-dasharray="6.0"/>
+  <line x1="256.8" y1="143.16" x2="405" y2="143.16"
+        stroke="#334155" stroke-width="1.50" stroke-dasharray="6.0"/>
+  <rect x="20" y="23.010000000000005" width="211.2" height="250.98"
+        fill="#0d2b3e" fill-opacity="0.8" stroke="#3b82f6" stroke-width="3.00" rx="2" filter="url(#glow)"/>
+  <rect x="256.8" y="17" width="82.5" height="107.82000000000001"
+        fill="#0d2b3e" fill-opacity="0.8" stroke="#60a5fa" stroke-width="2.25" rx="2" filter="url(#glow)"/>
+  <circle cx="216.2" cy="38.010000000000005" r="5" fill="#3b82f6" opacity="0.4"/>
+  <text x="216.2" y="41.010000000000005" text-anchor="middle" fill="#93c5fd"
+        font-family="monospace" font-size="7.4" font-weight="bold">VP1</text>
+  <circle cx="327.3" cy="29" r="4" fill="#60a5fa" opacity="0.4"/>
+  <text x="327.3" y="31" text-anchor="middle" fill="#93c5fd"
+        font-family="monospace" font-size="5.9" font-weight="bold">VP2</text>
+  <text x="210.0" y="137.16" text-anchor="middle" fill="#cbd5e1"
+        font-family="monospace" font-size="10.4" font-weight="bold">PLANO CATASTRAL A3 (2 VPs)</text>
+  <text x="210.0" y="291" text-anchor="middle" fill="#64748b"
+        font-family="monospace" font-size="7.4">420x297 mm   |   A3 HORIZONTAL</text>
+</svg>

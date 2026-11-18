@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+  width="280" height="198"
+  viewBox="0 0 1189 841">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="1189" height="841" fill="url(#bg)" rx="25"/>
+  <rect x="25" y="25" width="1139" height="791"
+        fill="none" stroke="#334155" stroke-width="8.49" rx="2"/>
+  <line x1="731.18" y1="25" x2="731.18" y2="816"
+        stroke="#334155" stroke-width="4.25" stroke-dasharray="17.0"/>
+  <line x1="867.8599999999999" y1="25" x2="867.8599999999999" y2="404.68"
+        stroke="#334155" stroke-width="4.25" stroke-dasharray="17.0"/>
+  <line x1="731.18" y1="404.68" x2="1164" y2="404.68"
+        stroke="#334155" stroke-width="4.25" stroke-dasharray="17.0"/>
+  <rect x="30" y="48.73000000000002" width="681.18" height="743.54"
+        fill="#0d2b3e" fill-opacity="0.8" stroke="#3b82f6" stroke-width="8.49" rx="2" filter="url(#glow)"/>
+  <rect x="731.18" y="27" width="225.58" height="338.86"
+        fill="#0d2b3e" fill-opacity="0.8" stroke="#60a5fa" stroke-width="6.37" rx="2" filter="url(#glow)"/>
+  <circle cx="696.18" cy="63.73000000000002" r="5" fill="#3b82f6" opacity="0.4"/>
+  <text x="696.18" y="66.73000000000002" text-anchor="middle" fill="#93c5fd"
+        font-family="monospace" font-size="21.0" font-weight="bold">VP1</text>
+  <circle cx="944.76" cy="39" r="4" fill="#60a5fa" opacity="0.4"/>
+  <text x="944.76" y="41" text-anchor="middle" fill="#93c5fd"
+        font-family="monospace" font-size="16.8" font-weight="bold">VP2</text>
+  <text x="594.5" y="398.68" text-anchor="middle" fill="#cbd5e1"
+        font-family="monospace" font-size="29.4" font-weight="bold">PLANO CATASTRAL A0 (2 VPs)</text>
+  <text x="594.5" y="835" text-anchor="middle" fill="#64748b"
+        font-family="monospace" font-size="21.0">1189x841 mm   |   A0 HORIZONTAL</text>
+</svg>

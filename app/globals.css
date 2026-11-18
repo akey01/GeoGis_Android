@@ -1,0 +1,223 @@
+@import "tailwindcss";
+@source "..";
+@source "../app";
+@source "../components";
+
+@theme {
+  --color-background: rgb(10 12 16);
+  --color-foreground: rgb(255 255 255);
+  
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-300: #6ee7b7;
+  --color-emerald-400: #34d399;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+  --color-emerald-700: #047857;
+  --color-emerald-800: #065f46;
+  --color-emerald-900: #064e3b;
+  --color-emerald-950: #022c22;
+
+  --breakpoint-xs: 375px;
+
+  --animate-pulse-soft: pulse-soft 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+}
+
+:root {
+  --background: 10 12 16;
+  --foreground: 255 255 255;
+}
+
+body {
+  color: var(--color-foreground);
+  background-color: var(--color-background);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.05) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.05) 0px, transparent 50%);
+  min-height: 100vh;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+/* Leaflet Customizations */
+.leaflet-container {
+  background: #0a0f18 !important;
+}
+
+.leaflet-tile {
+  will-change: transform;
+  image-rendering: auto;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  transform: translate3d(0, 0, 0);
+}
+
+.leaflet-tile-container {
+  will-change: transform;
+}
+
+.leaflet-zoom-animated {
+  will-change: transform;
+}
+
+.leaflet-control-zoom {
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  background: rgba(15, 23, 42, 0.8) !important;
+  backdrop-filter: blur(8px);
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+.leaflet-control-zoom a {
+  background: transparent !important;
+  color: #94a3b8 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #fff !important;
+}
+
+/* Leaflet Marker & Parcel Labels: Sin marcos ni fondos en la vista del mapa */
+.leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+.map-parcel-label,
+.map-parcel-label-saved,
+.custom-center-label {
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  min-width: 0 !important;
+  color: #fff !important;
+  font-family: inherit !important;
+  pointer-events: none;
+  text-align: center;
+}
+
+.map-parcel-label .label-title,
+.map-parcel-label-saved .label-title,
+.cad-lbl-name {
+  color: #fff !important;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+  font-weight: 400 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap !important;
+  line-height: 1.15 !important;
+  margin-bottom: 2px;
+  border: none !important;
+  border-bottom: none !important;
+  padding-bottom: 0 !important;
+  text-shadow: 1px 1px 2px #000, -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000, 0 0 3px #000;
+}
+
+/* Override Tailwind oklch() colors for html2canvas compatibility */
+:root {
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  --color-slate-950: #020617;
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-300: #d1d5db;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #111827;
+  --color-gray-950: #030712;
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-300: #fca5a5;
+  --color-red-400: #f87171;
+  --color-red-500: #ef4444;
+  --color-red-600: #dc2626;
+  --color-red-700: #b91c1c;
+  --color-red-800: #991b1b;
+  --color-red-900: #7f1d1d;
+  --color-red-950: #450a0a;
+  --color-amber-50: #fffbeb;
+  --color-amber-100: #fef3c7;
+  --color-amber-200: #fde68a;
+  --color-amber-300: #fcd34d;
+  --color-amber-400: #fbbf24;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+  --color-amber-800: #92400e;
+  --color-amber-900: #78350f;
+  --color-amber-950: #451a03;
+  --color-blue-50: #eff6ff;
+  --color-blue-100: #dbeafe;
+  --color-blue-200: #bfdbfe;
+  --color-blue-300: #93c5fd;
+  --color-blue-400: #60a5fa;
+  --color-blue-500: #3b82f6;
+  --color-blue-600: #2563eb;
+  --color-blue-700: #1d4ed8;
+  --color-blue-800: #1e40af;
+  --color-blue-900: #1e3a8a;
+  --color-blue-950: #172554;
+  --color-green-50: #f0fdf4;
+  --color-green-100: #dcfce7;
+  --color-green-200: #bbf7d0;
+  --color-green-300: #86efac;
+  --color-green-400: #4ade80;
+  --color-green-500: #22c55e;
+  --color-green-600: #16a34a;
+  --color-green-700: #15803d;
+  --color-green-800: #166534;
+  --color-green-900: #14532d;
+  --color-green-950: #052e16;
+  --color-white: #fff;
+  --color-black: #000;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+}
+
+
+/* Blindaje contra impresión y extracción física en Modo Demo (Directiva RBAC) */
+@media print {
+  body.is-demo {
+    display: none !important;
+    visibility: hidden !important;
+  }
+}

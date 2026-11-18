@@ -1,0 +1,74 @@
+[
+  {
+    "id": "MENSURA_BASE00",
+    "name": "Plano Catastral Estándar A3",
+    "description": "Formato A3 horizontal (420x297mm). Tabla de rumbos, coordenadas UTM, balance de superficie y croquis de ubicación.",
+    "file": "MENSURA_BASE00.dxf",
+    "default": true,
+    "config": {
+      "paperWidthMm": 420,
+      "paperHeightMm": 297,
+      "padding": 1.35,
+      "marginRatio": 0.02,
+      "mapRatio": 0.50,
+      "middleRatio": 0.25,
+      "sideRatio": 0.25,
+      "showBalance": true,
+      "showPuntoApoyo": true,
+      "showRumbos": true,
+      "showCoordenadas": true,
+      "showCroquis": true,
+      "showTitleBlock": true,
+      "showProjectInfo": true,
+      "gridEnabled": true
+    }
+  },
+  {
+    "id": "MENSURA_BASE01",
+    "name": "Plano Catastral 3 VPs A3",
+    "description": "Formato A3 horizontal (420x297mm). Tres viewports: planta principal, croquis de ubicación y detalle catastral.",
+    "file": "MENSURA_BASE01.dxf",
+    "default": false,
+    "config": {
+      "paperWidthMm": 420,
+      "paperHeightMm": 297,
+      "padding": 1.35,
+      "marginRatio": 0.02,
+      "mapRatio": 0.50,
+      "middleRatio": 0.25,
+      "sideRatio": 0.25,
+      "showBalance": true,
+      "showPuntoApoyo": true,
+      "showRumbos": true,
+      "showCoordenadas": true,
+      "showCroquis": true,
+      "showTitleBlock": true,
+      "showProjectInfo": true,
+      "gridEnabled": true
+    }
+  },
+  {
+    "id": "MENSURA_BASE02",
+    "name": "Plano Catastral Premium A3",
+    "description": "Formato A3 horizontal (420x297mm). Diseño premium con grilla de coordenadas y membrete institucional completo.",
+    "file": "MENSURA_BASE02.dxf",
+    "default": false,
+    "config": {
+      "paperWidthMm": 420,
+      "paperHeightMm": 297,
+      "padding": 1.35,
+      "marginRatio": 0.02,
+      "mapRatio": 0.50,
+      "middleRatio": 0.25,
+      "sideRatio": 0.25,
+      "showBalance": true,
+      "showPuntoApoyo": true,
+      "showRumbos": true,
+      "showCoordenadas": true,
+      "showCroquis": true,
+      "showTitleBlock": true,
+      "showProjectInfo": true,
+      "gridEnabled": true
+    }
+  }
+]

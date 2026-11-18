@@ -1,0 +1,40 @@
+import dns from 'dns';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
+/** @type {import('next').NextConfig} */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const nextConfig = {
+  // Workspace root para trazado de archivos en producción
+  outputFileTracingRoot: __dirname,
+  // Permite peticiones cross-origin desde localhost en desarrollo (elimina el warning de 127.0.0.1)
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
+  // Security Headers
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          { key: 'X-XSS-Protection', value: '1; mode=block' },
+          { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
+          {
+            key: 'Content-Security-Policy',
+            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: *.google.com *.gstatic.com *.arcgisonline.com *.arcgis.com; connect-src 'self' *.render.com *.supabase.co *.google.com *.gstatic.com *.googleapis.com *.arcgisonline.com *.arcgis.com https://api.open-meteo.com https://api.open-elevation.com;",
+          },
+        ],
+      },
+    ];
+  },
+};
+
+export default nextConfig;

@@ -1,0 +1,409 @@
+'use client';
+
+import React, { useRef, useState } from 'react';
+import { X, Upload, MapPin, Layers, ChevronDown, ChevronRight, AlertCircle, Check, RefreshCw } from 'lucide-react';
+import { FileService, type DXFPolygon } from '@/lib/file-service';
+import { useAppStore } from '@/lib/store';
+import { GeoEngine, HAYFORD, GRS80 } from '@/lib/geo-engine';
+
+interface DxfImportModalProps {
+  onClose: () => void;
+}
+
+export default function DxfImportModal({ onClose }: DxfImportModalProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [polygons, setPolygons] = useState<DXFPolygon[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { method, rigidCorrection, autoResiduoMalla, direction, setDxfPreview, huso: storeHuso } = useAppStore();
+  const [sourceDatum, setSourceDatum] = useState<'psad56' | 'regven' | 'wgs84'>('psad56');
+  const [importHuso, setImportHuso] = useState(storeHuso);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [transforming, setTransforming] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [expandedLayers, setExpandedLayers] = useState<Set<string>>(new Set());
+
+  const layers = React.useMemo(() => {
+    const map = new Map<string, DXFPolygon[]>();
+    for (const p of polygons) {
+      if (!map.has(p.layer)) map.set(p.layer, []);
+      map.get(p.layer)!.push(p);
+    }
+    return Array.from(map.entries());
+  }, [polygons]);
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const text = await file.text();
+      const result = FileService.parseDXFPolygons(text);
+      setPolygons(result.polygons);
+      setImportHuso(result.huso);
+      setSelectedIds(new Set(result.polygons.map(p => p.id)));
+      const firstLayer = result.polygons[0]?.layer;
+      setExpandedLayers(new Set(firstLayer ? [firstLayer] : []));
+    } catch (err: any) {
+      setError(err?.message || 'Error al parsear el archivo DXF');
+      setPolygons([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const togglePolygon = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleLayer = (layerName: string, polys: DXFPolygon[]) => {
+    const allSelected = polys.every(p => selectedIds.has(p.id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const p of polys) {
+        if (allSelected) next.delete(p.id);
+        else next.add(p.id);
+      }
+      return next;
+    });
+  };
+
+  const toggleLayerExpanded = (layer: string) => {
+    setExpandedLayers(prev => {
+      const next = new Set(prev);
+      if (next.has(layer)) next.delete(layer);
+      else next.add(layer);
+      return next;
+    });
+  };
+
+  const transformPolygon = (poly: DXFPolygon) => {
+    const huso = importHuso;
+    const destIsPsad56 = direction === 'regven_canoa';
+    const sourceIsPsad56 = sourceDatum === 'psad56';
+
+    const transformedVerts = poly.vertices.map(v => {
+      let result: any;
+
+      if (sourceIsPsad56 === destIsPsad56) {
+        // Mismo datum (No se requiere desplazamiento geodésico)
+        const el = sourceIsPsad56 ? HAYFORD : GRS80;
+        const geo = GeoEngine.utmToGeo(v.e, v.n, huso, false, el);
+        result = {
+          este: v.e,
+          norte: v.n,
+          lat: geo.lat,
+          lng: geo.lng,
+          dLineal: 0,
+        };
+      } else if (sourceIsPsad56 && !destIsPsad56) {
+        // Transformación: PSAD56 (La Canoa) -> REGVEN (SIRGAS)
+        if (method === 'rigida') {
+          const dnVal = autoResiduoMalla ? undefined : rigidCorrection.dn;
+          const deVal = autoResiduoMalla ? undefined : rigidCorrection.de;
+          result = GeoEngine.transformRigida(v.e, v.n, 0, huso, false, dnVal, deVal); // false = directo (PSAD56->REGVEN)
+        } else if (method === 'dma_badekas' || method === 'dma_badekas_regven') {
+          const dmaType = method === 'dma_badekas' ? 'dma_psad56_real' : 'dma_regven';
+          result = GeoEngine.transformDma(v.e, v.n, 0, huso, dmaType);
+        } else {
+          // Badekas standard
+          const geoO = GeoEngine.utmToGeo(v.e, v.n, huso, false, HAYFORD);
+          let cart = GeoEngine.geoToCart(geoO.lat, geoO.lng, 0, HAYFORD);
+          cart = GeoEngine.badekas(cart.X, cart.Y, cart.Z, false);
+          const geoD = GeoEngine.cartToGeo(cart.X, cart.Y, cart.Z, GRS80);
+          const utmD = GeoEngine.geoToUTM(geoD.lat, geoD.lng, huso, GRS80);
+          result = {
+            este: utmD.este, norte: utmD.norte,
+            lat: geoD.lat, lng: geoD.lng,
+            dLineal: Math.sqrt((utmD.este - v.e) ** 2 + (utmD.norte - v.n) ** 2),
+          };
+        }
+      } else {
+        // Transformación: REGVEN (SIRGAS) -> PSAD56 (La Canoa)
+        if (method === 'rigida') {
+          const dnVal = autoResiduoMalla ? undefined : rigidCorrection.dn;
+          const deVal = autoResiduoMalla ? undefined : rigidCorrection.de;
+          result = GeoEngine.transformRigida(v.e, v.n, 0, huso, true, dnVal, deVal); // true = inverso (REGVEN->PSAD56)
+        } else {
+          // Badekas standard inverso
+          const geoO = GeoEngine.utmToGeo(v.e, v.n, huso, false, GRS80);
+          let cart = GeoEngine.geoToCart(geoO.lat, geoO.lng, 0, GRS80);
+          cart = GeoEngine.badekas(cart.X, cart.Y, cart.Z, true);
+          const geoD = GeoEngine.cartToGeo(cart.X, cart.Y, cart.Z, HAYFORD);
+          const utmD = GeoEngine.geoToUTM(geoD.lat, geoD.lng, huso, HAYFORD);
+          result = {
+            este: utmD.este, norte: utmD.norte,
+            lat: geoD.lat, lng: geoD.lng,
+            dLineal: Math.sqrt((utmD.este - v.e) ** 2 + (utmD.norte - v.n) ** 2),
+          };
+        }
+      }
+
+      return { ...v, lat: result.lat, lng: result.lng, result };
+    });
+
+    return { ...poly, vertices: transformedVerts };
+  };
+
+  const handleTransform = async () => {
+    const selected = polygons.filter(p => selectedIds.has(p.id));
+    if (selected.length === 0) return;
+    setTransforming(true);
+    try {
+      const transformed = selected.map(transformPolygon);
+      setDxfPreview(transformed);
+    } catch (err: any) {
+      setError(err?.message || 'Error en la transformación');
+    } finally {
+      setTransforming(false);
+    }
+  };
+
+  const handleImport = async () => {
+    const selected = polygons.filter(p => selectedIds.has(p.id));
+    if (selected.length === 0) return;
+    setImporting(true);
+    try {
+      const existing = useAppStore.getState().savedParcels;
+      const existingIds = new Set(existing.map(p => p.id));
+
+      for (const poly of selected) {
+        const transformedPoly = transformPolygon(poly);
+        const pts = transformedPoly.vertices.map((v, i) => ({
+          id: `P${i + 1}`,
+          input: { este: v.e, norte: v.n, huso: importHuso },
+          result: v.result || { este: v.e, norte: v.n, lat: 0, lng: 0, dLineal: 0 },
+          ok: true,
+        }));
+
+        const geoType = poly.closed && pts.length >= 3 ? 'cerrada' : pts.length >= 2 ? 'abierta' : 'puntos';
+
+        let area = 0;
+        let perim = 0;
+        if (geoType === 'cerrada' && pts.length >= 3) {
+          for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            area += pts[i].result.este * pts[j].result.norte;
+            area -= pts[j].result.este * pts[i].result.norte;
+            const dx = pts[j].result.este - pts[i].result.este;
+            const dy = pts[j].result.norte - pts[i].result.norte;
+            perim += Math.sqrt(dx * dx + dy * dy);
+          }
+          area = Math.abs(area) / 2;
+        } else if (geoType === 'abierta' && pts.length >= 2) {
+          for (let i = 0; i < pts.length - 1; i++) {
+            const dx = pts[i + 1].result.este - pts[i].result.este;
+            const dy = pts[i + 1].result.norte - pts[i].result.norte;
+            perim += Math.sqrt(dx * dx + dy * dy);
+          }
+        }
+
+        const newParcel = {
+          id: `POL-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`,
+          nombre: poly.layer !== '0' ? poly.layer.toUpperCase() : `DXF-${poly.id}`,
+          fecha: new Date().toLocaleDateString('es-VE'),
+          area,
+          perim,
+          ha: area > 0 ? area / 10000 : 0,
+          puntos: pts,
+          geometryType: geoType as 'cerrada' | 'abierta' | 'puntos',
+          method,
+          rigidCorrection: method === 'rigida' ? rigidCorrection : undefined,
+        };
+
+        existingIds.add(newParcel.id);
+        const current = useAppStore.getState().savedParcels;
+        useAppStore.setState({
+          savedParcels: [...current, newParcel as any].sort((a, b) => a.nombre.localeCompare(b.nombre)),
+        });
+      }
+
+      setDxfPreview(null);
+      onClose();
+    } catch (err: any) {
+      setError(err?.message || 'Error al importar parcelas');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const totalVerts = polygons.reduce((s, p) => s + p.vertices.length, 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto mx-4">
+        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <MapPin className="w-5 h-5 text-emerald-400" />
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">GeoGIS6 · Importar DXF</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors p-1">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-red-900/30 border border-red-800/50 rounded-xl text-red-400 text-xs">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className="border-2 border-dashed border-slate-700 hover:border-emerald-500/50 rounded-xl p-8 text-center cursor-pointer transition-colors group"
+          >
+            <Upload className="w-8 h-8 mx-auto mb-2 text-slate-500 group-hover:text-emerald-400 transition-colors" />
+            <p className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">
+              {loading ? 'Procesando...' : 'Arrastra o selecciona un archivo DXF'}
+            </p>
+            <p className="text-[10px] text-slate-600 mt-1">LWPOLYLINE, POLYLINE, LINE, CIRCLE</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".dxf"
+              onChange={handleFile}
+              className="hidden"
+            />
+          </div>
+
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-4 text-slate-400 text-xs">
+              <RefreshCw className="w-4 h-4 animate-spin" />
+              Parseando DXF...
+            </div>
+          )}
+
+          {polygons.length > 0 && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Datum Origen</label>
+                  <select
+                    value={sourceDatum}
+                    onChange={(e) => setSourceDatum(e.target.value as any)}
+                    className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/50 appearance-none cursor-pointer"
+                  >
+                    <option value="psad56">PSAD56 (La Canoa)</option>
+                    <option value="regven">REGVEN (SIRGAS)</option>
+                    <option value="wgs84">WGS84</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">
+                    Huso UTM <span className="text-emerald-400/60 font-normal">({importHuso})</span>
+                  </label>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[18, 19, 20, 21].map(h => (
+                      <button
+                        key={h}
+                        onClick={() => setImportHuso(h)}
+                        className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                          importHuso === h
+                            ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20'
+                            : 'bg-slate-800/50 text-slate-400 hover:text-slate-200 border border-slate-700'
+                        }`}
+                      >
+                        {h}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">
+                  Capas detectadas ({polygons.length} polígono{polygons.length !== 1 ? 's' : ''}, {totalVerts} vértice{totalVerts !== 1 ? 's' : ''})
+                </label>
+                <div className="bg-slate-800/30 border border-slate-700/50 rounded-xl max-h-48 overflow-y-auto">
+                  {layers.map(([layerName, polys]) => {
+                    const allSelected = polys.every(p => selectedIds.has(p.id));
+                    const someSelected = polys.some(p => selectedIds.has(p.id));
+                    const expanded = expandedLayers.has(layerName);
+
+                    return (
+                      <div key={layerName}>
+                        <div className="flex items-center gap-2 px-3 py-2 hover:bg-slate-800/50 transition-colors border-b border-slate-700/30 last:border-b-0">
+                          <button
+                            onClick={() => toggleLayer(layerName, polys)}
+                            className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                              allSelected
+                                ? 'bg-emerald-500 border-emerald-500'
+                                : someSelected
+                                  ? 'bg-emerald-500/50 border-emerald-500/50'
+                                  : 'border-slate-600 hover:border-slate-500'
+                            }`}
+                          >
+                            {allSelected && <Check className="w-3 h-3 text-white" />}
+                          </button>
+                          <div
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: polys[0]?.color || '#f59e0b' }}
+                          />
+                          <button
+                            onClick={() => toggleLayerExpanded(layerName)}
+                            className="flex items-center gap-1 flex-1 text-left"
+                          >
+                            <span className="text-xs font-medium text-slate-300">
+                              {layerName === '0' ? 'Capa por defecto' : layerName}
+                            </span>
+                            <span className="text-[10px] text-slate-600">({polys.length})</span>
+                            {expanded ? <ChevronDown className="w-3 h-3 text-slate-600 ml-auto" /> : <ChevronRight className="w-3 h-3 text-slate-600 ml-auto" />}
+                          </button>
+                        </div>
+                        {expanded && polys.map(poly => (
+                          <div key={poly.id} className="flex items-center gap-2 px-6 py-1.5 hover:bg-slate-800/30 transition-colors border-b border-slate-700/20">
+                            <button
+                              onClick={() => togglePolygon(poly.id)}
+                              className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-all ${
+                                selectedIds.has(poly.id)
+                                  ? 'bg-emerald-500 border-emerald-500'
+                                  : 'border-slate-600 hover:border-slate-500'
+                              }`}
+                            >
+                              {selectedIds.has(poly.id) && <Check className="w-2.5 h-2.5 text-white" />}
+                            </button>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              {poly.id} — {poly.entityType} — {poly.vertices.length} vért.
+                            </span>
+                            {poly.closed && <span className="text-[9px] text-emerald-500/60">cerrado</span>}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={handleTransform}
+                  disabled={transforming || selectedIds.size === 0}
+                  className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+                >
+                  {transforming ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}
+                  Transformar
+                </button>
+                <button
+                  onClick={handleImport}
+                  disabled={importing || selectedIds.size === 0}
+                  className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+                >
+                  {importing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
+                  Importar ({selectedIds.size})
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

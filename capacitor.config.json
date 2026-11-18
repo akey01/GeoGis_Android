@@ -1,0 +1,8 @@
+{
+  "appId": "com.geogis6.android",
+  "appName": "GeoGIS6 Mobile",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "https"
+  }
+}
