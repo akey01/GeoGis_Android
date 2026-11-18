@@ -11,7 +11,7 @@ export interface CapacitorConfig {
 }
 
 const config: CapacitorConfig = {
-  appId: 'com.geogis6.android',
+  appId: 'com.geogis6.mobile',
   appName: 'GeoGIS6 Mobile',
   webDir: 'public',
   server: {

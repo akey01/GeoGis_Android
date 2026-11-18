@@ -28,6 +28,23 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
+      - name: Ensure persistent Release Keystore
+        run: |
+          if [ ! -f keystore/geogis6-release.keystore ]; then
+            mkdir -p keystore
+            keytool -genkeypair -v \
+              -keystore keystore/geogis6-release.keystore \
+              -alias geogis6 \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass geogis6release -keypass geogis6release \
+              -dname "CN=GeoGIS6 Engineering, OU=Mobile Geodesy, O=GeoGIS6 Corp, L=Caracas, ST=DC, C=VE"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add keystore/geogis6-release.keystore
+            git commit -m "chore(android): add persistent release keystore [skip ci]"
+            git push origin HEAD:main
+          fi
+
       - name: Install dependencies (Capacitor & Next core)
         run: npm install --legacy-peer-deps
 
@@ -36,6 +53,51 @@ jobs:
           rm -rf android
           npx cap add android
           npx cap sync android
+
+      - name: Configure Release signing and versioning in android/app/build.gradle
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+          from pathlib import Path
+
+          gradle_path = Path("android/app/build.gradle")
+          text = gradle_path.read_text(encoding="utf-8")
+
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "1"))
+          version_code = 600 + run_number
+          version_name = f"6.0.{run_number}"
+
+          text = re.sub(r'versionCode\s+\d+', f'versionCode {version_code}', text, count=1)
+          text = re.sub(r'versionName\s+"[^"]+"', f'versionName "{version_name}"', text, count=1)
+
+          signing_block = '''    signingConfigs {
+                  release {
+                      storeFile file("../../keystore/geogis6-release.keystore")
+                      storePassword "geogis6release"
+                      keyAlias "geogis6"
+                      keyPassword "geogis6release"
+                      v1SigningEnabled true
+                      v2SigningEnabled true
+                  }
+              }
+              buildTypes {'''
+
+          if 'signingConfigs' not in text:
+              assert '    buildTypes {' in text, "buildTypes block not found"
+              text = text.replace('    buildTypes {', signing_block, 1)
+
+          release_pattern = re.compile(r'(buildTypes\s*\{\s*release\s*\{)', re.MULTILINE)
+          assert release_pattern.search(text), "release buildType not found"
+          text = release_pattern.sub(
+              r'\1\n            signingConfig signingConfigs.release\n            shrinkResources false',
+              text,
+              count=1,
+          )
+
+          gradle_path.write_text(text, encoding="utf-8")
+          print(gradle_path.read_text(encoding="utf-8"))
+          EOF
 
       - name: Ensure GPS, Internet and Cleartext permissions in AndroidManifest.xml
         run: |
@@ -56,16 +118,20 @@ jobs:
           manifest.write_text(text, encoding="utf-8")
           EOF
 
-      - name: Build Debug APK with Gradle
+      - name: Build Signed Release APK with Gradle
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
-      - name: Prepare GeoGis6_Android.apk
+      - name: Prepare GeoGis6_Android.apk and verify signature
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk GeoGis6_Android.apk
+          cp android/app/build/outputs/apk/release/app-release.apk GeoGis6_Android.apk
           ls -lh GeoGis6_Android.apk
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER="$(find "$SDK_DIR/build-tools" -name apksigner | sort -V | tail -n 1)"
+          echo "Using apksigner: $APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs GeoGis6_Android.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -78,7 +144,7 @@ jobs:
         with:
           tag_name: v6.0.0
           name: GeoGIS6 Mobile v6.0.0 (Android APK)
-          body: APK oficial de GeoGIS6 Mobile compilado con Capacitor 7 y Android SDK.
+          body: APK oficial de producción de GeoGIS6 Mobile (Release firmada v1+v2) compilado con Capacitor 7 y Android SDK.
           files: GeoGis6_Android.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

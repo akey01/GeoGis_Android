@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace "com.geogis6.android"
+    namespace "com.geogis6.mobile"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.geogis6.android"
+        applicationId "com.geogis6.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
