@@ -2,10 +2,12 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
 
+const DEFAULT_JWT_SECRET = 'geotrans-secret-key-2026-v4-premium';
+
 export async function proxy(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
   const sessionToken = request.cookies.get('session')?.value;
-  const jwtSecret = process.env.JWT_SECRET;
+  const jwtSecret = process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
 
   // Si el usuario viene redirigido por cuenta suspendida o cierre de sesión forzado, limpiar cookie de sesión
   if (pathname === '/login' && (searchParams.has('suspended') || searchParams.has('logout'))) {

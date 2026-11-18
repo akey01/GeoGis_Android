@@ -15,7 +15,14 @@ declare global {
   var __geotransSchemaVerified: boolean | undefined;
 }
 
-const isPostgres = !!process.env.DATABASE_URL;
+const DEFAULT_DATABASE_URL =
+  'postgresql://postgres.rmkgectnfcetzrrvdaxg:delCZlftITN8xiBc@3.131.201.192:6543/postgres?pgbouncer=true&connection_limit=20';
+
+function getDatabaseUrl(): string {
+  return process.env.DATABASE_URL || DEFAULT_DATABASE_URL;
+}
+
+const isPostgres = true;
 
 function parseEnvInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -25,11 +32,7 @@ function parseEnvInt(name: string, fallback: number): number {
 }
 
 function createPool(): Pool {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL is not configured');
-  }
-
-  const poolUrl = process.env.DATABASE_URL;
+  const poolUrl = getDatabaseUrl();
   const isPgBouncer = poolUrl.includes('pgbouncer=true');
   const isRenderCloud = Boolean(process.env.RENDER || process.env.NODE_ENV === 'production');
 

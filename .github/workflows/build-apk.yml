@@ -37,12 +37,14 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Ensure GPS and Internet permissions in AndroidManifest.xml
+      - name: Ensure GPS, Internet and Cleartext permissions in AndroidManifest.xml
         run: |
           python3 - <<'EOF'
           from pathlib import Path
           manifest = Path("android/app/src/main/AndroidManifest.xml")
           text = manifest.read_text(encoding="utf-8")
+          if 'android:usesCleartextTraffic' not in text:
+              text = text.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
           perms = [
               '<uses-permission android:name="android.permission.INTERNET" />',
               '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',

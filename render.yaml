@@ -7,11 +7,11 @@ services:
     dockerfilePath: Dockerfile
     envVars:
       - key: DATABASE_URL
-        sync: false
+        value: "postgresql://postgres.rmkgectnfcetzrrvdaxg:delCZlftITN8xiBc@3.131.201.192:6543/postgres?pgbouncer=true&connection_limit=3"
       - key: DATABASE_DIRECT_URL
-        sync: false
+        value: "postgresql://postgres.rmkgectnfcetzrrvdaxg:delCZlftITN8xiBc@3.131.201.192:5432/postgres"
       - key: JWT_SECRET
-        sync: false
+        value: "geotrans-secret-key-2026-v4-premium"
       - key: NEXT_PUBLIC_APP_PLATFORM
         value: "android"
       - key: NEXT_PUBLIC_DESKTOP_URL

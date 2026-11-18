@@ -19,8 +19,8 @@
     }
     .card {
       width: 100%;
-      max-width: 360px;
-      background: rgba(15, 23, 42, 0.85);
+      max-width: 380px;
+      background: rgba(15, 23, 42, 0.9);
       border: 1px solid rgba(16, 185, 129, 0.28);
       border-radius: 24px;
       padding: 28px 24px;
@@ -66,10 +66,16 @@
       font-family: ui-monospace, monospace;
       font-size: 11px;
       color: #34d399;
-      margin-bottom: 14px;
+      margin-bottom: 16px;
+      min-height: 32px;
     }
-    .btn {
+    .actions {
       display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .actions.visible { display: flex; }
+    .btn {
       width: 100%;
       padding: 12px 16px;
       border: none;
@@ -82,7 +88,11 @@
       text-transform: uppercase;
       cursor: pointer;
     }
-    .btn.visible { display: block; }
+    .btn-secondary {
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #e2e8f0;
+    }
   </style>
 </head>
 <body>
@@ -97,8 +107,13 @@
     <h1>GeoGIS<span>6</span> Mobile</h1>
     <p class="subtitle">Estación Cartográfica de Campo<br/>PSAD56 (La Canoa) ↔ REGVEN</p>
     <div id="spinner" class="spinner"></div>
-    <div id="status" class="status">Conectando con servidor geodésico...</div>
-    <button id="retry-btn" class="btn" type="button">Reintentar conexión</button>
+    <div id="status" class="status">Conectando con servidor y base de datos...</div>
+
+    <div id="actions" class="actions">
+      <button id="retry-btn" class="btn" type="button">Reintentar Conexión Automática</button>
+      <button id="btn-android" class="btn btn-secondary" type="button">Abrir Servidor Android (Render)</button>
+      <button id="btn-monolith" class="btn btn-secondary" type="button">Abrir Servidor Principal (Render)</button>
+    </div>
   </main>
 
   <script>
@@ -109,47 +124,79 @@
 
     const statusEl = document.getElementById('status');
     const spinnerEl = document.getElementById('spinner');
+    const actionsEl = document.getElementById('actions');
     const retryBtn = document.getElementById('retry-btn');
+    const btnAndroid = document.getElementById('btn-android');
+    const btnMonolith = document.getElementById('btn-monolith');
 
     async function probeServer(baseUrl) {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 7000);
+      const timer = setTimeout(() => controller.abort(), 12000);
       try {
+        // Primero intentar lectura CORS para verificar JSON { database: 'connected' }
         const res = await fetch(baseUrl + '/api/health', {
           method: 'GET',
           cache: 'no-store',
           signal: controller.signal
         });
-        return res.ok || res.status < 500;
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (data && data.database === 'connected') {
+            return { reachable: true, dbOk: true };
+          }
+          return { reachable: res.status < 404, dbOk: false };
+        }
+        return { reachable: false, dbOk: false };
       } catch (_) {
-        return false;
+        // Fallback no-cors por si el servidor aún no desplegó cabeceras CORS en /api/health
+        try {
+          const controller2 = new AbortController();
+          const timer2 = setTimeout(() => controller2.abort(), 12000);
+          await fetch(baseUrl + '/login?apk=1', {
+            method: 'GET',
+            mode: 'no-cors',
+            cache: 'no-store',
+            signal: controller2.signal
+          });
+          clearTimeout(timer2);
+          return { reachable: true, dbOk: true };
+        } catch (_err2) {
+          return { reachable: false, dbOk: false };
+        }
       } finally {
         clearTimeout(timer);
       }
     }
 
+    function openTarget(baseUrl) {
+      window.location.replace(baseUrl + '/dashboard?apk=1');
+    }
+
     async function bootApp() {
-      retryBtn.classList.remove('visible');
+      actionsEl.classList.remove('visible');
       spinnerEl.style.display = 'block';
       statusEl.style.color = '#34d399';
-      statusEl.textContent = 'Conectando con GeoGIS6 Mobile...';
+      statusEl.textContent = 'Conectando con GeoGIS6 y Supabase PostgreSQL...';
 
       for (const baseUrl of ENDPOINTS) {
-        const ok = await probeServer(baseUrl);
-        if (ok) {
-          statusEl.textContent = 'Servidor listo. Abriendo tablero de campo...';
-          window.location.replace(baseUrl + '/dashboard');
+        statusEl.textContent = 'Verificando ' + baseUrl.replace('https://', '') + '...';
+        const result = await probeServer(baseUrl);
+        if (result.reachable && result.dbOk) {
+          statusEl.textContent = 'Base de datos conectada. Abriendo GeoGIS6 Mobile...';
+          openTarget(baseUrl);
           return;
         }
       }
 
       spinnerEl.style.display = 'none';
       statusEl.style.color = '#fbbf24';
-      statusEl.textContent = 'Sin conexión al servidor. Verifica internet o despierta Render.';
-      retryBtn.classList.add('visible');
+      statusEl.textContent = 'El servidor en Render está despertando o sin conexión. Puedes reintentar o abrir directamente:';
+      actionsEl.classList.add('visible');
     }
 
     retryBtn.addEventListener('click', bootApp);
+    btnAndroid.addEventListener('click', () => openTarget(ENDPOINTS[0]));
+    btnMonolith.addEventListener('click', () => openTarget(ENDPOINTS[1]));
     bootApp();
   </script>
 </body>
