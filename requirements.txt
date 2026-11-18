@@ -1,0 +1,8 @@
+ezdxf
+cairosvg
+matplotlib
+pyproj
+shapely
+Pillow
+svglib
+reportlab

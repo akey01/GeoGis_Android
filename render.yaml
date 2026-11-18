@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: geogis6-android
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: NEXT_PUBLIC_APP_PLATFORM
+        value: "android"
+      - key: NEXT_PUBLIC_DESKTOP_URL
+        value: "https://geotransformer-monolith-fniu.onrender.com"
+      - key: NEXT_PUBLIC_ADMIN_URL
+        value: "https://geotransformer-admin-panel.onrender.com"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: NODE_ENV
+        value: "production"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=220"
+      - key: PYTHON_MAX_CONCURRENCY
+        value: "1"
+      - key: PG_POOL_MAX
+        value: "3"
