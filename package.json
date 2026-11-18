@@ -4,6 +4,7 @@
   "description": "GeoGIS6 Mobile — App Cartográfica Android + Capacitor (La Canoa ↔ REGVEN)",
   "private": true,
   "scripts": {
+    "postinstall": "patch-package",
     "start": "next start",
     "dev": "next dev -p 3001",
     "build": "next build",
@@ -61,6 +62,10 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
-    "@capacitor/cli": "^7.4.4"
+    "@capacitor/cli": "^7.4.4",
+    "patch-package": "^8.0.1"
+  },
+  "overrides": {
+    "magic-string": "0.30.21"
   }
 }
