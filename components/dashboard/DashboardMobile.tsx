@@ -305,7 +305,7 @@ export default function DashboardMobile() {
         : 'Proyectos y Parcelas';
 
   return (
-    <div className="flex flex-col h-screen w-full bg-[#0a0f18] text-slate-200 overflow-hidden font-sans relative">
+    <div className="flex flex-col h-[100dvh] w-screen bg-[#0a0f18] text-slate-200 overflow-hidden select-none font-sans relative">
       {/* Mobile Header */}
       <header className="fixed top-0 left-0 right-0 h-14 bg-slate-900/80 backdrop-blur-md border-b border-slate-800 z-50 flex items-center justify-between px-4">
         <div className="flex items-center gap-2.5">

@@ -62,27 +62,27 @@ export default function LayerBand({
     <div
       role="toolbar"
       aria-label="Capas del mapa"
-      className="shrink-0 flex items-center justify-center gap-2 px-2 py-1.5 bg-slate-900/95 border-t border-white/10 backdrop-blur-md overflow-x-auto"
+      className="shrink-0 flex items-center justify-start sm:justify-center gap-1.5 px-2 py-1.5 bg-slate-900/95 border-t border-white/10 backdrop-blur-md overflow-x-auto no-scrollbar"
     >
       <span className="hidden md:block text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider pr-1">
         Capas
       </span>
 
       {/* Capas base: Google Satélite, Google Híbrido, Esri Satélite (Alternativo), Calles */}
-      <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-800/70 border border-white/5">
+      <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-800/70 border border-white/5 shrink-0">
         <button
           onClick={() => onSelectLayer('satellite')}
           title="Google Satélite (Ortofoto pura de alta resolución)"
           aria-pressed={baseLayer === 'satellite'}
           className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 whitespace-nowrap',
+            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all duration-150 whitespace-nowrap',
             baseLayer === 'satellite'
               ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30'
               : 'text-slate-300 hover:text-white hover:bg-slate-700/60'
           )}
         >
-          <Satellite className="w-4 h-4" />
-          <span className="hidden sm:inline">Google Satélite</span>
+          <Satellite className="w-3.5 h-3.5 shrink-0" />
+          <span>Satélite</span>
         </button>
 
         <button
@@ -90,14 +90,14 @@ export default function LayerBand({
           title="Google Híbrido (Satélite + Vialidad y Etiquetas)"
           aria-pressed={baseLayer === 'hybrid'}
           className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 whitespace-nowrap',
+            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all duration-150 whitespace-nowrap',
             baseLayer === 'hybrid'
               ? 'bg-teal-500 text-white shadow-md shadow-teal-500/30'
               : 'text-slate-300 hover:text-white hover:bg-slate-700/60'
           )}
         >
-          <Layers className="w-4 h-4" />
-          <span className="hidden sm:inline">Google Híbrido</span>
+          <Layers className="w-3.5 h-3.5 shrink-0" />
+          <span>Híbrido</span>
         </button>
 
         <button
@@ -105,14 +105,14 @@ export default function LayerBand({
           title="Esri World Imagery (Proveedor satelital alternativo para zonas con nubes en Google)"
           aria-pressed={baseLayer === 'esri'}
           className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 whitespace-nowrap',
+            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all duration-150 whitespace-nowrap',
             baseLayer === 'esri'
               ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/30'
               : 'text-slate-300 hover:text-white hover:bg-slate-700/60'
           )}
         >
-          <Globe className="w-4 h-4" />
-          <span className="hidden sm:inline">Esri Satélite (Alternativo)</span>
+          <Globe className="w-3.5 h-3.5 shrink-0" />
+          <span>Esri</span>
         </button>
 
         <button
@@ -120,18 +120,18 @@ export default function LayerBand({
           title="Calles (Mapa vectorial callejero)"
           aria-pressed={baseLayer === 'streets'}
           className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 whitespace-nowrap',
+            'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all duration-150 whitespace-nowrap',
             baseLayer === 'streets'
               ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/30'
               : 'text-slate-300 hover:text-white hover:bg-slate-700/60'
           )}
         >
-          <MapIcon className="w-4 h-4" />
-          <span className="hidden sm:inline">Calles</span>
+          <MapIcon className="w-3.5 h-3.5 shrink-0" />
+          <span>Calles</span>
         </button>
       </div>
 
-      <div className="w-px h-6 bg-white/10 shrink-0" />
+      <div className="w-px h-5 bg-white/10 shrink-0" />
 
       {/* Superposiciones */}
       <button
@@ -139,14 +139,14 @@ export default function LayerBand({
         title={roadsActive ? 'Ocultar nombres y líneas de calles' : 'Mostrar nombres y líneas de calles'}
         aria-pressed={roadsActive}
         className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all duration-150 whitespace-nowrap',
+          'flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-all duration-150 whitespace-nowrap shrink-0',
           roadsActive
             ? 'bg-blue-600/90 border-blue-400 text-white shadow-md shadow-blue-500/30'
             : 'bg-slate-800/70 border-white/10 text-slate-400 hover:border-blue-500/50 hover:text-white'
         )}
       >
-        <Route className="w-4 h-4" />
-        <span className="hidden sm:inline">Vialidad</span>
+        <Route className="w-3.5 h-3.5 shrink-0" />
+        <span>Vías</span>
         <OnOffBadge on={roadsActive} tone="blue" />
       </button>
 
@@ -155,26 +155,26 @@ export default function LayerBand({
         title={placesActive ? 'Ocultar sitios de interés, posadas y comercios' : 'Mostrar sitios de interés, posadas y comercios'}
         aria-pressed={placesActive}
         className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all duration-150 whitespace-nowrap',
+          'flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-all duration-150 whitespace-nowrap shrink-0',
           placesActive
             ? 'bg-purple-600/90 border-purple-400 text-white shadow-md shadow-purple-500/30'
             : 'bg-slate-800/70 border-white/10 text-slate-400 hover:border-purple-500/50 hover:text-white'
         )}
       >
-        <MapPin className="w-4 h-4" />
-        <span className="hidden sm:inline">Sitios</span>
+        <MapPin className="w-3.5 h-3.5 shrink-0" />
+        <span>Sitios</span>
         <OnOffBadge on={placesActive} tone="purple" />
       </button>
 
       {onToggleSatCalib && (
         <>
-          <div className="w-px h-6 bg-white/10 shrink-0" />
+          <div className="w-px h-5 bg-white/10 shrink-0" />
           <button
             onClick={onToggleSatCalib}
             title="Calibrar Satélite (Desplazamiento ΔE / ΔN o Amarrar con Punto)"
             aria-pressed={satCalibActive}
             className={cn(
-              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all duration-150 whitespace-nowrap',
+              'flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-all duration-150 whitespace-nowrap shrink-0',
               satCalibOffsetNonZero
                 ? 'bg-emerald-600/90 border-emerald-400 text-white shadow-md shadow-emerald-500/30'
                 : satCalibActive
@@ -182,8 +182,8 @@ export default function LayerBand({
                   : 'bg-slate-800/70 border-white/10 text-slate-300 hover:border-cyan-500/50 hover:text-white'
             )}
           >
-            <SlidersHorizontal className="w-4 h-4" />
-            <span className="hidden sm:inline">Calibrar Satélite</span>
+            <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+            <span>Calibrar</span>
             <OnOffBadge on={satCalibOffsetNonZero} tone="emerald" />
           </button>
         </>

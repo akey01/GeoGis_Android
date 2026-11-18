@@ -306,6 +306,7 @@ export default function MapViewer({ className }: MapViewerProps) {
   const [selectedParcelId, setSelectedParcelId] = useState<string | null>(null);
   const [satOffset, setSatOffset] = useState<{ dE: number; dN: number }>({ dE: 0, dN: 0 });
   const [showSatCalib, setShowSatCalib] = useState<boolean>(false);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState<boolean>(false);
   const [calibStep, setCalibStep] = useState<'off' | 'vertex' | 'photo'>('off');
   const [calibRealUTM, setCalibRealUTM] = useState<{ e: number; n: number } | null>(null);
 
@@ -1648,10 +1649,26 @@ export default function MapViewer({ className }: MapViewerProps) {
       <ContourMapHUD />
       <ContourPrintModal />
 
-      {/* ── Selector de Capas Base y Controles del Viewport ─────────────────── */}
-      <div className="absolute top-4 right-4 z-30 flex flex-col gap-2 max-w-[195px]">
+      {/* ── Selector de Capas Base y Controles del Viewport (Colapsable en Móvil) ── */}
+      <div className="absolute top-3 right-3 z-30 flex flex-col items-end gap-2">
+        <button
+          type="button"
+          onClick={() => setMobileToolsOpen((v) => !v)}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border shadow-2xl backdrop-blur-md transition-all duration-150',
+            mobileToolsOpen || isDrawing || mapTool === 'move' || satOffset.dE !== 0 || satOffset.dN !== 0
+              ? 'bg-emerald-500/90 border-emerald-400 text-slate-950 shadow-emerald-500/30'
+              : 'bg-slate-900/90 border-white/10 text-slate-200 hover:border-cyan-500/50'
+          )}
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          <span>{mobileToolsOpen ? 'Ocultar' : 'Herramientas'}</span>
+        </button>
+
+        {mobileToolsOpen && (
+          <div className="flex flex-col gap-2 w-48 max-h-[60vh] overflow-y-auto p-1.5 bg-slate-900/95 border border-white/10 backdrop-blur-xl rounded-2xl shadow-2xl">
         {/* Barra de Modos de Interacción (Seleccionar vs Mover vs Dibujar) */}
-        <div className="flex flex-col gap-1 p-1 bg-slate-900/90 border border-white/10 backdrop-blur-md rounded-xl shadow-xl">
+        <div className="flex flex-col gap-1 p-1 bg-slate-950/60 border border-white/5 rounded-xl">
           <div className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-wider px-1.5 pt-0.5">
             Herramienta
           </div>
@@ -1869,27 +1886,30 @@ export default function MapViewer({ className }: MapViewerProps) {
             </div>
           )}
         </div>
+          </div>
+        )}
       </div>
 
       {/* ── Panel de Control de Movimiento por Parcela ─────────────────────── */}
-      <div className="absolute bottom-16 right-4 z-20">
+      {savedParcels.length > 0 && (
+      <div className="absolute bottom-14 right-3 z-20">
         <button
           onClick={() => setShowMovePanel((v) => !v)}
           className={cn(
-            'flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold shadow-2xl border transition-all duration-200 backdrop-blur-md',
+            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold shadow-2xl border transition-all duration-200 backdrop-blur-md',
             movableParcelIds.length > 0
               ? 'bg-amber-500/90 border-amber-400 text-white shadow-amber-500/30 animate-pulse'
               : showMovePanel
                 ? 'bg-slate-700 border-white/20 text-white'
-                : 'bg-slate-900/75 border-white/10 text-slate-300 hover:text-white hover:border-white/20'
+                : 'bg-slate-900/85 border-white/10 text-slate-300 hover:text-white hover:border-white/20'
           )}
           title={movableParcelIds.length > 0 ? `${movableParcelIds.length} parcela(s) en modo movimiento` : 'Control de movimiento de parcelas'}
         >
-          <Move className="w-4 h-4" />
+          <Move className="w-3.5 h-3.5" />
           {movableParcelIds.length > 0 ? `Moviendo ${movableParcelIds.length}` : 'Mover parcelas'}
         </button>
 
-        {showMovePanel && savedParcels.length > 0 && (
+        {showMovePanel && (
           <div className="absolute bottom-full mb-2 right-0 w-64 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl shadow-black/60 overflow-hidden">
             <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/10 bg-slate-800/60">
               <div className="flex items-center gap-2">
@@ -1964,25 +1984,29 @@ export default function MapViewer({ className }: MapViewerProps) {
           </div>
         )}
       </div>
+      )}
 
       {/* Indicador de Estado del Proyecto */}
-      <div className="absolute top-4 left-4 z-10">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/85 border border-white/10 backdrop-blur-sm text-xs text-slate-300 shadow-xl">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-          <span className="font-semibold text-white">{projectMeta.nombre || 'Proyecto Activo'}</span>
+      <div className="absolute top-3 left-3 z-10 max-w-[56vw]">
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900/85 border border-white/10 backdrop-blur-sm text-[11px] text-slate-300 shadow-xl truncate">
+          <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+          <span className="font-semibold text-white truncate">{projectMeta.nombre || 'Proyecto Activo'}</span>
           <span className="text-slate-500">|</span>
-          <span className="text-emerald-400 font-mono font-medium">{savedParcels.length} parcelas</span>
+          <span className="text-emerald-400 font-mono font-medium shrink-0">{savedParcels.length}p</span>
           {results.length > 0 && (
             <>
               <span className="text-slate-500">|</span>
-              <span className="text-cyan-400 font-mono">{results.length} pts cálculo</span>
+              <span className="text-cyan-400 font-mono shrink-0">{results.length}pts</span>
             </>
           )}
         </div>
       </div>
 
       {/* ── Controles de Zoom Flotantes (+ / −) ────────────────────────────── */}
-      <div className="absolute bottom-28 right-4 z-20 flex flex-col items-center bg-slate-900/90 border border-white/10 backdrop-blur-md rounded-xl shadow-2xl p-1 gap-1">
+      <div className={cn(
+        'absolute right-3 z-20 flex flex-col items-center bg-slate-900/90 border border-white/10 backdrop-blur-md rounded-xl shadow-2xl p-1 gap-1',
+        savedParcels.length > 0 ? 'bottom-24' : 'bottom-14'
+      )}>
         <button
           onClick={() => {
             const view = mapRef.current?.getView();
@@ -2013,11 +2037,11 @@ export default function MapViewer({ className }: MapViewerProps) {
       </div>
 
       {/* HUD de Coordenadas UTM Cursor (Metros REGVEN Zona Dinámica, 0 Re-renders) */}
-      <div className="absolute bottom-4 left-4 z-10 pointer-events-none">
-        <div className="flex gap-3 px-3 py-1.5 rounded-lg bg-slate-900/90 border border-white/10 backdrop-blur-sm text-xs font-mono text-slate-300 shadow-xl">
-          <span className="text-slate-500 font-bold">REGVEN {huso}N</span>
-          <span ref={esteRef} className="text-cyan-400">E ---.- m</span>
-          <span ref={norteRef} className="text-emerald-400">N ---.- m</span>
+      <div className="absolute bottom-2 left-2 z-10 pointer-events-none">
+        <div className="flex gap-2 px-2 py-1 rounded-lg bg-slate-900/90 border border-white/10 backdrop-blur-sm text-[10px] font-mono text-slate-300 shadow-xl">
+          <span className="text-slate-400 font-bold">{huso}N</span>
+          <span ref={esteRef} className="text-cyan-400">E ---</span>
+          <span ref={norteRef} className="text-emerald-400">N ---</span>
         </div>
       </div>
 
