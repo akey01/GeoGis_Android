@@ -48,6 +48,47 @@ jobs:
       - name: Install dependencies (Capacitor & Next core)
         run: npm install --legacy-peer-deps
 
+      - name: Stamp APK OTA version into web bundle and apk-version.json
+        id: ota_version
+        run: |
+          python3 - <<'EOF'
+          import json
+          import os
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "1"))
+          version_code = 600 + run_number
+          version_name = f"6.0.{run_number}"
+
+          html_path = Path("public/index.html")
+          html = html_path.read_text(encoding="utf-8")
+          html = re.sub(r"const APP_VERSION_CODE\s*=\s*\d+;", f"const APP_VERSION_CODE = {version_code};", html, count=1)
+          html = re.sub(r"const APP_VERSION_NAME\s*=\s*'[^']+';", f"const APP_VERSION_NAME = '{version_name}';", html, count=1)
+          html = re.sub(r'id="btn-ota-header"([^>]*)>\s*v6\.0\.\d+\s*</button>', f'id="btn-ota-header"\\1>v{version_name}</button>', html, count=1)
+          html_path.write_text(html, encoding="utf-8")
+
+          manifest_path = Path("public/apk-version.json")
+          manifest = {
+              "versionCode": version_code,
+              "versionName": version_name,
+              "buildNumber": run_number,
+              "publishedAt": datetime.now(timezone.utc).isoformat(),
+              "downloadUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk",
+              "releaseApiUrl": "https://api.github.com/repos/akey01/GeoGis_Android/releases/latest",
+              "notes": f"Compilación v{version_name} (Build {version_code}): Parcelas Desktop, Proyectos PostgreSQL/Local, Login Integrado y Auto-Update OTA."
+          }
+          manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+          gh_out = os.environ.get("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a", encoding="utf-8") as f:
+                  f.write(f"version_code={version_code}\n")
+                  f.write(f"version_name={version_name}\n")
+          print(f"Stamped OTA version v{version_name} (code={version_code})")
+          EOF
+
       - name: Generate native Capacitor Android project
         run: |
           rm -rf android
@@ -136,10 +177,13 @@ jobs:
           java_code = f'''{package_line}
 
           import android.Manifest;
+          import android.content.Intent;
           import android.content.pm.PackageManager;
+          import android.net.Uri;
           import android.os.Bundle;
           import android.view.View;
           import android.view.Window;
+          import android.webkit.DownloadListener;
           import android.webkit.GeolocationPermissions;
           import androidx.core.app.ActivityCompat;
           import androidx.core.content.ContextCompat;
@@ -197,6 +241,17 @@ jobs:
                   }}
 
                   if (this.getBridge() != null && this.getBridge().getWebView() != null) {{
+                      this.getBridge().getWebView().setDownloadListener(new DownloadListener() {{
+                          @Override
+                          public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {{
+                              try {{
+                                  Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                                  intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  startActivity(intent);
+                              }} catch (Exception ignored) {{
+                              }}
+                          }}
+                      }});
                       this.getBridge().getWebView().setWebChromeClient(
                           new BridgeWebChromeClient(this.getBridge()) {{
                               @Override
@@ -244,7 +299,12 @@ jobs:
         with:
           tag_name: v6.0.0
           name: GeoGIS6 Mobile v6.0.0 (Android APK)
-          body: APK oficial de producción de GeoGIS6 Mobile (Release firmada v1+v2) compilado con Capacitor 7 y Android SDK.
-          files: GeoGis6_Android.apk
+          body: |
+            APK oficial de producción de GeoGIS6 Mobile (Release firmada v1+v2) compilado con Capacitor 7 y Android SDK.
+            [APK_VERSION_CODE=${{ steps.ota_version.outputs.version_code }}] [APK_VERSION_NAME=${{ steps.ota_version.outputs.version_name }}]
+            Incluye Manejo Multiparcela Desktop, Gestión de Proyectos Cloud PostgreSQL/Local, Login Integrado y Auto-Actualizaciones OTA.
+          files: |
+            GeoGis6_Android.apk
+            public/apk-version.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

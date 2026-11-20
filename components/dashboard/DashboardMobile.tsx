@@ -6,21 +6,28 @@ import {
   ArrowLeftRight,
   BatteryCharging,
   CheckCircle2,
+  Cloud,
   Compass,
   Crosshair,
   Download,
   FileCode2,
   FileSpreadsheet,
   FileText,
+  FolderKanban,
+  HardDrive,
   Layers,
+  LogIn,
   LogOut,
   Map as MapIcon,
   MapPin,
   Maximize2,
   Navigation,
+  Package,
   Plus,
   Radio,
+  RefreshCw,
   RotateCcw,
+  Save,
   Satellite,
   Search,
   Shield,
@@ -32,6 +39,7 @@ import {
   User,
   UserCircle,
   Copy,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-hot-toast';
@@ -46,7 +54,7 @@ import {
 import { GeoEngine, HAYFORD, GRS80, PATVEN98 } from '@/lib/geo-engine';
 import { FileService } from '@/lib/file-service';
 import { exportResultsToDXF } from '@/lib/exportDxf';
-import { useAppStore, type TransformationResult } from '@/lib/store';
+import { useAppStore, type Parcel, type TransformationResult } from '@/lib/store';
 
 const MapViewer = dynamic(() => import('@/src/components/MapViewer'), {
   ssr: false,
@@ -59,8 +67,10 @@ const MapViewer = dynamic(() => import('@/src/components/MapViewer'), {
 });
 
 const ProfileModalLazy = dynamic(() => import('./ProfileModal'), { ssr: false });
+const ParcelListLazy = dynamic(() => import('./ParcelList'), { ssr: false });
+const ProjectManagerLazy = dynamic(() => import('./ProjectManager'), { ssr: false });
 
-export type AndroidNavTab = 'map' | 'topographer' | 'locate' | 'vertices' | 'export';
+export type AndroidNavTab = 'map' | 'topographer' | 'locate' | 'parcels' | 'projects';
 type EngineMethod = 'rigida02' | 'badekas' | 'rigida';
 type TransformDir = 'canoa_regven' | 'regven_canoa';
 type MapLayerMode = 'catastro' | 'satellite' | 'hybrid' | 'dtm';
@@ -261,6 +271,12 @@ export default function DashboardMobile({
   const clearProjectWorkspace = useAppStore((s) => s.clearProjectWorkspace);
   const setUser = useAppStore((s) => s.setUser);
   const user = useAppStore((s) => s.user);
+  const savedParcels = useAppStore((s) => s.savedParcels);
+  const storeActiveParcelId = useAppStore((s) => s.activeParcelId);
+  const projectMeta = useAppStore((s) => s.projectMeta);
+  const setProjectMeta = useAppStore((s) => s.setProjectMeta);
+  const setCurrentProjectId = useAppStore((s) => s.setCurrentProjectId);
+  const importProject = useAppStore((s) => s.importProject);
   const setStoreResults = useAppStore((s) => s.setResults);
   const setStoreMethod = useAppStore((s) => s.setMethod);
   const setStoreDirection = useAppStore((s) => s.setDirection);
@@ -270,11 +286,37 @@ export default function DashboardMobile({
 
   // Shell & Preview States
   const [activeTab, setActiveTab] = useState<AndroidNavTab>('map');
+  const [parcelsSubTab, setParcelsSubTab] = useState<'parcels' | 'vertices'>('parcels');
   const [canvasEngine, setCanvasEngine] = useState<CanvasEngineMode>('stitch');
   const [layerMode, setLayerMode] = useState<MapLayerMode>('satellite');
   const [framePreview, setFramePreview] = useState<boolean>(previewMode);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  // OTA Auto-Update APK States
+  const installedVersionCode =
+    typeof window !== 'undefined' && (window as any).__GEOGIS_APK_VERSION__?.versionCode
+      ? Number((window as any).__GEOGIS_APK_VERSION__.versionCode)
+      : 609;
+  const installedVersionName =
+    typeof window !== 'undefined' && (window as any).__GEOGIS_APK_VERSION__?.versionName
+      ? String((window as any).__GEOGIS_APK_VERSION__.versionName)
+      : '6.0.9';
+  const [showOtaModal, setShowOtaModal] = useState(false);
+  const [otaInfo, setOtaInfo] = useState({
+    checking: false,
+    hasUpdate: false,
+    latestVersionCode: installedVersionCode,
+    latestVersionName: installedVersionName,
+    downloadUrl: 'https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk',
+    notes: 'Versión oficial instalada y verificada.',
+  });
+  const lastSyncedParcelIdRef = useRef<string | null>(null);
 
   // Geodetic Config & Parcel State
   const [method, setMethod] = useState<EngineMethod>('rigida02');
@@ -830,6 +872,196 @@ export default function DashboardMobile({
     }
   }, [computedVertices]);
 
+  // Sync mobile map polygon when user picks a parcel inside <ParcelList />
+  useEffect(() => {
+    if (!storeActiveParcelId || storeActiveParcelId === lastSyncedParcelIdRef.current) return;
+    const found = savedParcels.find((p) => p.id === storeActiveParcelId);
+    if (!found || !Array.isArray(found.puntos) || found.puntos.length === 0) return;
+
+    const extracted: FieldVertex[] = found.puntos
+      .map((pt, idx) => {
+        const lat = Number(pt.result?.lat ?? pt.input?.lat);
+        const lng = Number(pt.result?.lng ?? pt.input?.lng);
+        const z = Number(pt.result?.cota ?? pt.input?.alt ?? 0) || 0;
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          return { id: pt.id || `P${idx + 1}`, lat, lng, z, rms: 0.008, source: 'sample' as const };
+        }
+        const e = Number(pt.result?.este ?? pt.input?.este);
+        const n = Number(pt.result?.norte ?? pt.input?.norte);
+        if (Number.isFinite(e) && Number.isFinite(n)) {
+          const g = GeoEngine.utmToGeo(e, n, Number(pt.result?.huso || pt.input?.huso || huso), false, GRS80);
+          return { id: pt.id || `P${idx + 1}`, lat: g.lat, lng: g.lng, z, rms: 0.01, source: 'sample' as const };
+        }
+        return null;
+      })
+      .filter(Boolean) as FieldVertex[];
+
+    if (extracted.length > 0) {
+      lastSyncedParcelIdRef.current = found.id;
+      setVertices(extracted);
+      setParcelName(found.nombre || 'PARCELA');
+      setStakeTargetId(extracted[0].id);
+      if (found.method === 'rigida02' || found.method === 'badekas' || found.method === 'rigida') {
+        setMethod(found.method);
+      }
+      setActiveTab('map');
+      setTimeout(() => centerOnAll(), 120);
+    }
+  }, [storeActiveParcelId, savedParcels, huso, centerOnAll]);
+
+  const handleSaveActiveToParcelList = useCallback(
+    (forceNew = false) => {
+      const cleanName = (parcelName || 'PARCELA').trim() || 'PARCELA';
+      const existing = !forceNew && storeActiveParcelId
+        ? savedParcels.find((p) => p.id === storeActiveParcelId)
+        : null;
+
+      if (existing) {
+        const updatedList = savedParcels.map((p) =>
+          p.id === existing.id
+            ? {
+                ...p,
+                nombre: cleanName,
+                area: geom.area,
+                perim: geom.perim,
+                ha: geom.area / 10000,
+                puntos: storeResultsPayload,
+                method,
+                actualizado: new Date().toISOString(),
+              }
+            : p
+        );
+        lastSyncedParcelIdRef.current = existing.id;
+        useAppStore.setState({ savedParcels: updatedList, activeParcelId: existing.id });
+        toast.success(`Parcela "${cleanName}" actualizada en proyecto`);
+      } else {
+        const newId = `POL-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const newParcel: Parcel = {
+          id: newId,
+          nombre: forceNew ? `${cleanName}-${savedParcels.length + 1}` : cleanName,
+          fecha: new Date().toLocaleDateString('es-VE'),
+          area: geom.area,
+          perim: geom.perim,
+          ha: geom.area / 10000,
+          puntos: storeResultsPayload,
+          geometryType: 'cerrada',
+          method,
+          hatchColor: '#4cd7f6',
+          hatchOpacity: 0.22,
+          actualizado: new Date().toISOString(),
+        };
+        lastSyncedParcelIdRef.current = newId;
+        useAppStore.setState({
+          savedParcels: [newParcel, ...savedParcels],
+          activeParcelId: newId,
+        });
+        setParcelName(newParcel.nombre);
+        toast.success(`Parcela "${newParcel.nombre}" guardada en proyecto`);
+      }
+    },
+    [geom.area, geom.perim, method, parcelName, savedParcels, storeActiveParcelId, storeResultsPayload]
+  );
+
+  const checkApkUpdates = useCallback(
+    async (manual = false) => {
+      setOtaInfo((prev) => ({ ...prev, checking: true }));
+      let bestCode = installedVersionCode;
+      let bestName = installedVersionName;
+      let bestUrl = 'https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk';
+      let bestNotes = 'Última versión oficial instalada.';
+
+      try {
+        const [apiRes, ghRes] = await Promise.allSettled([
+          fetch(`/api/apk-version?t=${Date.now()}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
+          fetch('https://api.github.com/repos/akey01/GeoGis_Android/releases/latest', {
+            headers: { Accept: 'application/vnd.github+json' },
+            cache: 'no-store',
+          }).then((r) => (r.ok ? r.json() : null)),
+        ]);
+
+        if (apiRes.status === 'fulfilled' && apiRes.value && Number(apiRes.value.versionCode) > bestCode) {
+          bestCode = Number(apiRes.value.versionCode);
+          bestName = apiRes.value.versionName || bestName;
+          bestUrl = apiRes.value.downloadUrl || bestUrl;
+          bestNotes = apiRes.value.notes || bestNotes;
+        }
+        if (ghRes.status === 'fulfilled' && ghRes.value) {
+          const body = String(ghRes.value.body || '');
+          const mCode = body.match(/\[APK_VERSION_CODE=(\d+)\]/i);
+          const mName = body.match(/\[APK_VERSION_NAME=([^\]]+)\]/i);
+          const apkAsset = Array.isArray(ghRes.value.assets)
+            ? ghRes.value.assets.find((a: any) => String(a.name || '').endsWith('.apk'))
+            : null;
+          if (mCode && Number(mCode[1]) > bestCode) {
+            bestCode = Number(mCode[1]);
+            bestName = mName ? mName[1].trim() : bestName;
+            bestUrl = apkAsset?.browser_download_url || bestUrl;
+            bestNotes = body.replace(/\[APK_VERSION_[^\]]+\]/g, '').trim() || bestNotes;
+          }
+        }
+      } catch {
+        // ignore network issues offline
+      }
+
+      const hasUpdate = bestCode > installedVersionCode;
+      setOtaInfo({
+        checking: false,
+        hasUpdate,
+        latestVersionCode: bestCode,
+        latestVersionName: bestName,
+        downloadUrl: bestUrl,
+        notes: bestNotes,
+      });
+
+      if (hasUpdate || manual) {
+        if (hasUpdate) setShowOtaModal(true);
+        else toast.success(`APK v${installedVersionName} al día`);
+      }
+    },
+    [installedVersionCode, installedVersionName]
+  );
+
+  useEffect(() => {
+    void checkApkUpdates(false);
+  }, [checkApkUpdates]);
+
+  const handleApkLoginSubmit = useCallback(
+    async (ev: React.FormEvent) => {
+      ev.preventDefault();
+      setLoginLoading(true);
+      setLoginError(null);
+      try {
+        const deviceId = getOrCreateDeviceId();
+        const res = await fetch('/api/auth/apk-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
+          body: JSON.stringify({
+            email: loginEmail.trim(),
+            password: loginPassword,
+            deviceId,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success || !data.user) {
+          throw new Error(data.error || 'Credenciales inválidas');
+        }
+        if (data.token && typeof window !== 'undefined') {
+          localStorage.setItem('gt_token', data.token);
+          localStorage.setItem('gt_current_user', JSON.stringify(data.user));
+        }
+        setUser(data.user);
+        setShowLoginModal(false);
+        setLoginPassword('');
+        toast.success(`Bienvenido ${data.user.nombre || data.user.username}`);
+      } catch (err: any) {
+        setLoginError(err?.message || 'Error de inicio de sesión');
+      } finally {
+        setLoginLoading(false);
+      }
+    },
+    [loginEmail, loginPassword, setUser]
+  );
+
   const shellClass = framePreview
     ? 'w-full sm:w-[400px] h-full min-h-0 sm:h-[836px] sm:rounded-[34px] sm:border-[6px] sm:border-[#1e293b] sm:ring-1 sm:ring-[#4cd7f6]/25'
     : 'w-full h-full min-h-0';
@@ -892,64 +1124,90 @@ export default function DashboardMobile({
                   {parcelName}
                 </div>
                 <div className="font-mono text-[9px] text-[#869397] truncate">
-                  {geom.area.toFixed(1)} m² · {computedVertices.length} pts
+                  {geom.area.toFixed(1)} m² · {computedVertices.length} pts · {savedParcels.length} parc
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOtaModal(true);
+                  void checkApkUpdates(false);
+                }}
+                className={cn(
+                  'px-1.5 py-1 rounded-lg border font-mono text-[8.5px] font-bold active:scale-95',
+                  otaInfo.hasUpdate
+                    ? 'bg-[#4edea3]/20 border-[#4edea3]/60 text-[#4edea3] animate-pulse'
+                    : 'bg-[#171f33] border-[#2d3449] text-[#bcc9cd]'
+                )}
+                title="Versión y Actualizaciones APK"
+              >
+                {otaInfo.hasUpdate ? `⬆ v${otaInfo.latestVersionName}` : `v${installedVersionName}`}
+              </button>
+
               <button
                 type="button"
                 onClick={() =>
                   setDirection((d) => (d === 'canoa_regven' ? 'regven_canoa' : 'canoa_regven'))
                 }
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] active:scale-95"
+                className="flex items-center gap-1 px-1.5 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] active:scale-95"
               >
                 <ArrowLeftRight className="w-3 h-3 text-[#ffb95f]" />
-                <span className="font-mono text-[9px] font-bold text-[#4cd7f6]">
-                  {direction === 'canoa_regven' ? 'PSAD56➔REGVEN' : 'REGVEN➔PSAD56'}
+                <span className="font-mono text-[8.5px] font-bold text-[#4cd7f6]">
+                  {direction === 'canoa_regven' ? 'PSAD56➔REG' : 'REG➔PSAD56'}
                 </span>
               </button>
 
-              {!previewMode && (
-                <button
-                  type="button"
-                  onClick={() => setShowUserMenu((v) => !v)}
-                  className="w-8 h-8 rounded-full bg-[#171f33] border border-[#2d3449] flex items-center justify-center"
-                >
-                  <User className="w-4 h-4 text-[#4cd7f6]" />
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (user) setShowUserMenu((v) => !v);
+                  else setShowLoginModal(true);
+                }}
+                className={cn(
+                  'h-7 px-2 rounded-lg border flex items-center gap-1 font-mono text-[8.5px] font-bold',
+                  user
+                    ? 'bg-[#4edea3]/15 border-[#4edea3]/40 text-[#4edea3]'
+                    : 'bg-[#171f33] border-[#ffb95f]/40 text-[#ffb95f]'
+                )}
+                title={user ? 'Cuenta GeoGIS6' : 'Iniciar Sesión Cloud'}
+              >
+                {user ? <User className="w-3.5 h-3.5" /> : <LogIn className="w-3.5 h-3.5" />}
+                <span className="max-w-[56px] truncate">
+                  {user ? (user.nombre || user.username).split(' ')[0] : 'Login'}
+                </span>
+              </button>
             </div>
           </div>
 
           {/* Sub-Header GNSS Telemetry Strip */}
           <div className="px-3 py-1.5 bg-[#060e20] border-t border-[#171f33] flex items-center justify-between gap-1 font-mono text-[9px]">
-            <span className="px-1.5 py-0.5 rounded bg-[#171f33] text-[#4edea3] font-bold">
+            <span className="px-1.5 py-0.5 rounded bg-[#171f33] text-[#4edea3] font-bold shrink-0">
               {method === 'rigida02' ? 'RIGIDA02' : method === 'badekas' ? 'BADEKAS' : 'IDW'} • {huso}N
             </span>
-            <span className="flex items-center gap-1 text-[#dae2fd]">
-              <Satellite className="w-3 h-3 text-[#4cd7f6]" />
-              SV {CONSTELLATION_SATS.length}/12
+            <span className="text-[#bcc9cd] truncate max-w-[120px]">
+              📁 {projectMeta?.nombre || 'Nuevo Proyecto'}
             </span>
             <button
               type="button"
               onClick={() => setCanvasEngine((c) => (c === 'stitch' ? 'openlayers' : 'stitch'))}
-              className="px-2 py-0.5 rounded bg-[#4cd7f6]/15 text-[#4cd7f6] font-bold"
+              className="px-2 py-0.5 rounded bg-[#4cd7f6]/15 text-[#4cd7f6] font-bold shrink-0"
             >
               {canvasEngine === 'stitch' ? 'Satélite OL' : 'Vector HUD'}
             </button>
             <button
               type="button"
               onClick={handleCycleLayer}
-              className="px-1.5 py-0.5 rounded bg-[#222a3d] text-[#ffb95f] font-bold"
+              className="px-1.5 py-0.5 rounded bg-[#222a3d] text-[#ffb95f] font-bold shrink-0"
             >
               {LAYER_LABELS[layerMode]}
             </button>
           </div>
 
-          {showUserMenu && !previewMode && (
-            <div className="absolute right-3 top-12 w-52 bg-[#131b2e] border border-[#2d3449] rounded-xl shadow-2xl z-50 overflow-hidden">
+          {showUserMenu && user && (
+            <div className="absolute right-3 top-12 w-56 bg-[#131b2e] border border-[#2d3449] rounded-xl shadow-2xl z-50 overflow-hidden">
               <div className="p-2.5 border-b border-[#222a3d]">
                 <div className="text-xs font-bold text-white truncate">{user?.nombre || 'Operador Campo'}</div>
                 <div className="text-[10px] font-mono text-[#4edea3]">{roleInfo?.label}</div>
@@ -966,7 +1224,36 @@ export default function DashboardMobile({
               </button>
               <button
                 type="button"
-                onClick={() => forceDisconnect(false)}
+                onClick={() => {
+                  setShowUserMenu(false);
+                  setActiveTab('projects');
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-[#171f33]"
+              >
+                <FolderKanban className="w-4 h-4 text-[#4edea3]" /> Proyectos Cloud
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUserMenu(false);
+                  setShowOtaModal(true);
+                  void checkApkUpdates(false);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-[#171f33]"
+              >
+                <RefreshCw className="w-4 h-4 text-[#ffb95f]" /> Actualizaciones APK
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUserMenu(false);
+                  if (previewMode) {
+                    setUser(null);
+                    toast.success('Sesión cerrada');
+                  } else {
+                    void forceDisconnect(false);
+                  }
+                }}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10"
               >
                 <LogOut className="w-4 h-4" /> Cerrar Sesión
@@ -1127,7 +1414,7 @@ export default function DashboardMobile({
               </div>
 
               {/* Ergonomic Right Thumb FAB Stack */}
-              <div className="absolute top-12 right-2.5 z-20 flex flex-col items-center gap-2">
+              <div className="absolute top-10 right-2.5 z-20 flex flex-col items-center gap-1.5">
                 <button
                   type="button"
                   onClick={handleCaptureGpsVertex}
@@ -1135,6 +1422,14 @@ export default function DashboardMobile({
                 >
                   <Plus className="w-5 h-5 stroke-[2.5]" />
                   <span className="font-mono text-[8px] font-extrabold uppercase leading-none">GRABAR</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveActiveToParcelList(false)}
+                  className="w-10 h-10 rounded-full bg-[#4edea3] text-[#003824] flex items-center justify-center shadow-lg"
+                  title="Guardar Parcela en Proyecto"
+                >
+                  <Save className="w-4 h-4" />
                 </button>
                 <button
                   type="button"
@@ -1155,15 +1450,6 @@ export default function DashboardMobile({
                   title="Localizar Parcela / Replanteo"
                 >
                   <Search className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('topographer')}
-                  className="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#4cd7f6] flex flex-col items-center justify-center shadow-lg"
-                  title="Mobile Topographer"
-                >
-                  <Compass className="w-3.5 h-3.5" />
-                  <span className="font-mono text-[7px] font-bold">GNSS</span>
                 </button>
                 <button
                   type="button"
@@ -1629,197 +1915,495 @@ export default function DashboardMobile({
             </div>
           )}
 
-          {/* TAB 4: VERTICES & MOTOR QA/QC */}
-          {activeTab === 'vertices' && (
+          {/* TAB 4: PARCELAS (DESKTOP PARITY) & VERTICES QA/QC */}
+          {activeTab === 'parcels' && (
             <div className="h-full overflow-y-auto p-3 space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <div className="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]">
-                  <span className="font-mono text-[9px] text-[#869397] uppercase block">SUPERFICIE</span>
-                  <span className="font-mono text-sm font-bold text-[#4edea3] tabular-nums">
-                    {geom.area.toFixed(2)} m²
-                  </span>
-                  <span className="font-mono text-[9px] text-[#bcc9cd] block">
-                    {(geom.area / 10000).toFixed(4)} ha
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]">
-                  <span className="font-mono text-[9px] text-[#869397] uppercase block">PERÍMETRO</span>
-                  <span className="font-mono text-sm font-bold text-[#4cd7f6] tabular-nums">
-                    {geom.perim.toFixed(2)} m
-                  </span>
-                  <span className="font-mono text-[9px] text-[#4edea3] block">{qaqcTimestamp}</span>
-                </div>
+              {/* Sub-tab Switcher */}
+              <div className="grid grid-cols-2 gap-1 bg-[#131b2e] border border-[#222a3d] p-1 rounded-xl font-mono text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setParcelsSubTab('parcels')}
+                  className={cn(
+                    'py-2 rounded-lg font-bold',
+                    parcelsSubTab === 'parcels' ? 'bg-[#4cd7f6] text-[#003640]' : 'text-[#bcc9cd]'
+                  )}
+                >
+                  📦 Parcelas ({savedParcels.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setParcelsSubTab('vertices')}
+                  className={cn(
+                    'py-2 rounded-lg font-bold',
+                    parcelsSubTab === 'vertices' ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'
+                  )}
+                >
+                  📐 Vértices ({computedVertices.length})
+                </button>
               </div>
 
-              {/* Engine + Datum Controls */}
-              <div className="p-3 rounded-xl bg-[#171f33] border border-[#222a3d] space-y-2">
-                <div className="grid grid-cols-3 gap-1 bg-[#060e20] p-1 rounded-xl font-mono text-[10px]">
-                  {(
-                    [
-                      { id: 'rigida02', label: 'RIGIDA02' },
-                      { id: 'badekas', label: 'Badekas' },
-                      { id: 'rigida', label: 'Rígida IDW' },
-                    ] as const
-                  ).map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setMethod(m.id)}
-                      className={cn(
-                        'py-1.5 rounded-lg font-bold',
-                        method === m.id ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'
-                      )}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={handleVerifyQaqc}
-                    className="flex-1 py-2 rounded-lg bg-[#222a3d] text-[#4cd7f6] font-mono text-[10px] font-bold flex items-center justify-center gap-1"
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-[#4edea3]" /> Auditoría QA/QC ≤ 1mm
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setVertices(DEFAULT_PARCEL_GEO);
-                      setParcelName('PARCELA-09B');
-                      setStakeTargetId('V-05');
-                      toast.success('Parcela restaurada');
-                    }}
-                    className="p-2 rounded-lg bg-[#222a3d] text-[#ffb95f]"
-                    title="Restaurar parcela"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
+              {parcelsSubTab === 'parcels' ? (
+                <div className="space-y-3">
+                  {/* Save Active Polygon Card */}
+                  <div className="p-3 rounded-2xl bg-[#131b2e] border border-[#4edea3]/30 space-y-2">
+                    <div className="flex items-center justify-between font-mono text-[10px]">
+                      <span className="text-[#4edea3] font-bold uppercase">Polígono Activo en Lienzo</span>
+                      <span className="text-[#bcc9cd]">
+                        {geom.area.toFixed(1)} m² · {computedVertices.length} pts
+                      </span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <input
+                        value={parcelName}
+                        onChange={(e) => setParcelName(e.target.value)}
+                        placeholder="Nombre parcela..."
+                        className="flex-1 bg-[#060e20] border border-[#2d3449] rounded-xl px-2.5 py-2 text-xs text-white font-bold"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveActiveToParcelList(false)}
+                        className="px-3 py-2 rounded-xl bg-[#4edea3] text-[#003824] font-bold text-[11px] flex items-center gap-1 shrink-0"
+                      >
+                        <Save className="w-3.5 h-3.5" /> Guardar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveActiveToParcelList(true)}
+                        className="px-2.5 py-2 rounded-xl bg-[#171f33] border border-[#2d3449] text-[#4cd7f6] font-bold text-xs shrink-0"
+                        title="Guardar como Nueva Parcela"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
 
-              {/* Vertices Cards */}
-              <div className="space-y-2">
-                {computedVertices.map((v) => (
-                  <div
-                    key={v.id}
-                    className={cn(
-                      'p-2.5 rounded-xl border',
-                      v.id === stakeTarget?.id
-                        ? 'bg-[#222a3d] border-[#ffb95f]/50'
-                        : 'bg-[#171f33] border-[#222a3d]'
-                    )}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs font-bold text-[#4cd7f6]">{v.id}</span>
-                        <span className="font-mono text-[10px] text-[#ffb95f]">
-                          {v.rumbo} · {v.dist.toFixed(2)}m
-                        </span>
-                      </div>
+                  {/* Full Desktop ParcelList Component (Minimap, Search, Edit Mensura Modal, Summary Modal, Multi-DXF/KML/TXT) */}
+                  <ParcelListLazy />
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]">
+                      <span className="font-mono text-[9px] text-[#869397] uppercase block">SUPERFICIE</span>
+                      <span className="font-mono text-sm font-bold text-[#4edea3] tabular-nums">
+                        {geom.area.toFixed(2)} m²
+                      </span>
+                      <span className="font-mono text-[9px] text-[#bcc9cd] block">
+                        {(geom.area / 10000).toFixed(4)} ha
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]">
+                      <span className="font-mono text-[9px] text-[#869397] uppercase block">PERÍMETRO</span>
+                      <span className="font-mono text-sm font-bold text-[#4cd7f6] tabular-nums">
+                        {geom.perim.toFixed(2)} m
+                      </span>
+                      <span className="font-mono text-[9px] text-[#4edea3] block">{qaqcTimestamp}</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#171f33] border border-[#222a3d] space-y-2">
+                    <div className="grid grid-cols-3 gap-1 bg-[#060e20] p-1 rounded-xl font-mono text-[10px]">
+                      {(
+                        [
+                          { id: 'rigida02', label: 'RIGIDA02' },
+                          { id: 'badekas', label: 'Badekas' },
+                          { id: 'rigida', label: 'Rígida IDW' },
+                        ] as const
+                      ).map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setMethod(m.id)}
+                          className={cn(
+                            'py-1.5 rounded-lg font-bold',
+                            method === m.id ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'
+                          )}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={handleVerifyQaqc}
+                        className="flex-1 py-2 rounded-lg bg-[#222a3d] text-[#4cd7f6] font-mono text-[10px] font-bold flex items-center justify-center gap-1"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-[#4edea3]" /> Auditoría QA/QC ≤ 1mm
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
-                          setStakeTargetId(v.id);
-                          setActiveTab('locate');
+                          setVertices(DEFAULT_PARCEL_GEO);
+                          setParcelName('PARCELA-09B');
+                          setStakeTargetId('V-05');
+                          toast.success('Parcela restaurada');
                         }}
-                        className="px-2 py-0.5 rounded bg-[#ffb95f]/20 font-mono text-[9px] font-bold text-[#ffb95f]"
+                        className="p-2 rounded-lg bg-[#222a3d] text-[#ffb95f]"
+                        title="Restaurar parcela"
                       >
-                        Replantear →
+                        <RotateCcw className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-lg font-mono text-[11px] tabular-nums">
-                      <div>
-                        <span className="text-[8px] text-[#869397] block">ESTE (X)</span>
-                        <span className="font-bold text-white">{v.este.toFixed(3)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[8px] text-[#869397] block">NORTE (Y)</span>
-                        <span className="font-bold text-white">{v.norte.toFixed(3)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[8px] text-[#869397] block">COTA (Z)</span>
-                        <span className="font-bold text-[#ffb95f]">{v.z.toFixed(3)}m</span>
-                      </div>
-                    </div>
                   </div>
-                ))}
-              </div>
+
+                  <div className="space-y-2">
+                    {computedVertices.map((v, idx) => (
+                      <div
+                        key={v.id}
+                        className={cn(
+                          'p-2.5 rounded-xl border',
+                          v.id === stakeTarget?.id
+                            ? 'bg-[#222a3d] border-[#ffb95f]/50'
+                            : 'bg-[#171f33] border-[#222a3d]'
+                        )}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-xs font-bold text-[#4cd7f6]">{v.id}</span>
+                            <span className="font-mono text-[10px] text-[#ffb95f]">
+                              {v.rumbo} · {v.dist.toFixed(2)}m
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setStakeTargetId(v.id);
+                                setActiveTab('locate');
+                              }}
+                              className="px-2 py-0.5 rounded bg-[#ffb95f]/20 font-mono text-[9px] font-bold text-[#ffb95f]"
+                            >
+                              Replantear →
+                            </button>
+                            {computedVertices.length > 2 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setVertices((prev) => prev.filter((_, i) => i !== idx))
+                                }
+                                className="px-1.5 py-0.5 rounded bg-rose-500/20 font-mono text-[9px] font-bold text-rose-300"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-lg font-mono text-[11px] tabular-nums">
+                          <div>
+                            <span className="text-[8px] text-[#869397] block">ESTE (X)</span>
+                            <span className="font-bold text-white">{v.este.toFixed(3)}</span>
+                          </div>
+                          <div>
+                            <span className="text-[8px] text-[#869397] block">NORTE (Y)</span>
+                            <span className="font-bold text-white">{v.norte.toFixed(3)}</span>
+                          </div>
+                          <div>
+                            <span className="text-[8px] text-[#869397] block">COTA (Z)</span>
+                            <span className="font-bold text-[#ffb95f]">{v.z.toFixed(3)}m</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* TAB 5: EXPORT CAD & PDF */}
-          {activeTab === 'export' && (
-            <div className="h-full overflow-y-auto p-3 space-y-2.5">
-              <div className="p-3 rounded-2xl bg-[#131b2e] border border-[#222a3d]">
-                <div className="text-xs font-bold text-white">Exportación Catastral y CAD</div>
-                <div className="font-mono text-[10px] text-[#bcc9cd] mt-0.5">
-                  Parcela: {parcelName} · {computedVertices.length} vértices ({direction === 'canoa_regven' ? 'REGVEN' : 'PSAD56'} {huso}N)
+          {/* TAB 5: PROYECTOS CLOUD/LOCAL, LOGIN, EXPORT CAD & OTA UPDATE */}
+          {activeTab === 'projects' && (
+            <div className="h-full overflow-y-auto p-3 space-y-3">
+              {/* Account / Login Banner */}
+              <div
+                className={cn(
+                  'p-3 rounded-2xl bg-[#131b2e] border flex items-center justify-between gap-2',
+                  user ? 'border-[#4edea3]/35' : 'border-[#ffb95f]/35'
+                )}
+              >
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-white truncate">
+                    {user ? `👤 ${user.nombre || user.username}` : '🔐 Sesión Cloud (PostgreSQL)'}
+                  </div>
+                  <div className="font-mono text-[9.5px] text-[#bcc9cd] truncate">
+                    {user ? `${user.email || user.username} · ${roleInfo?.label}` : 'Inicia sesión para guardar proyectos en nube'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => (user ? setShowProfile(true) : setShowLoginModal(true))}
+                  className={cn(
+                    'px-2.5 py-1.5 rounded-xl font-bold text-[10.5px] shrink-0',
+                    user ? 'bg-[#171f33] border border-[#2d3449] text-[#4cd7f6]' : 'bg-[#4edea3] text-[#003824]'
+                  )}
+                >
+                  {user ? 'Cuenta' : 'Iniciar Sesión'}
+                </button>
+              </div>
+
+              {/* Project Manager (Cloud + Local JSON) */}
+              {user ? (
+                <ProjectManagerLazy />
+              ) : (
+                <div className="p-3 rounded-2xl bg-[#171f33] border border-[#222a3d] space-y-2.5">
+                  <div className="font-mono text-[10px] font-bold text-[#4cd7f6] uppercase">
+                    📁 Proyecto Activo (Modo Local / JSON)
+                  </div>
+                  <input
+                    value={projectMeta?.nombre || ''}
+                    onChange={(e) => setProjectMeta({ ...projectMeta, nombre: e.target.value })}
+                    placeholder="Nombre del proyecto..."
+                    className="w-full bg-[#060e20] border border-[#2d3449] rounded-xl px-3 py-2 text-xs font-bold text-white"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowLoginModal(true)}
+                      className="py-2 rounded-xl bg-[#4edea3] text-[#003824] font-bold text-[11px] flex items-center justify-center gap-1"
+                    >
+                      <Cloud className="w-3.5 h-3.5" /> Conectar Nube
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const data = {
+                          meta: projectMeta,
+                          parcels: savedParcels,
+                          version: '6.0-android',
+                          exportDate: new Date().toISOString(),
+                        };
+                        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${(projectMeta?.nombre || 'proyecto').replace(/\s+/g, '_')}_geogis6.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        toast.success('Proyecto .JSON descargado');
+                      }}
+                      className="py-2 rounded-xl bg-[#131b2e] border border-[#4cd7f6]/40 text-[#4cd7f6] font-bold text-[11px] flex items-center justify-center gap-1"
+                    >
+                      <HardDrive className="w-3.5 h-3.5" /> Exportar .JSON
+                    </button>
+                  </div>
+                  <label className="w-full py-2 rounded-xl bg-[#060e20] border border-dashed border-[#4cd7f6]/40 text-[#4cd7f6] font-bold text-[10.5px] flex items-center justify-center gap-1.5 cursor-pointer">
+                    <Download className="w-3.5 h-3.5 rotate-180" /> Importar Proyecto desde Archivo (.json)
+                    <input
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                          try {
+                            const parsed = JSON.parse(String(ev.target?.result || '{}'));
+                            importProject(parsed);
+                            setCurrentProjectId(null);
+                            toast.success('Proyecto importado con éxito');
+                          } catch {
+                            toast.error('Archivo .JSON inválido');
+                          }
+                        };
+                        reader.readAsText(f);
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              {/* Quick Export Active Parcel */}
+              <div className="p-3 rounded-2xl bg-[#131b2e] border border-[#222a3d] space-y-2">
+                <div className="font-mono text-[10px] font-bold text-[#4cd7f6] uppercase">
+                  ⬇ Exportación Rápida · {parcelName}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportDxf}
+                    className="p-2.5 rounded-xl bg-[#4cd7f6] text-[#003640] font-bold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <FileCode2 className="w-4 h-4" /> .DXF CAD
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportKml}
+                    className="p-2.5 rounded-xl bg-[#171f33] border border-[#2d3449] text-white font-bold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <MapIcon className="w-4 h-4 text-[#4cd7f6]" /> .KML Earth
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyCivilCad}
+                    className="p-2.5 rounded-xl bg-[#171f33] border border-[#2d3449] text-white font-bold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <Copy className="w-4 h-4 text-[#4edea3]" /> P,E,N,Z
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => FileService.exportTXT(storeResultsPayload, parcelName, false)}
+                    className="p-2.5 rounded-xl bg-[#171f33] border border-[#2d3449] text-white font-bold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <FileText className="w-4 h-4 text-[#ffb95f]" /> .TXT Cartera
+                  </button>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={handleExportDxf}
-                className="w-full p-3.5 rounded-xl bg-[#4cd7f6] text-[#003640] flex items-center justify-between"
+              {/* OTA Auto-Update APK Card */}
+              <div
+                className={cn(
+                  'p-3 rounded-2xl bg-[#131b2e] border space-y-2',
+                  otaInfo.hasUpdate ? 'border-[#4edea3]/60' : 'border-[#222a3d]'
+                )}
               >
-                <div className="flex items-center gap-2.5 text-left">
-                  <FileCode2 className="w-5 h-5" />
+                <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-xs font-bold">Descargar .DXF (AutoCAD / CivilCAD)</div>
-                    <div className="text-[10px] opacity-80">Capas normalizadas + Cuadro de Construcción</div>
+                    <div className="text-xs font-bold text-white">🚀 Actualizaciones Automáticas APK</div>
+                    <div className="font-mono text-[9.5px] text-[#bcc9cd]">
+                      Instalada: v{installedVersionName} · Última: v{otaInfo.latestVersionName}
+                    </div>
                   </div>
+                  <span
+                    className={cn(
+                      'px-2 py-0.5 rounded font-mono text-[9px] font-bold',
+                      otaInfo.hasUpdate ? 'bg-[#4edea3]/20 text-[#4edea3]' : 'bg-[#171f33] text-[#4cd7f6]'
+                    )}
+                  >
+                    {otaInfo.hasUpdate ? 'DISPONIBLE' : 'AL DÍA'}
+                  </span>
                 </div>
-                <Download className="w-4 h-4" />
-              </button>
-
-              <button
-                type="button"
-                onClick={handleCopyCivilCad}
-                className="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2.5 text-left">
-                  <FileSpreadsheet className="w-5 h-5 text-[#4edea3]" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Copiar CivilCAD (P,E,N,Z,D)</div>
-                    <div className="text-[10px] text-[#bcc9cd]">Portapapeles inmediato para cartera</div>
-                  </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void checkApkUpdates(true)}
+                    className="py-2 rounded-xl bg-[#171f33] border border-[#2d3449] text-[#4cd7f6] font-bold text-[11px]"
+                  >
+                    {otaInfo.checking ? 'Comprobando...' : '🔍 Buscar Actualización'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(otaInfo.downloadUrl, '_blank')}
+                    className={cn(
+                      'py-2 rounded-xl font-bold text-[11px]',
+                      otaInfo.hasUpdate ? 'bg-[#4edea3] text-[#003824]' : 'bg-[#222a3d] text-[#dae2fd]'
+                    )}
+                  >
+                    ⬇ Descargar APK
+                  </button>
                 </div>
-                <Copy className="w-4 h-4 text-[#4edea3]" />
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExportKml}
-                className="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2.5 text-left">
-                  <MapIcon className="w-5 h-5 text-[#4cd7f6]" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Exportar .KML Google Earth</div>
-                    <div className="text-[10px] text-[#bcc9cd]">Poligonal georreferenciada WGS84</div>
-                  </div>
-                </div>
-                <Download className="w-4 h-4 text-[#4cd7f6]" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => FileService.exportTXT(storeResultsPayload, parcelName, false)}
-                className="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2.5 text-left">
-                  <FileText className="w-5 h-5 text-[#ffb95f]" />
-                  <div>
-                    <div className="text-xs font-bold text-white">Cartera Topográfica (.TXT)</div>
-                    <div className="text-[10px] text-[#bcc9cd]">Vértices, rumbos, distancias y área</div>
-                  </div>
-                </div>
-                <Download className="w-4 h-4 text-[#ffb95f]" />
-              </button>
+              </div>
             </div>
           )}
         </main>
+
+        {/* LOGIN CLOUD MODAL */}
+        {showLoginModal && (
+          <div className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-sm flex items-center justify-center p-3">
+            <div className="w-full max-w-md rounded-2xl bg-[#131b2e] border border-[#2d3449] shadow-2xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-[#222a3d] flex items-center justify-between bg-[#0b1326]">
+                <div className="text-sm font-bold text-white">🔐 Iniciar Sesión GeoGIS6 Cloud</div>
+                <button
+                  type="button"
+                  onClick={() => setShowLoginModal(false)}
+                  className="p-1 rounded-lg bg-[#171f33] text-[#bcc9cd]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <form onSubmit={handleApkLoginSubmit} className="p-4 space-y-3">
+                <div>
+                  <label className="font-mono text-[9px] text-[#869397] block mb-1">
+                    USUARIO O CORREO ELECTRÓNICO
+                  </label>
+                  <input
+                    required
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                    placeholder="usuario o correo@ejemplo.com"
+                    className="w-full bg-[#060e20] border border-[#2d3449] rounded-xl px-3 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="font-mono text-[9px] text-[#869397] block mb-1">CONTRASEÑA</label>
+                  <input
+                    required
+                    type="password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-[#060e20] border border-[#2d3449] rounded-xl px-3 py-2.5 text-xs text-white"
+                  />
+                </div>
+                {loginError && (
+                  <div className="p-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[11px]">
+                    {loginError}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={loginLoading}
+                  className="w-full py-2.5 rounded-xl bg-[#4edea3] text-[#003824] font-bold text-xs disabled:opacity-50"
+                >
+                  {loginLoading ? 'Autenticando...' : 'Ingresar a PostgreSQL Cloud'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* OTA UPDATE MODAL */}
+        {showOtaModal && (
+          <div className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-sm flex items-center justify-center p-3">
+            <div className="w-full max-w-md rounded-2xl bg-[#131b2e] border border-[#4edea3]/45 shadow-2xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-[#222a3d] flex items-center justify-between bg-[#0b1326]">
+                <div className="text-sm font-bold text-white">
+                  {otaInfo.hasUpdate ? '🚀 Nueva Versión APK Disponible' : '🔄 Actualizaciones GeoGIS6 APK'}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowOtaModal(false)}
+                  className="p-1 rounded-lg bg-[#171f33] text-[#bcc9cd]"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-4 space-y-3">
+                <div className="grid grid-cols-2 gap-2 font-mono text-[10px]">
+                  <div className="p-2.5 rounded-xl bg-[#060e20] border border-[#222a3d]">
+                    <span className="text-[#869397] block">INSTALADA</span>
+                    <b className="text-white text-xs">v{installedVersionName}</b>
+                    <span className="text-[9px] text-[#869397] block">Build {installedVersionCode}</span>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-[#060e20] border border-[#4edea3]/40">
+                    <span className="text-[#869397] block">ÚLTIMA RELEASE</span>
+                    <b className="text-[#4edea3] text-xs">v{otaInfo.latestVersionName}</b>
+                    <span className="text-[9px] text-[#869397] block">Build {otaInfo.latestVersionCode}</span>
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#060e20] text-[11px] text-[#bcc9cd]">{otaInfo.notes}</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void checkApkUpdates(true)}
+                    className="py-2.5 rounded-xl bg-[#171f33] border border-[#2d3449] text-[#4cd7f6] font-bold text-xs"
+                  >
+                    {otaInfo.checking ? 'Buscando...' : '🔍 Verificar'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.open(otaInfo.downloadUrl, '_blank')}
+                    className="py-2.5 rounded-xl bg-[#4edea3] text-[#003824] font-bold text-xs"
+                  >
+                    ⬇ Actualizar APK
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 3. NATIVE ANDROID BOTTOM NAVIGATION BAR (5 MODULES) */}
         <nav className="min-h-[68px] shrink-0 bg-[#060e20]/95 backdrop-blur-xl border-t border-[#171f33] z-40 grid grid-cols-5 px-1 pt-1 pb-[calc(env(safe-area-inset-bottom,0px)+8px)]">
@@ -1828,8 +2412,8 @@ export default function DashboardMobile({
               { id: 'map', label: 'Mapa', icon: MapIcon },
               { id: 'topographer', label: 'GNSS', icon: Radio },
               { id: 'locate', label: 'Localizar', icon: Target },
-              { id: 'vertices', label: 'Vértices', icon: SlidersHorizontal },
-              { id: 'export', label: 'Exportar', icon: Download },
+              { id: 'parcels', label: 'Parcelas', icon: Package },
+              { id: 'projects', label: 'Proyectos', icon: FolderKanban },
             ] as const
           ).map((item) => {
             const Icon = item.icon;
