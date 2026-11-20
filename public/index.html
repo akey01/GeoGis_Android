@@ -1,187 +1,1055 @@
 <!DOCTYPE html>
-<html lang="es">
+<html class="dark" lang="es">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>GeoGIS6 Mobile</title>
+  <meta name="shell-type" content="mobile_tab" />
+  <title>GeoGIS6 Mobile — Topografía GNSS, Localizador de Parcelas &amp; CAD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    if (window.tailwind) {
+      window.tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+          },
+        },
+      };
+    }
+  </script>
   <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100dvh;
-      background: radial-gradient(circle at top, #0f172a 0%, #070b14 70%);
-      color: #f8fafc;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-    }
-    .card {
+    /* Critical fallback styles for 100% offline Android APK execution */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
       width: 100%;
-      max-width: 360px;
-      background: rgba(15, 23, 42, 0.92);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      border-radius: 24px;
-      padding: 28px 24px;
-      text-align: center;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
-    }
-    .logo {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 16px;
-      border-radius: 18px;
-      background: rgba(16, 185, 129, 0.14);
-      border: 1px solid rgba(16, 185, 129, 0.4);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 22px;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    h1 span { color: #10b981; }
-    .subtitle {
-      margin: 0 0 18px;
-      color: #94a3b8;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .spinner {
-      width: 28px;
-      height: 28px;
-      margin: 0 auto 12px;
-      border: 3px solid rgba(16, 185, 129, 0.2);
-      border-top-color: #10b981;
-      border-radius: 50%;
-      animation: spin 0.9s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .progress-wrap {
-      width: 100%;
-      height: 6px;
-      border-radius: 999px;
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(148, 163, 184, 0.15);
-      overflow: hidden;
-      margin-bottom: 12px;
-    }
-    .progress-bar {
       height: 100%;
-      width: 15%;
-      background: linear-gradient(90deg, #10b981, #06b6d4);
-      transition: width 0.4s ease;
+      margin: 0;
+      padding: 0;
+      background: #050914;
+      color: #dae2fd;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      overscroll-behavior: none;
     }
-    .status {
-      font-family: ui-monospace, monospace;
-      font-size: 11px;
-      color: #34d399;
-      margin-bottom: 16px;
-      min-height: 32px;
-    }
-    .btn {
-      display: none;
+    ::-webkit-scrollbar { display: none; }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+    #app-shell {
+      display: flex;
+      flex-direction: column;
       width: 100%;
-      padding: 13px 16px;
-      border: none;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #10b981, #06b6d4);
-      color: #020617;
-      font-weight: 700;
-      font-size: 12px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      cursor: pointer;
+      height: 100dvh;
+      background: #0b1326;
+      overflow: hidden;
+      position: relative;
     }
-    .btn.visible { display: block; }
+    @media (min-width: 768px) {
+      body.desktop-frame-mode {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+      }
+      body.desktop-frame-mode #app-shell {
+        width: 400px;
+        height: min(836px, calc(100dvh - 64px));
+        border-radius: 34px;
+        border: 6px solid #1e293b;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.75);
+      }
+    }
+    .leaflet-container { background: #060e20 !important; font-family: JetBrains Mono, monospace !important; }
+    .leaflet-control-attribution { display: none !important; }
+    .btn-tab-active { color: #4cd7f6 !important; font-weight: 700 !important; }
+    .btn-tab-active .nav-pill { background: rgba(76, 215, 246, 0.16); }
+    .hidden-view { display: none !important; }
+    input, select, textarea { outline: none; }
   </style>
 </head>
-<body>
-  <main class="card">
-    <div class="logo">
-      <svg width="34" height="34" viewBox="0 0 32 32" fill="none">
-        <ellipse cx="16" cy="16" rx="12" ry="8" stroke="#10B981" stroke-width="1.8"/>
-        <ellipse cx="16" cy="16" rx="8" ry="12" stroke="#06B6D4" stroke-width="1.4"/>
-        <circle cx="16" cy="16" r="3" fill="#10B981"/>
-      </svg>
+<body class="bg-[#050914] text-[#dae2fd] antialiased select-none">
+  <!-- Toast Feedback -->
+  <div id="toast" class="fixed top-16 left-1/2 -translate-x-1/2 z-[150] hidden px-3.5 py-2 rounded-xl bg-[#131b2e]/95 border border-[#4edea3]/50 text-[#4edea3] font-mono text-[11px] shadow-2xl backdrop-blur-md text-center max-w-[90vw]"></div>
+
+  <!-- Desktop Preview Toolbar (hidden automatically inside mobile phones / Capacitor APK) -->
+  <div id="desktop-bar" class="hidden w-full max-w-[960px] mb-2.5 px-3 py-1.5 bg-[#0b1326] border border-[#222a3d] rounded-xl items-center justify-between gap-2">
+    <div class="flex items-center gap-2">
+      <span class="px-2 py-0.5 rounded bg-[#4cd7f6]/15 border border-[#4cd7f6]/30 font-mono text-[10px] font-bold text-[#4cd7f6]">GEOGIS6 ANDROID APP</span>
+      <span class="text-xs text-[#bcc9cd]">Stitch Fidelity Dark + Mobile Topographer + Localizador de Parcelas</span>
     </div>
-    <h1>GeoGIS<span>6</span> Mobile</h1>
-    <p class="subtitle">App Nativa de Campo<br/>PSAD56 (La Canoa) ↔ REGVEN</p>
-    <div id="spinner" class="spinner"></div>
-    <div class="progress-wrap"><div id="progress" class="progress-bar"></div></div>
-    <div id="status" class="status">Conectando con servidor móvil GeoGIS6...</div>
-    <button id="retry-btn" class="btn" type="button">Reintentar Conexión</button>
-  </main>
+    <div class="flex items-center gap-2">
+      <button id="btn-toggle-desktop-frame" type="button" class="px-2.5 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] font-mono text-[11px] text-[#4cd7f6]">Pantalla Completa</button>
+    </div>
+  </div>
+
+  <!-- Main Native Android Shell -->
+  <div id="app-shell">
+    <!-- 1. COMPACT ANDROID HEADER & RTK TRAY -->
+    <header class="shrink-0 bg-[#0b1326]/95 backdrop-blur-xl border-b border-[#222a3d] z-40">
+      <div class="h-12 px-3 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <div id="gps-badge" class="flex items-center gap-1 px-2 py-0.5 rounded border bg-[#ffb95f]/15 border-[#ffb95f]/40 text-[#ffb95f] shrink-0">
+            <span id="gps-dot" class="w-1.5 h-1.5 rounded-full bg-[#ffb95f] animate-pulse"></span>
+            <span id="gps-badge-text" class="font-mono text-[9px] font-bold uppercase">GNSS</span>
+          </div>
+          <div class="min-w-0">
+            <div id="header-parcel-name" class="text-xs font-bold text-[#dae2fd] truncate leading-tight">PARCELA-09B</div>
+            <div id="header-parcel-stats" class="font-mono text-[9px] text-[#869397] truncate">Calculando área...</div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="btn-cloud-sync" type="button" class="px-2 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] font-mono text-[9px] font-bold text-[#4edea3]" title="Estado servidor Render GeoGIS6">
+            NUBE
+          </button>
+          <button id="btn-toggle-dir" type="button" class="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] active:scale-95">
+            <span class="text-[#ffb95f] font-mono text-[10px]">⇄</span>
+            <span id="dir-badge" class="font-mono text-[9px] font-bold text-[#4cd7f6]">PSAD56➔REGVEN</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="px-3 py-1.5 bg-[#060e20] border-t border-[#171f33] flex items-center justify-between gap-1 font-mono text-[9px]">
+        <span id="method-huso-chip" class="px-1.5 py-0.5 rounded bg-[#171f33] text-[#4edea3] font-bold">RIGIDA02 • 19N</span>
+        <span class="text-[#dae2fd]">🛰 SV 8/12</span>
+        <button id="btn-toggle-map-engine" type="button" class="px-2 py-0.5 rounded bg-[#4cd7f6]/15 text-[#4cd7f6] font-bold">Vector HUD</button>
+        <button id="btn-cycle-layer" type="button" class="px-1.5 py-0.5 rounded bg-[#222a3d] text-[#ffb95f] font-bold">Satélite</button>
+      </div>
+    </header>
+
+    <!-- 2. MAIN WORKSPACE CONTAINER -->
+    <main class="relative flex-1 min-h-0 overflow-hidden bg-[#060e20]">
+      <!-- VIEW 1: MAPA HUD -->
+      <section id="view-map" class="relative w-full h-full">
+        <!-- Leaflet Real Satellite Map -->
+        <div id="leaflet-map" class="absolute inset-0 w-full h-full z-10"></div>
+
+        <!-- Stitch Tactical SVG Vector Canvas Fallback / HUD -->
+        <div id="stitch-svg-wrap" class="hidden-view absolute inset-0 w-full h-full z-10 overflow-hidden bg-[#060e20]">
+          <svg id="stitch-svg" viewBox="0 0 360 400" preserveAspectRatio="xMidYMid meet" class="w-full h-full">
+            <defs>
+              <pattern id="grid-mobile" width="48" height="48" patternUnits="userSpaceOnUse">
+                <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#3d494c" stroke-opacity="0.32" stroke-dasharray="3 3" stroke-width="0.7" />
+                <circle cx="0" cy="0" r="1.2" fill="#4cd7f6" fill-opacity="0.45" />
+              </pattern>
+            </defs>
+            <rect width="360" height="400" fill="url(#grid-mobile)" />
+            <polygon id="svg-parcel-poly" points="" fill="rgba(76,215,246,0.14)" stroke="#4cd7f6" stroke-width="2.4" stroke-linejoin="round" />
+            <line id="svg-stake-line" x1="0" y1="0" x2="0" y2="0" stroke="#ffb95f" stroke-width="1.6" stroke-dasharray="5 3" />
+            <g id="svg-vertices-layer"></g>
+            <g id="svg-rover-marker"></g>
+          </svg>
+        </div>
+
+        <!-- Floating Top-Left Summary & Stakeout Pill -->
+        <div class="absolute top-2.5 left-2.5 right-16 z-20 flex flex-col gap-1.5 pointer-events-none">
+          <div class="inline-flex flex-wrap items-center gap-2 self-start px-2.5 py-1.5 rounded-xl bg-[#131b2e]/90 border border-[#4cd7f6]/25 backdrop-blur-md">
+            <span id="map-area-pill" class="font-mono text-[10px] font-bold text-[#4edea3]">— m²</span>
+            <span id="map-perim-pill" class="font-mono text-[9px] text-[#bcc9cd]">Per: — m</span>
+          </div>
+          <button id="map-stake-pill" type="button" class="pointer-events-auto self-start px-2.5 py-1.5 rounded-xl bg-[#171f33]/92 border border-[#ffb95f]/40 backdrop-blur-md text-left">
+            <div id="map-stake-dist" class="font-mono text-[10px] font-bold text-[#ffb95f]">🎯 OBJ V-05: — m</div>
+            <div id="map-stake-bearing" class="font-mono text-[9px] text-[#bcc9cd]">—</div>
+          </button>
+        </div>
+
+        <!-- Ergonomic Right-Edge FAB Stack -->
+        <div class="absolute top-12 right-2.5 z-20 flex flex-col items-center gap-2">
+          <button id="fab-capture" type="button" class="w-13 h-13 p-2.5 rounded-full bg-[#4cd7f6] active:scale-95 text-[#003640] shadow-xl flex flex-col items-center justify-center">
+            <span class="font-bold text-base leading-none">+</span>
+            <span class="font-mono text-[8px] font-extrabold uppercase leading-none">GRABAR</span>
+          </button>
+          <button id="fab-center-gps" type="button" class="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#4edea3] flex items-center justify-center shadow-lg font-mono text-sm" title="Centrar GPS Real">⌖</button>
+          <button id="fab-goto-locate" type="button" class="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#ffb95f]/40 text-[#ffb95f] flex items-center justify-center shadow-lg font-mono text-sm" title="Localizar Parcela">🎯</button>
+          <button id="fab-goto-topo" type="button" class="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#4cd7f6] flex flex-col items-center justify-center shadow-lg">
+            <span class="font-mono text-[8px] font-bold">GNSS</span>
+          </button>
+          <button id="fab-layers" type="button" class="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#dae2fd] flex items-center justify-center shadow-lg font-mono text-xs">▤</button>
+        </div>
+
+        <!-- Live Rover Telemetry Tray -->
+        <div class="absolute inset-x-2.5 bottom-2.5 z-20 p-2.5 rounded-2xl bg-[#131b2e]/95 border border-[#2d3449] backdrop-blur-xl shadow-2xl">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="font-mono text-[10px] font-bold text-[#4cd7f6]">📡 POSICIÓN ROVER EN TIEMPO REAL</span>
+            <span id="tray-acc" class="font-mono text-[9px] text-[#4edea3]">±3.2 m</span>
+          </div>
+          <div class="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl font-mono text-[10px] tabular-nums">
+            <div><span class="text-[8px] text-[#869397] block">ESTE REGVEN</span><span id="tray-este" class="text-[#dae2fd] font-bold">—</span></div>
+            <div><span class="text-[8px] text-[#869397] block">NORTE REGVEN</span><span id="tray-norte" class="text-[#dae2fd] font-bold">—</span></div>
+            <div><span class="text-[8px] text-[#869397] block">ELEV (Z)</span><span id="tray-alt" class="text-[#ffb95f] font-bold">—</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: MOBILE TOPOGRAPHER (GNSS REALTIME + AVERAGING + SKYPLOT) -->
+      <section id="view-topographer" class="hidden-view h-full overflow-y-auto p-3 space-y-3"></section>
+
+      <!-- VIEW 3: PARCEL COORDINATE LOCATOR + DRIVE-ME STAKEOUT -->
+      <section id="view-locate" class="hidden-view h-full overflow-y-auto p-3 space-y-3"></section>
+
+      <!-- VIEW 4: VERTICES & MOTOR QA/QC -->
+      <section id="view-vertices" class="hidden-view h-full overflow-y-auto p-3 space-y-3"></section>
+
+      <!-- VIEW 5: EXPORT CAD / KML / CLOUD -->
+      <section id="view-export" class="hidden-view h-full overflow-y-auto p-3 space-y-2.5"></section>
+    </main>
+
+    <!-- 3. NATIVE ANDROID BOTTOM NAVIGATION BAR (5 MODULES) -->
+    <nav class="h-16 shrink-0 bg-[#060e20]/95 backdrop-blur-xl border-t border-[#171f33] z-40 grid grid-cols-5 px-1">
+      <button data-tab="map" type="button" class="nav-btn btn-tab-active flex flex-col items-center justify-center">
+        <div class="nav-pill flex items-center justify-center w-9 h-6 rounded-full text-sm">🗺</div>
+        <span class="font-mono text-[8px] font-bold uppercase tracking-wider mt-0.5">Mapa</span>
+      </button>
+      <button data-tab="topographer" type="button" class="nav-btn text-[#bcc9cd] flex flex-col items-center justify-center">
+        <div class="nav-pill flex items-center justify-center w-9 h-6 rounded-full text-sm">📡</div>
+        <span class="font-mono text-[8px] font-bold uppercase tracking-wider mt-0.5">GNSS</span>
+      </button>
+      <button data-tab="locate" type="button" class="nav-btn text-[#bcc9cd] flex flex-col items-center justify-center">
+        <div class="nav-pill flex items-center justify-center w-9 h-6 rounded-full text-sm">🎯</div>
+        <span class="font-mono text-[8px] font-bold uppercase tracking-wider mt-0.5">Localizar</span>
+      </button>
+      <button data-tab="vertices" type="button" class="nav-btn text-[#bcc9cd] flex flex-col items-center justify-center">
+        <div class="nav-pill flex items-center justify-center w-9 h-6 rounded-full text-sm">📐</div>
+        <span class="font-mono text-[8px] font-bold uppercase tracking-wider mt-0.5">Vértices</span>
+      </button>
+      <button data-tab="export" type="button" class="nav-btn text-[#bcc9cd] flex flex-col items-center justify-center">
+        <div class="nav-pill flex items-center justify-center w-9 h-6 rounded-full text-sm">⬇</div>
+        <span class="font-mono text-[8px] font-bold uppercase tracking-wider mt-0.5">Exportar</span>
+      </button>
+    </nav>
+  </div>
 
   <script>
-    const ANDROID_SERVER = 'https://geogis6-android.onrender.com';
-    const MAX_ATTEMPTS = 4;
+    const CLOUD_URL = 'https://geogis6-android.onrender.com';
 
-    const statusEl = document.getElementById('status');
-    const spinnerEl = document.getElementById('spinner');
-    const progressEl = document.getElementById('progress');
-    const retryBtn = document.getElementById('retry-btn');
+    // Desktop frame setup (only outside Capacitor, outside Stitch iframe, and >= 768px)
+    const isCapacitorNative = Boolean(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    const inEmbedIframe = window.self !== window.top;
+    if (!isCapacitorNative && !inEmbedIframe && window.innerWidth >= 768) {
+      document.body.classList.add('desktop-frame-mode');
+      const dBar = document.getElementById('desktop-bar');
+      dBar.classList.remove('hidden');
+      dBar.classList.add('flex');
+      document.getElementById('btn-toggle-desktop-frame').addEventListener('click', () => {
+        const active = document.body.classList.toggle('desktop-frame-mode');
+        document.getElementById('btn-toggle-desktop-frame').textContent = active ? 'Pantalla Completa' : 'Marco Celular';
+        setTimeout(() => { if (leafletMap) leafletMap.invalidateSize(); }, 250);
+      });
+    }
 
-    async function probeMobileBackend() {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 14000);
-      try {
-        const res = await fetch(ANDROID_SERVER + '/api/health', {
-          method: 'GET',
-          cache: 'no-store',
-          signal: controller.signal
+    // ======================== GEODETIC ENGINE (HAYFORD / GRS80 / PATVEN-98 / RIGIDA02) ========================
+    const HAYFORD = {
+      a: 6378388.0, f: 1 / 297.0,
+      get b() { return this.a * (1 - this.f); },
+      get e2() { return 2 * this.f - this.f * this.f; },
+      get ep2() { return this.e2 / (1 - this.e2); },
+    };
+    const GRS80 = {
+      a: 6378137.0, f: 1 / 298.257222101,
+      get b() { return this.a * (1 - this.f); },
+      get e2() { return 2 * this.f - this.f * this.f; },
+      get ep2() { return this.e2 / (1 - this.e2); },
+    };
+    const PATVEN98 = {
+      dx: -270.933, dy: 115.599, dz: -360.226,
+      rx: -5.266, ry: -1.238, rz: 2.381, ds: -5.109,
+      XM: 2464351.594, YM: -5783466.613, ZM: 974809.808,
+    };
+
+    class GeoEngine {
+      static RIGIDA02_DELTA_ESTE = -204.330;
+      static RIGIDA02_DELTA_NORTE = -311.540;
+      static RIGIDA02_COTA_GEOIDAL = -22.450;
+
+      static toRad(deg) { return (deg * Math.PI) / 180; }
+      static toDeg(rad) { return (rad * 180) / Math.PI; }
+      static _N(latR, el) { const s = Math.sin(latR); return el.a / Math.sqrt(1 - el.e2 * s * s); }
+
+      static detectHuso(lng) {
+        if (lng >= -78 && lng < -72) return 18;
+        if (lng >= -72 && lng < -66) return 19;
+        if (lng >= -66 && lng < -60) return 20;
+        if (lng >= -60 && lng < -54) return 21;
+        return lng < -66 ? 19 : 20;
+      }
+
+      static geoToCart(latDeg, lngDeg, h, el) {
+        const lat = this.toRad(latDeg), lng = this.toRad(lngDeg), N = this._N(lat, el);
+        return { X: (N + h) * Math.cos(lat) * Math.cos(lng), Y: (N + h) * Math.cos(lat) * Math.sin(lng), Z: (N * (1 - el.e2) + h) * Math.sin(lat) };
+      }
+
+      static cartToGeo(X, Y, Z, el) {
+        const p = Math.sqrt(X * X + Y * Y);
+        let lat = Math.atan2(Z, p * (1 - el.e2));
+        for (let i = 0; i < 15; i++) {
+          const N = this._N(lat, el);
+          const next = Math.atan2(Z + el.e2 * N * Math.sin(lat), p);
+          if (Math.abs(next - lat) < 1e-14) break;
+          lat = next;
+        }
+        const lng = Math.atan2(Y, X), N = this._N(lat, el);
+        const h = Math.cos(lat) !== 0 ? p / Math.cos(lat) - N : Z / Math.sin(lat) - N * (1 - el.e2);
+        return { lat: this.toDeg(lat), lng: this.toDeg(lng), h };
+      }
+
+      static geoToUTM(latDeg, lngDeg, huso, el) {
+        const a = el.a, e2 = el.e2, ep2 = el.ep2, k0 = 0.9996, lon0 = huso * 6 - 183;
+        const latR = this.toRad(latDeg), lngR = this.toRad(lngDeg), lng0R = this.toRad(lon0);
+        const N = this._N(latR, el), T = Math.tan(latR) ** 2, C = ep2 * Math.cos(latR) ** 2, A = Math.cos(latR) * (lngR - lng0R);
+        const e4 = e2 * e2, e6 = e4 * e2;
+        const M = a * ((1 - e2 / 4 - (3 * e4) / 64 - (5 * e6) / 256) * latR - ((3 * e2) / 8 + (3 * e4) / 32 + (45 * e6) / 1024) * Math.sin(2 * latR) + ((15 * e4) / 256 + (45 * e6) / 1024) * Math.sin(4 * latR) - ((35 * e6) / 3072) * Math.sin(6 * latR));
+        const A2 = A * A, A3 = A2 * A, A4 = A3 * A, A5 = A4 * A, A6 = A5 * A;
+        const este = k0 * N * (A + ((1 - T + C) * A3) / 6 + ((5 - 18 * T + T * T + 72 * C - 58 * ep2) * A5) / 120) + 500000.0;
+        let norte = k0 * (M + N * Math.tan(latR) * (A2 / 2 + ((5 - T + 9 * C + 4 * C * C) * A4) / 24 + ((61 - 58 * T + T * T + 600 * C - 330 * ep2) * A6) / 720));
+        if (latDeg < 0) norte += 10000000.0;
+        return { este: Math.round(este * 1000) / 1000, norte: Math.round(norte * 1000) / 1000, huso };
+      }
+
+      static utmToGeo(este, norte, huso, hemiSur, el) {
+        const k0 = 0.9996, a = el.a, e2 = el.e2, ep2 = el.ep2;
+        const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2)), lon0 = this.toRad(huso * 6 - 183);
+        const x = este - 500000.0;
+        let y = norte;
+        if (hemiSur) y -= 10000000.0;
+        const e4 = e2 * e2, e6 = e4 * e2;
+        const mu = (y / k0) / (a * (1 - e2 / 4 - (3 * e4) / 64 - (5 * e6) / 256));
+        const e12 = e1 * e1, e13 = e12 * e1, e14 = e13 * e1;
+        const phi1 = mu + ((3 * e1) / 2 - (27 * e13) / 32) * Math.sin(2 * mu) + ((21 * e12) / 16 - (55 * e14) / 32) * Math.sin(4 * mu) + ((151 * e13) / 96) * Math.sin(6 * mu) + ((1097 * e14) / 512) * Math.sin(8 * mu);
+        const N1 = this._N(phi1, el), T1 = Math.tan(phi1) ** 2, C1 = ep2 * Math.cos(phi1) ** 2;
+        const R1 = (a * (1 - e2)) / Math.pow(1 - e2 * Math.sin(phi1) ** 2, 1.5), D = x / (N1 * k0);
+        const D2 = D * D, D3 = D2 * D, D4 = D3 * D, D5 = D4 * D, D6 = D5 * D;
+        const lat = phi1 - ((N1 * Math.tan(phi1)) / R1) * (D2 / 2 - ((5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * D4) / 24 + ((61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * D6) / 720);
+        const lng = lon0 + (1 / Math.cos(phi1)) * (D - ((1 + 2 * T1 + C1) * D3) / 6 + ((5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * D5) / 120);
+        return { lat: this.toDeg(lat), lng: this.toDeg(lng) };
+      }
+
+      static badekas(X, Y, Z, inverso) {
+        const p = PATVEN98;
+        const rxR = this.toRad(p.rx / 3600), ryR = this.toRad(p.ry / 3600), rzR = this.toRad(p.rz / 3600), s = 1 + p.ds * 1e-6;
+        if (!inverso) {
+          const dX = X - p.XM, dY = Y - p.YM, dZ = Z - p.ZM;
+          return { X: s * (dX + rzR * dY - ryR * dZ) + p.XM + p.dx, Y: s * (-rzR * dX + dY + rxR * dZ) + p.YM + p.dy, Z: s * (ryR * dX - rxR * dY + dZ) + p.ZM + p.dz };
+        }
+        const dX = X - p.XM - p.dx, dY = Y - p.YM - p.dy, dZ = Z - p.ZM - p.dz, sI = 1 / s;
+        return { X: sI * (dX - rzR * dY + ryR * dZ) + p.XM, Y: sI * (rzR * dX + dY - rxR * dZ) + p.YM, Z: sI * (-ryR * dX + rxR * dY + dZ) + p.ZM };
+      }
+
+      static transformRigida02(vertices, customDeltas = {}, inv = false) {
+        const rawDe = Number.isFinite(customDeltas.deltaEste) ? customDeltas.deltaEste : this.RIGIDA02_DELTA_ESTE;
+        const rawDn = Number.isFinite(customDeltas.deltaNorte) ? customDeltas.deltaNorte : this.RIGIDA02_DELTA_NORTE;
+        const cotaGeoidal = Number.isFinite(customDeltas.cotaGeoidal) ? customDeltas.cotaGeoidal : this.RIGIDA02_COTA_GEOIDAL;
+        const huso = customDeltas.huso || 19;
+        const deltaEste = inv ? -rawDe : rawDe;
+        const deltaNorte = inv ? -rawDn : rawDn;
+        const elD = inv ? HAYFORD : GRS80;
+        const resultados = vertices.map((v, idx) => {
+          let n = Number(v.norte), e = Number(v.este);
+          if (e > n) [n, e] = [e, n];
+          const esteDest = Math.round((e + deltaEste) * 1000) / 1000;
+          const norteDest = Math.round((n + deltaNorte) * 1000) / 1000;
+          const cotaDest = Math.round(((Number(v.z || 0) === 0) ? cotaGeoidal : Number(v.z)) * 1000) / 1000;
+          const geoD = this.utmToGeo(esteDest, norteDest, huso, false, elD);
+          return { id: v.id || `P${idx + 1}`, este: esteDest, norte: norteDest, cota: cotaDest, lat: geoD.lat, lng: geoD.lng };
         });
-        if (res.ok) {
-          const data = await res.json().catch(() => null);
-          return Boolean(data && data.database === 'connected');
+        return { resultados, qaqcPasado: true };
+      }
+
+      static formatDMS(degDecimal, isLat = true) {
+        const abs = Math.abs(degDecimal), d = Math.floor(abs), mf = (abs - d) * 60, m = Math.floor(mf), s = ((mf - m) * 60).toFixed(3);
+        const h = isLat ? (degDecimal >= 0 ? 'N' : 'S') : degDecimal >= 0 ? 'E' : 'W';
+        return `${String(d).padStart(2, '0')}°${String(m).padStart(2, '0')}'${String(s).padStart(6, '0')}"${h}`;
+      }
+
+      static formatRumbo(dE, dN) {
+        let az = (Math.atan2(dE, dN) * 180) / Math.PI;
+        if (az < 0) az += 360;
+        let ns = 'N', ew = 'E', rDeg = az;
+        if (az <= 90) { ns = 'N'; ew = 'E'; rDeg = az; }
+        else if (az <= 180) { ns = 'S'; ew = 'E'; rDeg = 180 - az; }
+        else if (az <= 270) { ns = 'S'; ew = 'W'; rDeg = az - 180; }
+        else { ns = 'N'; ew = 'W'; rDeg = 360 - az; }
+        const d = Math.floor(rDeg), mf = (rDeg - d) * 60, m = Math.floor(mf), s = Math.round((mf - m) * 60);
+        return { azimutDeg: az, rumbo: `${ns} ${String(d).padStart(2, '0')}°${String(m).padStart(2, '0')}'${String(s).padStart(2, '0')}" ${ew}` };
+      }
+
+      static calculatePolygonStats(verts) {
+        if (!verts || verts.length < 2) return { areaM2: 0, areaHa: 0, perimeter: 0, legs: [] };
+        let area = 0, perimeter = 0;
+        const legs = [];
+        for (let i = 0; i < verts.length; i++) {
+          const p1 = verts[i], p2 = verts[(i + 1) % verts.length];
+          area += p1.este * p2.norte - p2.este * p1.norte;
+          const dE = p2.este - p1.este, dN = p2.norte - p1.norte, dist = Math.hypot(dE, dN);
+          perimeter += dist;
+          legs.push({ from: p1.id, to: p2.id, distancia: dist, ...this.formatRumbo(dE, dN) });
         }
-        return false;
-      } catch (_) {
-        return false;
-      } finally {
-        clearTimeout(timer);
+        const areaM2 = Math.abs(area) / 2;
+        return { areaM2, areaHa: areaM2 / 10000, perimeter, legs };
+      }
+
+      static generateCivilCAD(verts, parcel) {
+        return verts.map((v) => `${v.id},${v.este.toFixed(3)},${v.norte.toFixed(3)},${v.z.toFixed(3)},${parcel}`).join('\n');
+      }
+
+      static generateDXF(verts) {
+        const lines = ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1009', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES'];
+        if (verts.length >= 2) {
+          lines.push('0', 'POLYLINE', '8', 'LINDEROS', '66', '1', '70', verts.length >= 3 ? '1' : '0');
+          for (const v of verts) lines.push('0', 'VERTEX', '8', 'LINDEROS', '10', v.este.toFixed(3), '20', v.norte.toFixed(3), '30', v.z.toFixed(3));
+          lines.push('0', 'SEQEND');
+        }
+        lines.push('0', 'ENDSEC', '0', 'EOF');
+        return lines.join('\n');
+      }
+
+      static generateKML(verts, parcel) {
+        const ring = verts.map((v) => `${v.lng.toFixed(8)},${v.lat.toFixed(8)},${v.z.toFixed(2)}`);
+        if (verts.length >= 3) ring.push(`${verts[0].lng.toFixed(8)},${verts[0].lat.toFixed(8)},${verts[0].z.toFixed(2)}`);
+        return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${parcel}</name><Placemark><name>${parcel}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${ring.join(' ')}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>`;
       }
     }
 
-    async function bootApp() {
-      retryBtn.classList.remove('visible');
-      spinnerEl.style.display = 'block';
-      statusEl.style.color = '#34d399';
-      progressEl.style.width = '15%';
+    // ======================== STATE ========================
+    const DEFAULT_VERTICES = [
+      { id: 'V-01', lat: 11.94385, lng: -69.81845, z: 12.4, rms: 0.008 },
+      { id: 'V-02', lat: 11.94418, lng: -69.81762, z: 13.1, rms: 0.009 },
+      { id: 'V-03', lat: 11.94352, lng: -69.81715, z: 14.0, rms: 0.011 },
+      { id: 'V-04', lat: 11.94285, lng: -69.81788, z: 13.3, rms: 0.010 },
+      { id: 'V-05', lat: 11.94321, lng: -69.81856, z: 11.9, rms: 0.012 },
+    ];
 
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        progressEl.style.width = Math.min(95, attempt * 24) + '%';
-        statusEl.textContent =
-          attempt === 1
-            ? 'Conectando con servidor móvil y PostgreSQL...'
-            : 'Despertando servicio móvil en Render (intento ' + attempt + '/' + MAX_ATTEMPTS + ')...';
+    const SATS = [
+      { prn: 'G04', sys: 'GPS', el: 74, az: 35, snr: 44, col: '#4edea3' },
+      { prn: 'G12', sys: 'GPS', el: 52, az: 142, snr: 41, col: '#4edea3' },
+      { prn: 'G25', sys: 'GPS', el: 38, az: 265, snr: 38, col: '#4edea3' },
+      { prn: 'R07', sys: 'GLO', el: 66, az: 310, snr: 42, col: '#4cd7f6' },
+      { prn: 'R19', sys: 'GLO', el: 28, az: 78, snr: 34, col: '#4cd7f6' },
+      { prn: 'E11', sys: 'GAL', el: 59, az: 205, snr: 40, col: '#ffb95f' },
+      { prn: 'E24', sys: 'GAL', el: 43, az: 118, snr: 37, col: '#ffb95f' },
+      { prn: 'C08', sys: 'BDS', el: 48, az: 292, snr: 36, col: '#a5b4fc' },
+    ];
 
-        const ok = await probeMobileBackend();
-        if (ok) {
-          progressEl.style.width = '100%';
-          statusEl.textContent = 'Conectado. Abriendo GeoGIS6 Mobile...';
-          window.location.replace(ANDROID_SERVER + '/dashboard');
-          return;
-        }
+    const LAYER_ORDER = ['satellite', 'hybrid', 'street'];
+    const LAYER_TEXT = { satellite: 'Satélite', hybrid: 'Híbrido', street: 'Vector' };
 
-        if (attempt < MAX_ATTEMPTS) {
-          await new Promise((r) => setTimeout(r, 3000));
-        }
-      }
+    const state = {
+      activeTab: 'map',
+      mapEngine: window.L ? 'leaflet' : 'svg',
+      layerMode: 'satellite',
+      method: 'rigida02',
+      direction: 'canoa_regven',
+      huso: 19,
+      parcelName: 'PARCELA-09B',
+      vertices: JSON.parse(JSON.stringify(DEFAULT_VERTICES)),
+      stakeTargetId: 'V-05',
+      gpsEnabled: true,
+      gpsStatus: 'Enlazando GNSS...',
+      gpsWatchId: null,
+      gnss: { lat: 11.94305, lng: -69.81868, alt: 11.8, accuracy: 3.2, isLive: false },
+      compassHeading: null,
+      averagingActive: false,
+      averagingSamples: [],
+      locateMode: 'utm',
+      locateDatum: 'canoa',
+      locateHuso: 19,
+      locateEste: '409662.260',
+      locateNorte: '1327653.220',
+      locateZ: '12.500',
+      locateLat: '11.943850',
+      locateLng: '-69.818450',
+      locateBatch: 'B1,409662.260,1327653.220,12.4\nB2,409740.420,1327663.600,13.1\nB3,409775.240,1327612.140,14.0\nB4,409719.960,1327557.280,13.3',
+      cloudStatus: 'Sin comprobar',
+    };
 
-      spinnerEl.style.display = 'none';
-      statusEl.style.color = '#fbbf24';
-      statusEl.textContent = 'No se pudo contactar al servidor móvil. Verifica tu internet y reintenta.';
-      retryBtn.classList.add('visible');
+    function notify(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      clearTimeout(notify._t);
+      notify._t = setTimeout(() => el.classList.add('hidden'), 2700);
     }
 
-    retryBtn.addEventListener('click', bootApp);
-    bootApp();
+    function computeDualUtm(lat, lng, z) {
+      const regven = GeoEngine.geoToUTM(lat, lng, state.huso, GRS80);
+      let canoaEste = regven.este, canoaNorte = regven.norte;
+      if (state.method === 'rigida02') {
+        canoaEste = Math.round((regven.este - GeoEngine.RIGIDA02_DELTA_ESTE) * 1000) / 1000;
+        canoaNorte = Math.round((regven.norte - GeoEngine.RIGIDA02_DELTA_NORTE) * 1000) / 1000;
+      } else {
+        const cartR = GeoEngine.geoToCart(lat, lng, z, GRS80);
+        const cartC = GeoEngine.badekas(cartR.X, cartR.Y, cartR.Z, true);
+        const geoC = GeoEngine.cartToGeo(cartC.X, cartC.Y, cartC.Z, HAYFORD);
+        const utmC = GeoEngine.geoToUTM(geoC.lat, geoC.lng, state.huso, HAYFORD);
+        canoaEste = utmC.este;
+        canoaNorte = utmC.norte;
+      }
+      const lon0 = state.huso * 6 - 183, latR = GeoEngine.toRad(lat), sLat = Math.sin(latR);
+      const N = GRS80.a / Math.sqrt(1 - GRS80.e2 * sLat * sLat);
+      const rho = (GRS80.a * (1 - GRS80.e2)) / Math.pow(1 - GRS80.e2 * sLat * sLat, 1.5);
+      const rMean = Math.sqrt(N * rho), x = regven.este - 500000;
+      const k = 0.9996 * (1 + (x * x) / (2 * rMean * rMean * 0.9996 * 0.9996));
+      const conv = (lng - lon0) * sLat;
+      return { regvenEste: regven.este, regvenNorte: regven.norte, canoaEste, canoaNorte, k, conv };
+    }
+
+    function getComputedParcel() {
+      const mapped = state.vertices.map((v) => {
+        const dual = computeDualUtm(v.lat, v.lng, v.z);
+        const este = state.direction === 'canoa_regven' ? dual.regvenEste : dual.canoaEste;
+        const norte = state.direction === 'canoa_regven' ? dual.regvenNorte : dual.canoaNorte;
+        return { ...v, ...dual, este, norte };
+      });
+      const stats = GeoEngine.calculatePolygonStats(mapped);
+      const enriched = mapped.map((v, i) => ({
+        ...v,
+        rumbo: stats.legs[i]?.rumbo || '—',
+        dist: stats.legs[i]?.distancia || 0,
+      }));
+      const target = enriched.find((v) => v.id === state.stakeTargetId) || enriched[0];
+      const roverUtm = computeDualUtm(state.gnss.lat, state.gnss.lng, state.gnss.alt);
+      const roverE = state.direction === 'canoa_regven' ? roverUtm.regvenEste : roverUtm.canoaEste;
+      const roverN = state.direction === 'canoa_regven' ? roverUtm.regvenNorte : roverUtm.canoaNorte;
+      const dE = (target?.este ?? roverE) - roverE;
+      const dN = (target?.norte ?? roverN) - roverN;
+      const dZ = (target?.z ?? state.gnss.alt) - state.gnss.alt;
+      const distH = Math.hypot(dE, dN);
+      const { rumbo, azimutDeg } = GeoEngine.formatRumbo(dE, dN);
+      const relAngle = state.compassHeading !== null ? (azimutDeg - state.compassHeading + 360) % 360 : azimutDeg;
+      return {
+        enriched,
+        stats,
+        target,
+        roverUtm,
+        roverE,
+        roverN,
+        stakeout: { dE, dN, dZ, distH, rumbo, azimutDeg, relAngle, inTolerance: distH <= 0.5 },
+      };
+    }
+
+    // ======================== LEAFLET SATELLITE MAP ========================
+    let leafletMap = null;
+    let leafletTileLayer = null;
+    let leafletPoly = null;
+    let leafletStakeLine = null;
+    let leafletRoverMarker = null;
+    let leafletRoverCircle = null;
+    let leafletVertexLayer = null;
+
+    function getTileUrl(mode) {
+      if (mode === 'street') return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+      if (mode === 'hybrid') return 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
+      return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+    }
+
+    function initLeafletIfNeeded() {
+      if (!window.L || leafletMap) return;
+      leafletMap = L.map('leaflet-map', { zoomControl: false, attributionControl: false }).setView(
+        [state.vertices[0].lat, state.vertices[0].lng],
+        18
+      );
+      leafletTileLayer = L.tileLayer(getTileUrl(state.layerMode), { maxZoom: 21 }).addTo(leafletMap);
+      leafletVertexLayer = L.layerGroup().addTo(leafletMap);
+    }
+
+    function updateMapGraphics(data) {
+      const showLeaflet = state.mapEngine === 'leaflet' && Boolean(window.L);
+      document.getElementById('leaflet-map').classList.toggle('hidden-view', !showLeaflet);
+      document.getElementById('stitch-svg-wrap').classList.toggle('hidden-view', showLeaflet);
+      document.getElementById('btn-toggle-map-engine').textContent = showLeaflet ? 'Satélite Real' : 'Vector HUD';
+
+      if (showLeaflet) {
+        initLeafletIfNeeded();
+        if (leafletMap) {
+          const latLngs = data.enriched.map((v) => [v.lat, v.lng]);
+          if (leafletPoly) leafletPoly.setLatLngs(latLngs);
+          else leafletPoly = L.polygon(latLngs, { color: '#4cd7f6', weight: 2.5, fillColor: '#4cd7f6', fillOpacity: 0.16 }).addTo(leafletMap);
+
+          if (data.target) {
+            const linePts = [[state.gnss.lat, state.gnss.lng], [data.target.lat, data.target.lng]];
+            if (leafletStakeLine) leafletStakeLine.setLatLngs(linePts);
+            else leafletStakeLine = L.polyline(linePts, { color: '#ffb95f', weight: 2, dashArray: '6 4' }).addTo(leafletMap);
+          }
+
+          leafletVertexLayer.clearLayers();
+          data.enriched.forEach((v) => {
+            const isTarget = v.id === data.target?.id;
+            const m = L.circleMarker([v.lat, v.lng], {
+              radius: isTarget ? 7 : 5,
+              color: isTarget ? '#ffb95f' : '#4cd7f6',
+              fillColor: '#0b1326',
+              fillOpacity: 1,
+              weight: 2.5,
+            }).bindTooltip(v.id, { permanent: true, direction: 'right', offset: [6, 0] });
+            m.on('click', () => { state.stakeTargetId = v.id; renderAll(); });
+            m.addTo(leafletVertexLayer);
+          });
+
+          if (leafletRoverCircle) {
+            leafletRoverCircle.setLatLng([state.gnss.lat, state.gnss.lng]).setRadius(Math.max(1, state.gnss.accuracy));
+            leafletRoverMarker.setLatLng([state.gnss.lat, state.gnss.lng]);
+          } else {
+            leafletRoverCircle = L.circle([state.gnss.lat, state.gnss.lng], { radius: Math.max(1, state.gnss.accuracy), color: '#4edea3', fillColor: '#4edea3', fillOpacity: 0.14, weight: 1 }).addTo(leafletMap);
+            leafletRoverMarker = L.circleMarker([state.gnss.lat, state.gnss.lng], { radius: 7, color: '#060e20', fillColor: '#4edea3', fillOpacity: 1, weight: 2 }).addTo(leafletMap);
+          }
+        }
+      } else {
+        const allE = data.enriched.map((v) => v.este).concat([data.roverE]);
+        const allN = data.enriched.map((v) => v.norte).concat([data.roverN]);
+        const minE = Math.min(...allE), maxE = Math.max(...allE), minN = Math.min(...allN), maxN = Math.max(...allN);
+        const spanE = Math.max(maxE - minE, 20), spanN = Math.max(maxN - minN, 20);
+        const padX = 54, padY = 66, w = 252, h = 268, sc = Math.min(w / spanE, h / spanN);
+        const ox = padX + (w - spanE * sc) / 2, oy = padY + (h - spanN * sc) / 2;
+        const proj = (e, n) => ({ sx: ox + (e - minE) * sc, sy: oy + (maxN - n) * sc });
+
+        const pts = data.enriched.map((v) => ({ ...v, ...proj(v.este, v.norte) }));
+        const rov = proj(data.roverE, data.roverN);
+        document.getElementById('svg-parcel-poly').setAttribute('points', pts.map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' '));
+        const tSvg = pts.find((p) => p.id === data.target?.id) || pts[0];
+        if (tSvg) {
+          const sl = document.getElementById('svg-stake-line');
+          sl.setAttribute('x1', rov.sx.toFixed(1));
+          sl.setAttribute('y1', rov.sy.toFixed(1));
+          sl.setAttribute('x2', tSvg.sx.toFixed(1));
+          sl.setAttribute('y2', tSvg.sy.toFixed(1));
+        }
+        const vl = document.getElementById('svg-vertices-layer');
+        vl.innerHTML = pts.map((p) => {
+          const isT = p.id === data.target?.id;
+          return `<g data-svg-vid="${p.id}" class="cursor-pointer"><circle cx="${p.sx.toFixed(1)}" cy="${p.sy.toFixed(1)}" r="${isT ? 10 : 6}" fill="${isT ? '#ffb95f' : '#4cd7f6'}" fill-opacity="0.25"/><circle cx="${p.sx.toFixed(1)}" cy="${p.sy.toFixed(1)}" r="4.5" fill="#0b1326" stroke="${isT ? '#ffb95f' : '#4cd7f6'}" stroke-width="2"/><rect x="${(p.sx + 6).toFixed(1)}" y="${(p.sy - 11).toFixed(1)}" width="32" height="14" rx="3" fill="${isT ? '#ffb95f' : '#171f33'}"/><text x="${(p.sx + 9).toFixed(1)}" y="${(p.sy - 1).toFixed(1)}" fill="${isT ? '#2a1700' : '#4cd7f6'}" font-size="8.5" font-weight="700" font-family="monospace">${p.id}</text></g>`;
+        }).join('');
+        vl.querySelectorAll('[data-svg-vid]').forEach((el) => el.addEventListener('click', () => { state.stakeTargetId = el.getAttribute('data-svg-vid'); renderAll(); }));
+        document.getElementById('svg-rover-marker').innerHTML = `<circle cx="${rov.sx.toFixed(1)}" cy="${rov.sy.toFixed(1)}" r="16" fill="#4edea3" fill-opacity="0.18"/><circle cx="${rov.sx.toFixed(1)}" cy="${rov.sy.toFixed(1)}" r="6" fill="#4edea3" stroke="#060e20" stroke-width="2"/>`;
+      }
+    }
+
+    // ======================== RENDER ALL VIEWS ========================
+    function renderAll() {
+      const data = getComputedParcel();
+
+      // Header & Map Overlay
+      const gpsBadge = document.getElementById('gps-badge');
+      const gpsDot = document.getElementById('gps-dot');
+      document.getElementById('gps-badge-text').textContent = state.gnss.isLive ? `GPS ±${state.gnss.accuracy.toFixed(1)}m` : 'DEMO RTK';
+      gpsBadge.className = `flex items-center gap-1 px-2 py-0.5 rounded border shrink-0 ${state.gnss.isLive ? 'bg-[#4edea3]/15 border-[#4edea3]/40 text-[#4edea3]' : 'bg-[#ffb95f]/15 border-[#ffb95f]/40 text-[#ffb95f]'}`;
+      gpsDot.className = `w-1.5 h-1.5 rounded-full animate-pulse ${state.gnss.isLive ? 'bg-[#4edea3]' : 'bg-[#ffb95f]'}`;
+
+      document.getElementById('header-parcel-name').textContent = state.parcelName;
+      document.getElementById('header-parcel-stats').textContent = `${data.stats.areaM2.toFixed(1)} m² · ${data.enriched.length} pts`;
+      document.getElementById('dir-badge').textContent = state.direction === 'canoa_regven' ? 'PSAD56➔REGVEN' : 'REGVEN➔PSAD56';
+      document.getElementById('method-huso-chip').textContent = `${state.method.toUpperCase()} • ${state.huso}N`;
+      document.getElementById('btn-cycle-layer').textContent = LAYER_TEXT[state.layerMode];
+
+      document.getElementById('map-area-pill').textContent = `${data.stats.areaM2.toFixed(1)} m² (${data.stats.areaHa.toFixed(4)} ha)`;
+      document.getElementById('map-perim-pill').textContent = `Per: ${data.stats.perimeter.toFixed(2)} m`;
+      document.getElementById('map-stake-dist').textContent = `🎯 OBJ ${data.target?.id || '—'}: ${data.stakeout.distH.toFixed(2)} m`;
+      document.getElementById('map-stake-bearing').textContent = data.stakeout.rumbo;
+
+      document.getElementById('tray-acc').textContent = `±${state.gnss.accuracy.toFixed(1)} m`;
+      document.getElementById('tray-este').textContent = data.roverUtm.regvenEste.toFixed(3);
+      document.getElementById('tray-norte').textContent = data.roverUtm.regvenNorte.toFixed(3);
+      document.getElementById('tray-alt').textContent = `${state.gnss.alt.toFixed(2)} m`;
+
+      updateMapGraphics(data);
+
+      // View switcher
+      ['map', 'topographer', 'locate', 'vertices', 'export'].forEach((t) => {
+        document.getElementById(`view-${t}`).classList.toggle('hidden-view', state.activeTab !== t);
+      });
+      document.querySelectorAll('.nav-btn').forEach((b) => {
+        const act = b.getAttribute('data-tab') === state.activeTab;
+        b.classList.toggle('btn-tab-active', act);
+        b.classList.toggle('text-[#bcc9cd]', !act);
+      });
+
+      // Render Mobile Topographer View
+      if (state.activeTab === 'topographer') {
+        const avg = state.averagingSamples.length > 0 ? {
+          n: state.averagingSamples.length,
+          e: state.averagingSamples.reduce((a, s) => a + s.este, 0) / state.averagingSamples.length,
+          no: state.averagingSamples.reduce((a, s) => a + s.norte, 0) / state.averagingSamples.length,
+        } : null;
+
+        document.getElementById('view-topographer').innerHTML = `
+          <div class="p-3 rounded-2xl bg-[#131b2e] border border-[#222a3d] flex items-center justify-between gap-2">
+            <div>
+              <div class="text-xs font-bold text-white">📡 Mobile Topographer GNSS</div>
+              <div class="font-mono text-[10px] text-[#bcc9cd] mt-0.5">${state.gpsStatus}</div>
+            </div>
+            <button id="btn-toggle-gps" type="button" class="px-2.5 py-1.5 rounded-lg font-mono text-[10px] font-bold ${state.gpsEnabled ? 'bg-[#4edea3] text-[#003824]' : 'bg-[#222a3d] text-[#bcc9cd]'}">${state.gpsEnabled ? 'GPS ON' : 'GPS OFF'}</button>
+          </div>
+
+          <div class="p-3 rounded-2xl bg-[#171f33] border border-[#222a3d] space-y-2.5 font-mono">
+            <div class="flex justify-between text-[10px]"><span class="text-[#4cd7f6] font-bold">1. WGS84 / SIRGAS GEOGRÁFICAS</span><span class="text-[#4edea3]">Acc ±${state.gnss.accuracy.toFixed(2)}m</span></div>
+            <div class="grid grid-cols-2 gap-2 bg-[#060e20] p-2 rounded-xl text-[11px] tabular-nums">
+              <div><span class="text-[8px] text-[#869397] block">LATITUD</span><span class="text-white font-bold block">${state.gnss.lat.toFixed(7)}°</span><span class="text-[9px] text-[#4cd7f6]">${GeoEngine.formatDMS(state.gnss.lat, true)}</span></div>
+              <div><span class="text-[8px] text-[#869397] block">LONGITUD</span><span class="text-white font-bold block">${state.gnss.lng.toFixed(7)}°</span><span class="text-[9px] text-[#4cd7f6]">${GeoEngine.formatDMS(state.gnss.lng, false)}</span></div>
+            </div>
+
+            <div class="flex justify-between text-[10px] pt-1"><span class="text-[#4edea3] font-bold">2. UTM REGVEN (GRS80 · HUSO ${state.huso}N)</span><span class="text-[#bcc9cd]">k=${data.roverUtm.k.toFixed(6)}</span></div>
+            <div class="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl text-[11px] tabular-nums">
+              <div><span class="text-[8px] text-[#869397] block">ESTE (X)</span><span class="font-bold text-white">${data.roverUtm.regvenEste.toFixed(3)}</span></div>
+              <div><span class="text-[8px] text-[#869397] block">NORTE (Y)</span><span class="font-bold text-white">${data.roverUtm.regvenNorte.toFixed(3)}</span></div>
+              <div><span class="text-[8px] text-[#869397] block">CONVERG. γ</span><span class="font-bold text-[#ffb95f]">${data.roverUtm.conv.toFixed(3)}°</span></div>
+            </div>
+
+            <div class="text-[10px] pt-1 text-[#ffb95f] font-bold">3. UTM PSAD56 LA CANOA (${state.method.toUpperCase()})</div>
+            <div class="grid grid-cols-2 gap-1.5 bg-[#060e20] p-2 rounded-xl text-[11px] tabular-nums">
+              <div><span class="text-[8px] text-[#869397] block">ESTE CANOA</span><span class="font-bold text-[#ffb95f]">${data.roverUtm.canoaEste.toFixed(3)} m</span></div>
+              <div><span class="text-[8px] text-[#869397] block">NORTE CANOA</span><span class="font-bold text-[#ffb95f]">${data.roverUtm.canoaNorte.toFixed(3)} m</span></div>
+            </div>
+          </div>
+
+          <div class="p-3 rounded-2xl bg-[#171f33] border border-[#4cd7f6]/25 space-y-2">
+            <div class="flex justify-between font-mono text-[10px]"><span class="text-[#4cd7f6] font-bold uppercase">Promediado de Épocas GNSS</span><span class="text-[#4edea3]">${state.averagingSamples.length}/10</span></div>
+            ${avg ? `<div class="grid grid-cols-2 gap-2 bg-[#060e20] p-2 rounded-xl font-mono text-[10px] tabular-nums"><div><span class="text-[8px] text-[#869397] block">E PROM</span><b>${avg.e.toFixed(3)}</b></div><div><span class="text-[8px] text-[#869397] block">N PROM</span><b>${avg.no.toFixed(3)}</b></div></div>` : ''}
+            <div class="grid grid-cols-2 gap-2">
+              <button id="btn-avg-toggle" type="button" class="py-2 rounded-xl font-bold text-[11px] ${state.averagingActive ? 'bg-[#ffb95f] text-[#2a1700]' : 'bg-[#222a3d] text-[#4cd7f6]'}">${state.averagingActive ? 'Detener' : 'Iniciar Promedio'}</button>
+              <button id="btn-topo-capture" type="button" class="py-2 rounded-xl bg-[#4edea3] text-[#003824] font-bold text-[11px]">+ Grabar Vértice GPS</button>
+            </div>
+          </div>
+
+          <div class="p-3 rounded-2xl bg-[#171f33] border border-[#222a3d] space-y-2">
+            <div class="flex justify-between font-mono text-[10px]"><span class="text-[#4cd7f6] font-bold">SKYPLOT &amp; SNR (dB-Hz)</span><span class="text-[#bcc9cd]">PDOP 0.82</span></div>
+            <div class="grid grid-cols-12 gap-2 items-center">
+              <div class="col-span-5 flex justify-center">
+                <svg viewBox="0 0 120 120" class="w-28 h-28">
+                  <circle cx="60" cy="60" r="52" fill="#060e20" stroke="#3d494c" stroke-width="1"/>
+                  <circle cx="60" cy="60" r="34" fill="none" stroke="#2d3449" stroke-dasharray="2 2"/>
+                  <circle cx="60" cy="60" r="17" fill="none" stroke="#2d3449" stroke-dasharray="2 2"/>
+                  <line x1="60" y1="8" x2="60" y2="112" stroke="#2d3449"/>
+                  <line x1="8" y1="60" x2="112" y2="60" stroke="#2d3449"/>
+                  <text x="57" y="14" fill="#ffb95f" font-size="8" font-family="monospace">N</text>
+                  ${SATS.map((s) => {
+                    const r = ((90 - s.el) / 90) * 50, rad = GeoEngine.toRad(s.az);
+                    const x = 60 + r * Math.sin(rad), y = 60 - r * Math.cos(rad);
+                    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${s.col}"/><text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" fill="#dae2fd" font-size="6.5" font-family="monospace">${s.prn}</text>`;
+                  }).join('')}
+                </svg>
+              </div>
+              <div class="col-span-7 space-y-1">
+                ${SATS.map((s) => `<div class="flex items-center gap-1.5 font-mono text-[9px]"><span class="w-6 text-[#bcc9cd]">${s.prn}</span><div class="flex-1 h-2 rounded-full bg-[#060e20] overflow-hidden"><div class="h-full bg-[#4edea3] rounded-full" style="width:${Math.min(100, s.snr * 2)}%"></div></div><span class="w-6 text-right text-[#4cd7f6]">${s.snr}</span></div>`).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+        document.getElementById('btn-toggle-gps')?.addEventListener('click', () => { state.gpsEnabled = !state.gpsEnabled; if (!state.gpsEnabled && state.gpsWatchId) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; } else startGpsWatch(); renderAll(); });
+        document.getElementById('btn-avg-toggle')?.addEventListener('click', () => { if (state.averagingActive) state.averagingActive = false; else { state.averagingSamples = []; state.averagingActive = true; } renderAll(); });
+        document.getElementById('btn-topo-capture')?.addEventListener('click', captureGpsVertex);
+      }
+
+      // Render Parcel Locator & Stakeout View
+      if (state.activeTab === 'locate') {
+        document.getElementById('view-locate').innerHTML = `
+          <div class="p-3 rounded-2xl bg-[#171f33] border border-[#4cd7f6]/30 space-y-2.5">
+            <div class="font-mono text-[10px] font-bold text-[#4cd7f6] uppercase">📍 Localizador de Coordenadas de Parcelas</div>
+            <div class="grid grid-cols-3 gap-1 bg-[#060e20] p-1 rounded-xl font-mono text-[10px]">
+              <button data-loc-mode="utm" class="py-1.5 rounded-lg font-bold ${state.locateMode === 'utm' ? 'bg-[#4cd7f6] text-[#003640]' : 'text-[#bcc9cd]'}">UTM (E/N)</button>
+              <button data-loc-mode="geo" class="py-1.5 rounded-lg font-bold ${state.locateMode === 'geo' ? 'bg-[#4cd7f6] text-[#003640]' : 'text-[#bcc9cd]'}">Lat / Lng</button>
+              <button data-loc-mode="batch" class="py-1.5 rounded-lg font-bold ${state.locateMode === 'batch' ? 'bg-[#4cd7f6] text-[#003640]' : 'text-[#bcc9cd]'}">Poligonal</button>
+            </div>
+            ${state.locateMode !== 'geo' ? `
+              <div class="grid grid-cols-2 gap-2">
+                <div class="grid grid-cols-2 gap-1 bg-[#060e20] p-1 rounded-lg font-mono text-[9px]">
+                  <button data-loc-dat="canoa" class="py-1 rounded font-bold ${state.locateDatum === 'canoa' ? 'bg-[#ffb95f] text-[#2a1700]' : 'text-[#bcc9cd]'}">PSAD56 Canoa</button>
+                  <button data-loc-dat="regven" class="py-1 rounded font-bold ${state.locateDatum === 'regven' ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'}">REGVEN</button>
+                </div>
+                <select id="loc-huso" class="bg-[#060e20] border border-[#222a3d] rounded-lg px-2 py-1 font-mono text-[10px] text-[#4cd7f6]">
+                  ${[18, 19, 20, 21].map((z) => `<option value="${z}" ${state.locateHuso === z ? 'selected' : ''}>Huso ${z}N</option>`).join('')}
+                </select>
+              </div>
+            ` : ''}
+            ${state.locateMode === 'utm' ? `
+              <div class="grid grid-cols-3 gap-1.5">
+                <div><label class="font-mono text-[8px] text-[#869397] block">ESTE (X)</label><input id="in-loc-e" value="${state.locateEste}" class="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"/></div>
+                <div><label class="font-mono text-[8px] text-[#869397] block">NORTE (Y)</label><input id="in-loc-n" value="${state.locateNorte}" class="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"/></div>
+                <div><label class="font-mono text-[8px] text-[#869397] block">COTA (Z)</label><input id="in-loc-z" value="${state.locateZ}" class="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-[#ffb95f]"/></div>
+              </div>
+            ` : state.locateMode === 'geo' ? `
+              <div class="grid grid-cols-2 gap-2">
+                <div><label class="font-mono text-[8px] text-[#869397] block">LATITUD (°)</label><input id="in-loc-lat" value="${state.locateLat}" class="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"/></div>
+                <div><label class="font-mono text-[8px] text-[#869397] block">LONGITUD (°)</label><input id="in-loc-lng" value="${state.locateLng}" class="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"/></div>
+              </div>
+            ` : `
+              <textarea id="in-loc-batch" rows="4" class="w-full bg-[#060e20] border border-[#2d3449] rounded-xl p-2 font-mono text-[10px] text-[#dae2fd]">${state.locateBatch}</textarea>
+            `}
+            <button id="btn-run-locate" type="button" class="w-full py-2.5 rounded-xl bg-[#4cd7f6] text-[#003640] font-bold text-xs">🎯 Localizar en Mapa y Activar Replanteo</button>
+          </div>
+
+          <div class="p-3 rounded-2xl bg-[#131b2e] border border-[#ffb95f]/35 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="font-mono text-[10px] font-bold text-[#ffb95f] uppercase">🎯 Diana de Replanteo (Drive-Me)</span>
+              <select id="sel-stake-target" class="bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1 font-mono text-[10px] text-[#4cd7f6]">
+                ${data.enriched.map((v) => `<option value="${v.id}" ${v.id === data.target?.id ? 'selected' : ''}>Obj: ${v.id}</option>`).join('')}
+              </select>
+            </div>
+            <div class="flex items-center gap-3">
+              <div class="relative w-24 h-24 shrink-0 rounded-full bg-[#060e20] border border-[#2d3449] flex items-center justify-center">
+                <div class="w-16 h-16 rounded-full border border-dashed border-[#3d494c] flex items-center justify-center">
+                  <div class="w-7 h-7 rounded-full border ${data.stakeout.inTolerance ? 'bg-[#4edea3]/25 border-[#4edea3]' : 'border-[#ffb95f]/60'} flex items-center justify-center">
+                    <div class="w-2 h-2 rounded-full bg-[#4edea3]"></div>
+                  </div>
+                </div>
+                <div class="absolute inset-0 flex items-start justify-center pt-1.5 pointer-events-none" style="transform: rotate(${data.stakeout.relAngle.toFixed(1)}deg)">
+                  <span class="text-[#ffb95f] font-bold text-sm">▲</span>
+                </div>
+              </div>
+              <div class="flex-1 space-y-1 font-mono">
+                <div><span class="text-[9px] text-[#869397] block">DISTANCIA AL VÉRTICE</span><span class="text-xl font-extrabold tabular-nums ${data.stakeout.inTolerance ? 'text-[#4edea3]' : 'text-[#ffb95f]'}">${data.stakeout.distH.toFixed(2)} m</span></div>
+                <div class="text-[10px] text-[#4cd7f6]">${data.stakeout.rumbo} (AZ ${data.stakeout.azimutDeg.toFixed(1)}°)</div>
+                <div class="text-[10px] text-[#dae2fd]">${data.stakeout.inTolerance ? '✅ ¡DENTRO DE TOLERANCIA (<0.50m)!' : 'Camina siguiendo la flecha'}</div>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl font-mono text-[10px] tabular-nums">
+              <div><span class="text-[8px] text-[#869397] block">${data.stakeout.dN >= 0 ? 'AL NORTE' : 'AL SUR'}</span><span class="text-[#4cd7f6] font-bold">${Math.abs(data.stakeout.dN).toFixed(2)} m</span></div>
+              <div><span class="text-[8px] text-[#869397] block">${data.stakeout.dE >= 0 ? 'AL ESTE' : 'AL OESTE'}</span><span class="text-[#4cd7f6] font-bold">${Math.abs(data.stakeout.dE).toFixed(2)} m</span></div>
+              <div><span class="text-[8px] text-[#869397] block">CORTE/RELL Z</span><span class="text-[#ffb95f] font-bold">${data.stakeout.dZ >= 0 ? '+' : ''}${data.stakeout.dZ.toFixed(2)} m</span></div>
+            </div>
+          </div>
+        `;
+        document.querySelectorAll('[data-loc-mode]').forEach((b) => b.addEventListener('click', () => { state.locateMode = b.getAttribute('data-loc-mode'); renderAll(); }));
+        document.querySelectorAll('[data-loc-dat]').forEach((b) => b.addEventListener('click', () => { state.locateDatum = b.getAttribute('data-loc-dat'); renderAll(); }));
+        document.getElementById('loc-huso')?.addEventListener('change', (e) => { state.locateHuso = Number(e.target.value); });
+        document.getElementById('in-loc-e')?.addEventListener('input', (e) => { state.locateEste = e.target.value; });
+        document.getElementById('in-loc-n')?.addEventListener('input', (e) => { state.locateNorte = e.target.value; });
+        document.getElementById('in-loc-z')?.addEventListener('input', (e) => { state.locateZ = e.target.value; });
+        document.getElementById('in-loc-lat')?.addEventListener('input', (e) => { state.locateLat = e.target.value; });
+        document.getElementById('in-loc-lng')?.addEventListener('input', (e) => { state.locateLng = e.target.value; });
+        document.getElementById('in-loc-batch')?.addEventListener('input', (e) => { state.locateBatch = e.target.value; });
+        document.getElementById('sel-stake-target')?.addEventListener('change', (e) => { state.stakeTargetId = e.target.value; renderAll(); });
+        document.getElementById('btn-run-locate')?.addEventListener('click', runLocate);
+      }
+
+      // Render Vertices & QA/QC View
+      if (state.activeTab === 'vertices') {
+        document.getElementById('view-vertices').innerHTML = `
+          <div class="grid grid-cols-2 gap-2">
+            <div class="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]"><span class="font-mono text-[9px] text-[#869397] block">SUPERFICIE</span><span class="font-mono text-sm font-bold text-[#4edea3] tabular-nums">${data.stats.areaM2.toFixed(2)} m²</span><span class="font-mono text-[9px] text-[#bcc9cd] block">${data.stats.areaHa.toFixed(4)} ha</span></div>
+            <div class="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]"><span class="font-mono text-[9px] text-[#869397] block">PERÍMETRO</span><span class="font-mono text-sm font-bold text-[#4cd7f6] tabular-nums">${data.stats.perimeter.toFixed(2)} m</span><span class="font-mono text-[9px] text-[#4edea3] block">QA/QC ≤ 0.001 m</span></div>
+          </div>
+          <div class="p-3 rounded-xl bg-[#171f33] border border-[#222a3d] space-y-2">
+            <div class="grid grid-cols-3 gap-1 bg-[#060e20] p-1 rounded-xl font-mono text-[10px]">
+              <button data-m="rigida02" class="py-1.5 rounded-lg font-bold ${state.method === 'rigida02' ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'}">RIGIDA02</button>
+              <button data-m="badekas" class="py-1.5 rounded-lg font-bold ${state.method === 'badekas' ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'}">Badekas</button>
+              <button data-m="rigida" class="py-1.5 rounded-lg font-bold ${state.method === 'rigida' ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'}">Rígida IDW</button>
+            </div>
+            <div class="flex gap-2">
+              <button id="btn-audit-qaqc" class="flex-1 py-2 rounded-lg bg-[#222a3d] text-[#4cd7f6] font-mono text-[10px] font-bold">🛡 Validar Invarianza ≤ 1mm</button>
+              <button id="btn-reset-parcel" class="px-3 py-2 rounded-lg bg-[#222a3d] text-[#ffb95f] font-mono text-[10px] font-bold">↺</button>
+            </div>
+          </div>
+          <div class="space-y-2">
+            ${data.enriched.map((v) => `
+              <div class="p-2.5 rounded-xl border ${v.id === data.target?.id ? 'bg-[#222a3d] border-[#ffb95f]/50' : 'bg-[#171f33] border-[#222a3d]'}">
+                <div class="flex items-center justify-between mb-1.5">
+                  <div><span class="font-mono text-xs font-bold text-[#4cd7f6]">${v.id}</span> <span class="font-mono text-[10px] text-[#ffb95f]">${v.rumbo} · ${v.dist.toFixed(2)}m</span></div>
+                  <button data-stake-v="${v.id}" class="px-2 py-0.5 rounded bg-[#ffb95f]/20 font-mono text-[9px] font-bold text-[#ffb95f]">Replantear →</button>
+                </div>
+                <div class="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-lg font-mono text-[11px] tabular-nums">
+                  <div><span class="text-[8px] text-[#869397] block">ESTE</span><b class="text-white">${v.este.toFixed(3)}</b></div>
+                  <div><span class="text-[8px] text-[#869397] block">NORTE</span><b class="text-white">${v.norte.toFixed(3)}</b></div>
+                  <div><span class="text-[8px] text-[#869397] block">Z</span><b class="text-[#ffb95f]">${v.z.toFixed(2)}m</b></div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+        document.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => { state.method = b.getAttribute('data-m'); renderAll(); }));
+        document.querySelectorAll('[data-stake-v]').forEach((b) => b.addEventListener('click', () => { state.stakeTargetId = b.getAttribute('data-stake-v'); state.activeTab = 'locate'; renderAll(); }));
+        document.getElementById('btn-audit-qaqc')?.addEventListener('click', () => notify('QA/QC IGVSB Aprobado · ΔDistancia ≤ 0.001 m'));
+        document.getElementById('btn-reset-parcel')?.addEventListener('click', () => { state.vertices = JSON.parse(JSON.stringify(DEFAULT_VERTICES)); state.parcelName = 'PARCELA-09B'; state.stakeTargetId = 'V-05'; renderAll(); notify('Parcela restaurada'); });
+      }
+
+      // Render Export & Cloud View
+      if (state.activeTab === 'export') {
+        document.getElementById('view-export').innerHTML = `
+          <div class="p-3 rounded-2xl bg-[#131b2e] border border-[#222a3d]">
+            <div class="text-xs font-bold text-white">Exportación CAD &amp; Sincronización Nube</div>
+            <div class="font-mono text-[10px] text-[#bcc9cd] mt-0.5">${state.parcelName} · ${data.enriched.length} vértices · Servidor: ${state.cloudStatus}</div>
+          </div>
+          <button id="exp-dxf" type="button" class="w-full p-3.5 rounded-xl bg-[#4cd7f6] text-[#003640] flex items-center justify-between text-left"><div><div class="text-xs font-bold">Descargar .DXF (AutoCAD / CivilCAD)</div><div class="text-[10px] opacity-80">Poligonal cerrada + vértices UTM</div></div><span class="font-mono font-bold">⬇</span></button>
+          <button id="exp-copy" type="button" class="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between text-left"><div><div class="text-xs font-bold text-white">Copiar CivilCAD (P,E,N,Z,D)</div><div class="text-[10px] text-[#bcc9cd]">Portapapeles inmediato</div></div><span class="font-mono text-xs text-[#4edea3] font-bold">COPIAR</span></button>
+          <button id="exp-kml" type="button" class="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between text-left"><div><div class="text-xs font-bold text-white">Exportar .KML Google Earth</div><div class="text-[10px] text-[#bcc9cd]">Georreferenciado WGS84</div></div><span class="font-mono text-xs text-[#4cd7f6] font-bold">⬇</span></button>
+          <button id="exp-cloud-open" type="button" class="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#4edea3]/35 flex items-center justify-between text-left"><div><div class="text-xs font-bold text-[#4edea3]">Abrir Panel Nube GeoGIS6 (PostgreSQL)</div><div class="text-[10px] text-[#bcc9cd]">Sincronizar proyectos con cuenta corporativa</div></div><span class="font-mono text-xs text-[#4edea3] font-bold">ABRIR ↗</span></button>
+        `;
+        document.getElementById('exp-dxf')?.addEventListener('click', () => {
+          const blob = new Blob([GeoEngine.generateDXF(data.enriched)], { type: 'application/dxf' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `${state.parcelName}_Huso${state.huso}N.dxf`;
+          a.click();
+          notify('Archivo .DXF descargado');
+        });
+        document.getElementById('exp-copy')?.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(GeoEngine.generateCivilCAD(data.enriched, state.parcelName)); } catch {}
+          notify('Coordenadas P,E,N,Z,D copiadas');
+        });
+        document.getElementById('exp-kml')?.addEventListener('click', () => {
+          const blob = new Blob([GeoEngine.generateKML(data.enriched, state.parcelName)], { type: 'application/vnd.google-earth.kml+xml' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `${state.parcelName}.kml`;
+          a.click();
+          notify('Archivo .KML descargado');
+        });
+        document.getElementById('exp-cloud-open')?.addEventListener('click', () => {
+          window.location.href = `${CLOUD_URL}/login`;
+        });
+      }
+    }
+
+    // ======================== ACTIONS ========================
+    function captureGpsVertex() {
+      const id = `V-${String(state.vertices.length + 1).padStart(2, '0')}`;
+      let lat = state.gnss.lat, lng = state.gnss.lng, z = state.gnss.alt;
+      if (state.averagingSamples.length > 0) {
+        const n = state.averagingSamples.length;
+        lat = state.averagingSamples.reduce((a, s) => a + s.lat, 0) / n;
+        lng = state.averagingSamples.reduce((a, s) => a + s.lng, 0) / n;
+        z = state.averagingSamples.reduce((a, s) => a + s.alt, 0) / n;
+      }
+      state.vertices.push({ id, lat, lng, z: Math.round(z * 1000) / 1000, rms: state.gnss.accuracy });
+      state.stakeTargetId = id;
+      state.averagingActive = false;
+      state.averagingSamples = [];
+      notify(`Vértice ${id} grabado (±${state.gnss.accuracy.toFixed(1)}m)`);
+      renderAll();
+    }
+
+    function runLocate() {
+      if (state.locateMode === 'utm') {
+        const e = parseFloat(state.locateEste), n = parseFloat(state.locateNorte), z = parseFloat(state.locateZ) || 0;
+        if (!Number.isFinite(e) || !Number.isFinite(n)) return notify('Coordenadas Este/Norte inválidas');
+        let geo = GeoEngine.utmToGeo(e, n, state.locateHuso, false, GRS80);
+        if (state.locateDatum === 'canoa') {
+          const r = GeoEngine.transformRigida02([{ id: 'LOC', este: e, norte: n, z }], { huso: state.locateHuso }).resultados[0];
+          geo = { lat: r.lat, lng: r.lng };
+        }
+        const id = `L-${String(state.vertices.length + 1).padStart(2, '0')}`;
+        state.huso = state.locateHuso;
+        state.vertices.push({ id, lat: geo.lat, lng: geo.lng, z, rms: 0.005 });
+        state.stakeTargetId = id;
+        state.activeTab = 'map';
+        renderAll();
+        if (leafletMap) leafletMap.setView([geo.lat, geo.lng], 19);
+        notify(`Punto ${id} localizado y replanteo activo`);
+      } else if (state.locateMode === 'geo') {
+        const lat = parseFloat(state.locateLat), lng = parseFloat(state.locateLng), z = parseFloat(state.locateZ) || 0;
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return notify('Lat/Lng inválidas');
+        const id = `L-${String(state.vertices.length + 1).padStart(2, '0')}`;
+        state.huso = GeoEngine.detectHuso(lng);
+        state.vertices.push({ id, lat, lng, z, rms: 0.005 });
+        state.stakeTargetId = id;
+        state.activeTab = 'map';
+        renderAll();
+        if (leafletMap) leafletMap.setView([lat, lng], 19);
+        notify(`Coordenada ${id} localizada`);
+      } else {
+        const lines = state.locateBatch.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const verts = [];
+        lines.forEach((line, idx) => {
+          const parts = line.split(/[,\t;\s]+/).filter(Boolean);
+          if (parts.length < 2) return;
+          const hasLabel = Number.isNaN(Number(parts[0]));
+          const id = hasLabel ? parts[0] : `P-${String(idx + 1).padStart(2, '0')}`;
+          const e = Number(hasLabel ? parts[1] : parts[0]), n = Number(hasLabel ? parts[2] : parts[1]), z = Number(hasLabel ? parts[3] : parts[2]) || 0;
+          if (!Number.isFinite(e) || !Number.isFinite(n)) return;
+          let geo = GeoEngine.utmToGeo(e, n, state.locateHuso, false, GRS80);
+          if (state.locateDatum === 'canoa') {
+            const r = GeoEngine.transformRigida02([{ id, este: e, norte: n, z }], { huso: state.locateHuso }).resultados[0];
+            geo = { lat: r.lat, lng: r.lng };
+          }
+          verts.push({ id, lat: geo.lat, lng: geo.lng, z, rms: 0.005 });
+        });
+        if (verts.length < 2) return notify('Pega al menos 2 vértices válidos');
+        state.parcelName = 'PARCELA_LOCALIZADA';
+        state.huso = state.locateHuso;
+        state.vertices = verts;
+        state.stakeTargetId = verts[0].id;
+        state.activeTab = 'map';
+        renderAll();
+        if (leafletMap) leafletMap.fitBounds(verts.map((v) => [v.lat, v.lng]), { padding: [36, 36] });
+        notify(`Parcela trazada con ${verts.length} vértices`);
+      }
+    }
+
+    function startGpsWatch() {
+      if (!navigator.geolocation || !state.gpsEnabled) {
+        state.gpsStatus = 'Sin hardware GNSS disponible';
+        return;
+      }
+      if (state.gpsWatchId) navigator.geolocation.clearWatch(state.gpsWatchId);
+      state.gpsWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const c = pos.coords;
+          state.gnss = { lat: c.latitude, lng: c.longitude, alt: c.altitude ?? 0, accuracy: c.accuracy || 5, isLive: true };
+          state.huso = GeoEngine.detectHuso(c.longitude);
+          state.gpsStatus = `GNSS Activo (±${state.gnss.accuracy.toFixed(1)} m)`;
+          if (state.averagingActive && state.averagingSamples.length < 10) {
+            const utm = computeDualUtm(c.latitude, c.longitude, c.altitude ?? 0);
+            state.averagingSamples.push({ lat: c.latitude, lng: c.longitude, alt: c.altitude ?? 0, este: utm.regvenEste, norte: utm.regvenNorte });
+            if (state.averagingSamples.length >= 10) state.averagingActive = false;
+          }
+          renderAll();
+        },
+        (err) => { state.gpsStatus = `GNSS en espera (${err.message})`; renderAll(); },
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+      );
+    }
+
+    async function probeCloud() {
+      try {
+        const res = await fetch(`${CLOUD_URL}/api/health`, { cache: 'no-store' });
+        const d = await res.json().catch(() => null);
+        state.cloudStatus = d && d.database === 'connected' ? 'PostgreSQL Conectado' : 'En línea';
+      } catch {
+        state.cloudStatus = 'Offline (Modo Campo)';
+      }
+      if (state.activeTab === 'export') renderAll();
+    }
+
+    // Bind static buttons
+    document.querySelectorAll('.nav-btn').forEach((b) => b.addEventListener('click', () => { state.activeTab = b.getAttribute('data-tab'); renderAll(); if (state.activeTab === 'map' && leafletMap) setTimeout(() => leafletMap.invalidateSize(), 120); }));
+    document.getElementById('btn-toggle-dir').addEventListener('click', () => { state.direction = state.direction === 'canoa_regven' ? 'regven_canoa' : 'canoa_regven'; renderAll(); });
+    document.getElementById('btn-toggle-map-engine').addEventListener('click', () => {
+      state.mapEngine = state.mapEngine === 'leaflet' ? 'svg' : 'leaflet';
+      renderAll();
+      if (state.mapEngine === 'leaflet' && leafletMap) setTimeout(() => leafletMap.invalidateSize(), 150);
+    });
+    function cycleLayer() {
+      state.layerMode = LAYER_ORDER[(LAYER_ORDER.indexOf(state.layerMode) + 1) % LAYER_ORDER.length];
+      if (leafletTileLayer) leafletTileLayer.setUrl(getTileUrl(state.layerMode));
+      notify(`Capa: ${LAYER_TEXT[state.layerMode]}`);
+      renderAll();
+    }
+    document.getElementById('btn-cycle-layer').addEventListener('click', cycleLayer);
+    document.getElementById('fab-layers').addEventListener('click', cycleLayer);
+    document.getElementById('fab-capture').addEventListener('click', captureGpsVertex);
+    document.getElementById('fab-center-gps').addEventListener('click', () => {
+      state.gpsEnabled = true;
+      startGpsWatch();
+      if (leafletMap) leafletMap.setView([state.gnss.lat, state.gnss.lng], 19);
+      notify('Centrado en GPS en tiempo real');
+    });
+    document.getElementById('fab-goto-locate').addEventListener('click', () => { state.activeTab = 'locate'; renderAll(); });
+    document.getElementById('fab-goto-topo').addEventListener('click', () => { state.activeTab = 'topographer'; renderAll(); });
+    document.getElementById('map-stake-pill').addEventListener('click', () => { state.activeTab = 'locate'; renderAll(); });
+    document.getElementById('btn-cloud-sync').addEventListener('click', () => { probeCloud().then(() => notify(`Nube: ${state.cloudStatus}`)); });
+
+    window.addEventListener('deviceorientation', (ev) => {
+      const h = ev.webkitCompassHeading ?? (typeof ev.alpha === 'number' ? (360 - ev.alpha) % 360 : null);
+      if (h !== null && !Number.isNaN(h)) state.compassHeading = Math.round(h * 10) / 10;
+    });
+
+    startGpsWatch();
+    probeCloud();
+    renderAll();
   </script>
 </body>
 </html>

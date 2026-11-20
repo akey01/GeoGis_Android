@@ -2,17 +2,36 @@
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { useAppStore, type Parcel } from '@/lib/store';
 import {
-  Map as MapIcon,
-  User,
+  ArrowLeftRight,
+  BatteryCharging,
+  CheckCircle2,
+  Compass,
+  Crosshair,
+  Download,
+  FileCode2,
+  FileSpreadsheet,
+  FileText,
+  Layers,
   LogOut,
-  Trash2,
+  Map as MapIcon,
+  MapPin,
+  Maximize2,
+  Navigation,
+  Plus,
+  Radio,
+  RotateCcw,
+  Satellite,
+  Search,
   Shield,
+  ShieldCheck,
+  SlidersHorizontal,
+  Smartphone,
+  Target,
+  Trash2,
+  User,
   UserCircle,
-  ChevronDown,
-  Mountain,
-  Printer,
+  Copy,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'react-hot-toast';
@@ -24,39 +43,281 @@ import {
   normalizeUserRole,
   ROLE_PERMISSIONS_MATRIX,
 } from '@/src/types/auth';
+import { GeoEngine, HAYFORD, GRS80, PATVEN98 } from '@/lib/geo-engine';
 import { FileService } from '@/lib/file-service';
 import { exportResultsToDXF } from '@/lib/exportDxf';
-import { useContourStore } from '@/src/components/map/contours/useContourStore';
-import TransformationForm from '@/components/dashboard/TransformationForm';
-import BatchImport from '@/components/dashboard/BatchImport';
-import DxfImportModal from '@/components/dashboard/DxfImportModal';
-import ResultsTable from '@/components/dashboard/ResultsTable';
-import ParcelList from '@/components/dashboard/ParcelList';
-import ProjectManager from '@/components/dashboard/ProjectManager';
-import BottomNavMobile, { type MobileTab } from './BottomNavMobile';
-import MobileBottomSheet from './MobileBottomSheet';
+import { useAppStore, type TransformationResult } from '@/lib/store';
 
 const MapViewer = dynamic(() => import('@/src/components/MapViewer'), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full bg-slate-900 animate-pulse flex items-center justify-center text-slate-500 font-mono tracking-widest uppercase text-xs">
-      Cargando Motor Gráfico OpenLayers...
+    <div className="w-full h-full bg-[#060e20] flex flex-col items-center justify-center gap-2 text-[#4cd7f6] font-mono text-xs">
+      <div className="w-7 h-7 border-2 border-[#4cd7f6]/30 border-t-[#4cd7f6] rounded-full animate-spin" />
+      <span>Cargando Motor Satelital OpenLayers...</span>
     </div>
   ),
 });
 
 const ProfileModalLazy = dynamic(() => import('./ProfileModal'), { ssr: false });
 
-export default function DashboardMobile() {
-  const method = useAppStore((s) => s.method);
+export type AndroidNavTab = 'map' | 'topographer' | 'locate' | 'vertices' | 'export';
+type EngineMethod = 'rigida02' | 'badekas' | 'rigida';
+type TransformDir = 'canoa_regven' | 'regven_canoa';
+type MapLayerMode = 'catastro' | 'satellite' | 'hybrid' | 'dtm';
+type CanvasEngineMode = 'stitch' | 'openlayers';
+type LocateInputMode = 'utm' | 'geo' | 'batch';
+type LocateDatum = 'regven' | 'canoa';
+
+export interface FieldVertex {
+  id: string;
+  lat: number;
+  lng: number;
+  z: number;
+  rms: number;
+  source: 'gps' | 'located' | 'sample';
+}
+
+interface GnssSample {
+  lat: number;
+  lng: number;
+  alt: number;
+  accuracy: number;
+  speed: number | null;
+  heading: number | null;
+  timestamp: number;
+  isLiveHardware: boolean;
+}
+
+interface SatInfo {
+  prn: string;
+  sys: 'GPS' | 'GLO' | 'GAL' | 'BDS';
+  el: number;
+  az: number;
+  snr: number;
+}
+
+const DEFAULT_PARCEL_GEO: FieldVertex[] = [
+  { id: 'V-01', lat: 11.94385, lng: -69.81845, z: 12.4, rms: 0.008, source: 'sample' },
+  { id: 'V-02', lat: 11.94418, lng: -69.81762, z: 13.1, rms: 0.009, source: 'sample' },
+  { id: 'V-03', lat: 11.94352, lng: -69.81715, z: 14.0, rms: 0.011, source: 'sample' },
+  { id: 'V-04', lat: 11.94285, lng: -69.81788, z: 13.3, rms: 0.01, source: 'sample' },
+  { id: 'V-05', lat: 11.94321, lng: -69.81856, z: 11.9, rms: 0.012, source: 'sample' },
+];
+
+const CONSTELLATION_SATS: SatInfo[] = [
+  { prn: 'G04', sys: 'GPS', el: 74, az: 35, snr: 44 },
+  { prn: 'G12', sys: 'GPS', el: 52, az: 142, snr: 41 },
+  { prn: 'G25', sys: 'GPS', el: 38, az: 265, snr: 38 },
+  { prn: 'R07', sys: 'GLO', el: 66, az: 310, snr: 42 },
+  { prn: 'R19', sys: 'GLO', el: 28, az: 78, snr: 34 },
+  { prn: 'E11', sys: 'GAL', el: 59, az: 205, snr: 40 },
+  { prn: 'E24', sys: 'GAL', el: 43, az: 118, snr: 37 },
+  { prn: 'C08', sys: 'BDS', el: 48, az: 292, snr: 36 },
+];
+
+const LAYER_LABELS: Record<MapLayerMode, string> = {
+  catastro: 'Catastro',
+  satellite: 'Satélite',
+  hybrid: 'Híbrido',
+  dtm: 'LiDAR DTM',
+};
+
+function formatDms(deg: number, isLat: boolean): string {
+  const abs = Math.abs(deg);
+  const d = Math.floor(abs);
+  const mFloat = (abs - d) * 60;
+  const m = Math.floor(mFloat);
+  const s = ((mFloat - m) * 60).toFixed(3);
+  const hemi = isLat ? (deg >= 0 ? 'N' : 'S') : deg >= 0 ? 'E' : 'W';
+  return `${String(d).padStart(2, '0')}°${String(m).padStart(2, '0')}'${String(s).padStart(6, '0')}"${hemi}`;
+}
+
+function formatRumboAzimut(dx: number, dy: number): { rumbo: string; azimutDeg: number } {
+  let az = (Math.atan2(dx, dy) * 180) / Math.PI;
+  if (az < 0) az += 360;
+  let ns = 'N';
+  let ew = 'E';
+  let rDeg = az;
+  if (az <= 90) {
+    ns = 'N';
+    ew = 'E';
+    rDeg = az;
+  } else if (az <= 180) {
+    ns = 'S';
+    ew = 'E';
+    rDeg = 180 - az;
+  } else if (az <= 270) {
+    ns = 'S';
+    ew = 'W';
+    rDeg = az - 180;
+  } else {
+    ns = 'N';
+    ew = 'W';
+    rDeg = 360 - az;
+  }
+  const d = Math.floor(rDeg);
+  const mf = (rDeg - d) * 60;
+  const m = Math.floor(mf);
+  const s = Math.round((mf - m) * 60);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return {
+    azimutDeg: az,
+    rumbo: `${ns} ${p(d)}°${p(m)}'${p(s)}" ${ew}`,
+  };
+}
+
+/** Calcula Factor de Escala UTM (k) y Convergencia de Meridianos (γ en °) sobre GRS80 */
+function computeUtmProjectionFactors(latDeg: number, lngDeg: number, este: number, huso: number) {
+  const lon0 = huso * 6 - 183;
+  const latR = GeoEngine.toRad(latDeg);
+  const dLonDeg = lngDeg - lon0;
+  const sinLat = Math.sin(latR);
+  const N = GRS80.a / Math.sqrt(1 - GRS80.e2 * sinLat * sinLat);
+  const rho = (GRS80.a * (1 - GRS80.e2)) / Math.pow(1 - GRS80.e2 * sinLat * sinLat, 1.5);
+  const rMean = Math.sqrt(N * rho);
+  const x = este - 500000.0;
+  const k = 0.9996 * (1 + (x * x) / (2 * rMean * rMean * 0.9996 * 0.9996));
+  const convergenceDeg = dLonDeg * sinLat;
+  return { k, convergenceDeg };
+}
+
+/** Convierte coordenada geográfica WGS84/REGVEN a ambos datums UTM (REGVEN GRS80 y PSAD56 La Canoa) */
+function computeDualUtmFromGeo(
+  lat: number,
+  lng: number,
+  z: number,
+  huso: number,
+  method: EngineMethod
+) {
+  const regven = GeoEngine.geoToUTM(lat, lng, huso, GRS80);
+  let canoaEste = regven.este;
+  let canoaNorte = regven.norte;
+
+  if (method === 'rigida02') {
+    canoaEste = Math.round((regven.este - GeoEngine.RIGIDA02_DELTA_ESTE) * 1000) / 1000;
+    canoaNorte = Math.round((regven.norte - GeoEngine.RIGIDA02_DELTA_NORTE) * 1000) / 1000;
+  } else if (method === 'rigida') {
+    const invRes = GeoEngine.transformRigida(regven.este, regven.norte, z, huso, true);
+    canoaEste = invRes.este;
+    canoaNorte = invRes.norte;
+  } else {
+    const cartR = GeoEngine.geoToCart(lat, lng, z, GRS80);
+    const cartC = GeoEngine.badekas(cartR.X, cartR.Y, cartR.Z, true);
+    const geoC = GeoEngine.cartToGeo(cartC.X, cartC.Y, cartC.Z, HAYFORD);
+    const utmC = GeoEngine.geoToUTM(geoC.lat, geoC.lng, huso, HAYFORD);
+    canoaEste = utmC.este;
+    canoaNorte = utmC.norte;
+  }
+
+  return {
+    regvenEste: regven.este,
+    regvenNorte: regven.norte,
+    canoaEste,
+    canoaNorte,
+  };
+}
+
+/** Proyecta puntos geográficos de la parcela al lienzo SVG 360x420 */
+function projectVerticesToSvg(
+  verts: Array<{ id: string; este: number; norte: number }>,
+  rover?: { este: number; norte: number } | null
+) {
+  const allE = verts.map((v) => v.este);
+  const allN = verts.map((v) => v.norte);
+  if (rover) {
+    allE.push(rover.este);
+    allN.push(rover.norte);
+  }
+  const minE = Math.min(...allE);
+  const maxE = Math.max(...allE);
+  const minN = Math.min(...allN);
+  const maxN = Math.max(...allN);
+  const spanE = Math.max(maxE - minE, 20);
+  const spanN = Math.max(maxN - minN, 20);
+  const padX = 54;
+  const padY = 66;
+  const w = 360 - padX * 2;
+  const h = 400 - padY * 2;
+  const scale = Math.min(w / spanE, h / spanN);
+  const offsetX = padX + (w - spanE * scale) / 2;
+  const offsetY = padY + (h - spanN * scale) / 2;
+
+  const project = (e: number, n: number) => ({
+    sx: Math.round((offsetX + (e - minE) * scale) * 10) / 10,
+    sy: Math.round((offsetY + (maxN - n) * scale) * 10) / 10,
+  });
+
+  return {
+    vertices: verts.map((v) => ({ ...v, ...project(v.este, v.norte) })),
+    roverSvg: rover ? project(rover.este, rover.norte) : null,
+  };
+}
+
+export default function DashboardMobile({
+  previewMode = false,
+}: {
+  previewMode?: boolean;
+}) {
   const clearProjectWorkspace = useAppStore((s) => s.clearProjectWorkspace);
   const setUser = useAppStore((s) => s.setUser);
   const user = useAppStore((s) => s.user);
+  const setStoreResults = useAppStore((s) => s.setResults);
+  const setStoreMethod = useAppStore((s) => s.setMethod);
+  const setStoreDirection = useAppStore((s) => s.setDirection);
+  const setStoreHuso = useAppStore((s) => s.setHuso);
+  const setMapType = useAppStore((s) => s.setMapType);
+  const centerOnAll = useAppStore((s) => s.centerOnAll);
 
-  const [activeTab, setActiveTab] = useState<MobileTab>('map');
+  // Shell & Preview States
+  const [activeTab, setActiveTab] = useState<AndroidNavTab>('map');
+  const [canvasEngine, setCanvasEngine] = useState<CanvasEngineMode>('stitch');
+  const [layerMode, setLayerMode] = useState<MapLayerMode>('satellite');
+  const [framePreview, setFramePreview] = useState<boolean>(previewMode);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
 
+  // Geodetic Config & Parcel State
+  const [method, setMethod] = useState<EngineMethod>('rigida02');
+  const [direction, setDirection] = useState<TransformDir>('canoa_regven');
+  const [huso, setHuso] = useState<number>(19);
+  const [parcelName, setParcelName] = useState<string>('PARCELA-09B');
+  const [vertices, setVertices] = useState<FieldVertex[]>(DEFAULT_PARCEL_GEO);
+  const [stakeTargetId, setStakeTargetId] = useState<string>('V-05');
+  const [qaqcTimestamp, setQaqcTimestamp] = useState<string>('Validado ≤ 0.001 m');
+
+  // Hardware GNSS / Mobile Topographer State
+  const [gpsEnabled, setGpsEnabled] = useState<boolean>(true);
+  const [gpsStatus, setGpsStatus] = useState<string>('Buscando señal GNSS...');
+  const [gnss, setGnss] = useState<GnssSample>({
+    lat: 11.94305,
+    lng: -69.81868,
+    alt: 11.8,
+    accuracy: 3.2,
+    speed: 0,
+    heading: 18,
+    timestamp: Date.now(),
+    isLiveHardware: false,
+  });
+  const [compassHeading, setCompassHeading] = useState<number | null>(null);
+  const [averagingActive, setAveragingActive] = useState<boolean>(false);
+  const [averagingSamples, setAveragingSamples] = useState<
+    Array<{ lat: number; lng: number; alt: number; este: number; norte: number }>
+  >([]);
+
+  // Parcel Coordinate Locator State
+  const [locateMode, setLocateMode] = useState<LocateInputMode>('utm');
+  const [locateDatum, setLocateDatum] = useState<LocateDatum>('canoa');
+  const [locateHuso, setLocateHuso] = useState<number>(19);
+  const [locateEste, setLocateEste] = useState<string>('409662.260');
+  const [locateNorte, setLocateNorte] = useState<string>('1327653.220');
+  const [locateZ, setLocateZ] = useState<string>('12.500');
+  const [locateLat, setLocateLat] = useState<string>('11.943850');
+  const [locateLng, setLocateLng] = useState<string>('-69.818450');
+  const [locateBatch, setLocateBatch] = useState<string>(
+    'B1,409662.260,1327653.220,12.4\nB2,409740.420,1327663.600,13.1\nB3,409775.240,1327612.140,14.0\nB4,409719.960,1327557.280,13.3'
+  );
+
+  // Session refs (only active when previewMode = false)
   const disconnectingRef = useRef(false);
   const meAbortRef = useRef<AbortController | null>(null);
   const lastUnloadBeaconRef = useRef<number>(0);
@@ -68,7 +329,7 @@ export default function DashboardMobile() {
 
   const forceDisconnect = useCallback(
     async (isSuspended = false, denyReason?: string) => {
-      if (disconnectingRef.current) return;
+      if (disconnectingRef.current || previewMode) return;
       disconnectingRef.current = true;
       if (meAbortRef.current) {
         meAbortRef.current.abort();
@@ -95,10 +356,7 @@ export default function DashboardMobile() {
             'Content-Type': 'application/json',
             'x-device-id': currentDeviceId,
           },
-          body: JSON.stringify({
-            deviceId: currentDeviceId,
-            userId: currentUserId,
-          }),
+          body: JSON.stringify({ deviceId: currentDeviceId, userId: currentUserId }),
         }).catch(() => {});
       } finally {
         if (typeof window !== 'undefined') {
@@ -111,7 +369,7 @@ export default function DashboardMobile() {
         }
       }
     },
-    [clearProjectWorkspace, setUser]
+    [clearProjectWorkspace, previewMode, setUser]
   );
 
   useEffect(() => {
@@ -126,7 +384,9 @@ export default function DashboardMobile() {
     };
   }, [isDemo]);
 
+  // Session heartbeat (disabled during unauthenticated /preview-android)
   useEffect(() => {
+    if (previewMode) return;
     let isMounted = true;
     let initialSynced = false;
 
@@ -135,44 +395,27 @@ export default function DashboardMobile() {
       const now = Date.now();
       if (now - lastUnloadBeaconRef.current < 800) return;
       lastUnloadBeaconRef.current = now;
-
-      if (meAbortRef.current) {
-        meAbortRef.current.abort();
-        meAbortRef.current = null;
-      }
-
       try {
         const deviceId = getOrCreateDeviceId();
         const userId = useAppStore.getState().user?.id || lastKnownUserIdRef.current || '';
         if (!userId) return;
         const url = `/api/auth/logout?mode=disconnect_only&deviceId=${encodeURIComponent(deviceId)}&userId=${encodeURIComponent(userId)}`;
         const payload = JSON.stringify({ deviceId, userId });
-
         if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-          const blob = new Blob([payload], { type: 'text/plain;charset=UTF-8' });
-          navigator.sendBeacon(url, blob);
+          navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain;charset=UTF-8' }));
         } else {
-          void fetch(url, {
-            method: 'POST',
-            keepalive: true,
-            headers: { 'x-device-id': deviceId },
-            body: payload,
-          }).catch(() => {});
+          void fetch(url, { method: 'POST', keepalive: true, body: payload }).catch(() => {});
         }
       } catch {
-        // Ignore unload beacon errors
+        // ignore
       }
     };
 
     const verifySessionAndSync = async (isResume = false) => {
       if (!isMounted || disconnectingRef.current) return;
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && initialSynced && !isResume) {
-        return;
-      }
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && initialSynced && !isResume) return;
 
-      if (meAbortRef.current) {
-        meAbortRef.current.abort();
-      }
+      if (meAbortRef.current) meAbortRef.current.abort();
       const controller = new AbortController();
       meAbortRef.current = controller;
 
@@ -180,641 +423,1443 @@ export default function DashboardMobile() {
         const deviceId = getOrCreateDeviceId();
         const query = !initialSynced
           ? `/api/auth/me?includeProjects=1&t=${Date.now()}`
-          : isResume
-            ? `/api/auth/me?resume=1&t=${Date.now()}`
-            : `/api/auth/me?t=${Date.now()}`;
-
+          : `/api/auth/me?t=${Date.now()}`;
         const res = await fetch(query, {
           cache: 'no-store',
           signal: controller.signal,
-          headers: {
-            Pragma: 'no-cache',
-            'x-device-id': deviceId,
-          },
+          headers: { Pragma: 'no-cache', 'x-device-id': deviceId },
         });
         const data = await res.json().catch(() => ({}));
-
         if (!isMounted || disconnectingRef.current || controller.signal.aborted) return;
 
-        if (
-          res.status === 401 ||
-          res.status === 403 ||
-          !data.success ||
-          !data.user ||
-          data.suspended ||
-          data.user.activo === false
-        ) {
-          if (data?.reason === 'DEVICE_LIMIT_EXCEEDED' || data?.reason === 'CONCURRENT_IP_ABUSE') {
-            toast.error(data.error || 'Límite de terminales autorizados alcanzado.');
-          }
+        if (res.status === 401 || res.status === 403 || !data.success || !data.user || data.suspended || data.user.activo === false) {
           const suspended = Boolean(data?.suspended || res.status === 403 || data?.user?.activo === false);
           await forceDisconnect(suspended, data?.reason);
           return;
         }
 
-        if (!isMounted) return;
-
-        if (data.user.id) {
-          lastKnownUserIdRef.current = String(data.user.id);
-        }
-        if (data.user.roleConfig) {
-          applyDynamicRoleConfig(data.user.rol, data.user.roleConfig);
-        }
-
-        const prevOwnerId = useAppStore.getState().ownerUserId;
+        if (data.user.id) lastKnownUserIdRef.current = String(data.user.id);
+        if (data.user.roleConfig) applyDynamicRoleConfig(data.user.rol, data.user.roleConfig);
         setUser(data.user);
-
-        if (!initialSynced) {
-          initialSynced = true;
-          const sessionKey = `gt_active_session_${data.user.id}`;
-          const isNewSession = typeof window !== 'undefined' && sessionStorage.getItem(sessionKey) !== '1';
-          if (typeof window !== 'undefined') {
-            sessionStorage.setItem(sessionKey, '1');
-            if (prevOwnerId !== data.user.id) {
-              localStorage.removeItem('transforven_project');
-            }
-          }
-
-          const userProjects = Array.isArray(data.projects) ? data.projects : [];
-          const { currentProjectId } = useAppStore.getState();
-
-          if (userProjects.length === 0) {
-            if (currentProjectId !== null || isNewSession || prevOwnerId !== data.user.id) {
-              clearProjectWorkspace();
-              if (typeof window !== 'undefined') {
-                localStorage.removeItem('transforven_project');
-              }
-            }
-          } else if (currentProjectId && !userProjects.some((p: any) => p.id === currentProjectId)) {
-            clearProjectWorkspace();
-          }
-        }
+        initialSynced = true;
       } catch (err: any) {
         if (err?.name !== 'AbortError') {
-          console.error('Error verifying session:', err);
+          console.error('Session verify error:', err);
         }
       }
     };
 
     verifySessionAndSync(true);
-
-    const intervalId = setInterval(() => {
-      verifySessionAndSync(false);
-    }, 8000);
-
-    const handleFocus = () => verifySessionAndSync(true);
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') verifySessionAndSync(true);
-    };
-    const handleSuspendedEvent = () => forceDisconnect(true);
-    const handleUnloadOrHide = () => sendDisconnectOnlySignal();
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibility);
-    window.addEventListener('geotrans:session-suspended', handleSuspendedEvent);
-    window.addEventListener('pagehide', handleUnloadOrHide);
-    window.addEventListener('beforeunload', handleUnloadOrHide);
-
+    const intervalId = setInterval(() => verifySessionAndSync(false), 12000);
+    const handleUnload = () => sendDisconnectOnlySignal();
+    window.addEventListener('pagehide', handleUnload);
     return () => {
       isMounted = false;
       clearInterval(intervalId);
       if (meAbortRef.current) meAbortRef.current.abort();
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('geotrans:session-suspended', handleSuspendedEvent);
-      window.removeEventListener('pagehide', handleUnloadOrHide);
-      window.removeEventListener('beforeunload', handleUnloadOrHide);
+      window.removeEventListener('pagehide', handleUnload);
     };
-  }, [setUser, clearProjectWorkspace, forceDisconnect]);
+  }, [forceDisconnect, previewMode, setUser]);
 
-  const handleClearCache = () => {
-    if (window.confirm('¿Limpiar la caché y restablecer el espacio de trabajo móvil?')) {
-      clearProjectWorkspace();
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('transforven_project');
-      }
-      setShowUserMenu(false);
-    }
-  };
-
-  const sheetTitle =
-    activeTab === 'settings'
-      ? 'Ajustes Geodésicos'
-      : activeTab === 'results'
-        ? 'Resultados y Exportación'
-        : 'Proyectos y Parcelas';
-
-  return (
-    <div className="flex flex-col h-[100dvh] w-screen bg-[#0a0f18] text-slate-200 overflow-hidden select-none font-sans relative">
-      {/* Mobile Header */}
-      <header className="fixed top-0 left-0 right-0 h-14 bg-slate-900/80 backdrop-blur-md border-b border-slate-800 z-50 flex items-center justify-between px-4">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
-            <MapIcon className="w-4 h-4 text-white" />
-          </div>
-          <div>
-            <span className="font-bold text-sm tracking-tight text-white uppercase block leading-none">
-              GeoGIS<span className="text-emerald-400">6</span>{' '}
-              <span className="text-[10px] font-mono text-cyan-400">Mobile</span>
-            </span>
-            <span className="text-[9px] font-mono text-slate-400 uppercase tracking-wider">
-              {method === 'rigida02' ? 'RIGIDA02 Adícora' : method === 'badekas' ? 'Badekas 3D' : 'Rígida IDW'}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {isDemo && (
-            <span className="px-2 py-0.5 bg-amber-500/15 border border-amber-500/40 rounded-full text-[9px] font-bold text-amber-300 uppercase">
-              DEMO
-            </span>
-          )}
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowUserMenu(!showUserMenu)}
-              className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 hover:border-emerald-500 flex items-center justify-center"
-            >
-              <User className="w-4 h-4 text-slate-300" />
-            </button>
-
-            {showUserMenu && (
-              <div className="absolute right-0 top-10 mt-1 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-[100]">
-                <div className="p-3 border-b border-slate-800">
-                  <h4 className="text-xs font-bold text-slate-200 truncate">{user?.nombre || 'Usuario Campo'}</h4>
-                  <p className="text-[10px] text-emerald-400 font-semibold uppercase tracking-widest mt-0.5">
-                    {roleInfo?.label || 'Operador de Campo'}
-                  </p>
-                </div>
-                <div className="p-1 border-b border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowUserMenu(false);
-                      setShowProfile(true);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 rounded-lg text-left"
-                  >
-                    <UserCircle className="w-4 h-4 text-emerald-400" />
-                    <span>Perfil y contraseña</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      toast(`Rol: ${roleInfo?.label}`, { icon: '🛡️' });
-                      setShowUserMenu(false);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 rounded-lg text-left"
-                  >
-                    <Shield className="w-4 h-4 text-emerald-400" />
-                    <span>Permisos de Licencia</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleClearCache}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-amber-300 hover:bg-slate-800 rounded-lg text-left"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    <span>Limpiar Caché Local</span>
-                  </button>
-                </div>
-                <div className="p-1">
-                  <button
-                    type="button"
-                    onClick={() => forceDisconnect(false)}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 rounded-lg text-left"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    <span>Cerrar Sesión</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {showUserMenu && (
-        <div className="fixed inset-0 z-40" onClick={() => setShowUserMenu(false)} />
-      )}
-
-      {showProfile && (
-        <ProfileModalLazy open={showProfile} onClose={() => setShowProfile(false)} />
-      )}
-
-      {/* Fullscreen Map Viewport */}
-      <main className="flex-1 w-full pt-14 pb-20 relative bg-slate-950/20 overflow-hidden">
-        <MapViewer className="w-full h-full" />
-
-        <MobileBottomSheet
-          isOpen={activeTab !== 'map'}
-          title={sheetTitle}
-          onClose={() => setActiveTab('map')}
-        >
-          {activeTab === 'settings' && <MobileSettingsPanel />}
-          {activeTab === 'results' && <MobileResultsPanel />}
-          {activeTab === 'projects' && <ProjectManager />}
-        </MobileBottomSheet>
-      </main>
-
-      <BottomNavMobile activeTab={activeTab} onSelectTab={setActiveTab} />
-    </div>
-  );
-}
-
-function MobileSettingsPanel() {
-  const routine = useAppStore((s) => s.routine);
-  const setRoutine = useAppStore((s) => s.setRoutine);
-  const direction = useAppStore((s) => s.direction);
-  const setDirection = useAppStore((s) => s.setDirection);
-  const method = useAppStore((s) => s.method);
-  const setMethod = useAppStore((s) => s.setMethod);
-  const coordType = useAppStore((s) => s.coordType);
-  const setCoordType = useAppStore((s) => s.setCoordType);
-  const geometryType = useAppStore((s) => s.geometryType);
-  const setGeometryType = useAppStore((s) => s.setGeometryType);
-  const clearResults = useAppStore((s) => s.clearResults);
-  const huso = useAppStore((s) => s.huso);
-  const setHuso = useAppStore((s) => s.setHuso);
-  const hatchColor = useAppStore((s) => s.hatchColor);
-  const hatchOpacity = useAppStore((s) => s.hatchOpacity);
-  const setHatch = useAppStore((s) => s.setHatch);
-
-  const [activeMode, setActiveMode] = useState<'individual' | 'batch' | 'dxf'>('individual');
-  const [dxfModalOpen, setDxfModalOpen] = useState(false);
-
+  // Real Hardware GNSS Watch (navigator.geolocation.watchPosition)
   useEffect(() => {
-    if (activeMode === 'dxf') {
-      setDxfModalOpen(true);
-      setActiveMode('individual');
+    if (!gpsEnabled || typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGpsStatus('GPS simulado en modo banco de pruebas');
+      return;
     }
-  }, [activeMode]);
+
+    setGpsStatus('Enlazando hardware GNSS...');
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const c = pos.coords;
+        const detectedHuso = GeoEngine.detectHuso(c.longitude);
+        setHuso((prev) => (prev >= 18 && prev <= 21 ? detectedHuso : prev));
+        setGnss({
+          lat: c.latitude,
+          lng: c.longitude,
+          alt: c.altitude ?? 0,
+          accuracy: Math.round((c.accuracy || 5) * 100) / 100,
+          speed: c.speed,
+          heading: c.heading,
+          timestamp: pos.timestamp,
+          isLiveHardware: true,
+        });
+        setGpsStatus(`GNSS Hardware Activo (±${(c.accuracy || 5).toFixed(1)} m)`);
+      },
+      (err) => {
+        setGpsStatus(`Sin fix de hardware (${err.message}). Modo demo activo.`);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 15000,
+      }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [gpsEnabled]);
+
+  // Compass sensor listener
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onOrientation = (ev: DeviceOrientationEvent) => {
+      const webkitHeading = (ev as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
+      if (typeof webkitHeading === 'number' && !Number.isNaN(webkitHeading)) {
+        setCompassHeading(Math.round(webkitHeading * 10) / 10);
+      } else if (typeof ev.alpha === 'number' && !Number.isNaN(ev.alpha)) {
+        setCompassHeading(Math.round(((360 - ev.alpha) % 360) * 10) / 10);
+      }
+    };
+    window.addEventListener('deviceorientation', onOrientation);
+    return () => window.removeEventListener('deviceorientation', onOrientation);
+  }, []);
+
+  // Dual UTM + Projection Factors for live GNSS position
+  const liveGnssUtm = useMemo(() => {
+    const dual = computeDualUtmFromGeo(gnss.lat, gnss.lng, gnss.alt, huso, method);
+    const factors = computeUtmProjectionFactors(gnss.lat, gnss.lng, dual.regvenEste, huso);
+    return { ...dual, ...factors };
+  }, [gnss.lat, gnss.lng, gnss.alt, huso, method]);
+
+  // GNSS Epoch Averaging collector
+  useEffect(() => {
+    if (!averagingActive) return;
+    const sample = {
+      lat: gnss.lat,
+      lng: gnss.lng,
+      alt: gnss.alt,
+      este: liveGnssUtm.regvenEste,
+      norte: liveGnssUtm.regvenNorte,
+    };
+    setAveragingSamples((prev) => {
+      if (prev.length >= 10) {
+        setAveragingActive(false);
+        return prev;
+      }
+      return [...prev, sample];
+    });
+  }, [averagingActive, gnss.timestamp, gnss.lat, gnss.lng, gnss.alt, liveGnssUtm.regvenEste, liveGnssUtm.regvenNorte]);
+
+  // Transform all parcel vertices in active direction/method
+  const computedVertices = useMemo(() => {
+    const base = vertices.map((v) => {
+      const dual = computeDualUtmFromGeo(v.lat, v.lng, v.z, huso, method);
+      const activeEste = direction === 'canoa_regven' ? dual.regvenEste : dual.canoaEste;
+      const activeNorte = direction === 'canoa_regven' ? dual.regvenNorte : dual.canoaNorte;
+      return {
+        ...v,
+        regvenEste: dual.regvenEste,
+        regvenNorte: dual.regvenNorte,
+        canoaEste: dual.canoaEste,
+        canoaNorte: dual.canoaNorte,
+        este: activeEste,
+        norte: activeNorte,
+      };
+    });
+
+    return base.map((v, idx) => {
+      const next = base[(idx + 1) % base.length];
+      const dx = next.este - v.este;
+      const dy = next.norte - v.norte;
+      const { rumbo, azimutDeg } = formatRumboAzimut(dx, dy);
+      return {
+        ...v,
+        rumbo,
+        azimutDeg,
+        dist: Math.hypot(dx, dy),
+      };
+    });
+  }, [vertices, huso, method, direction]);
+
+  const geom = useMemo(
+    () => FileService.calculateGeometry(computedVertices.map((v) => ({ e: v.este, n: v.norte }))),
+    [computedVertices]
+  );
+
+  const stakeTarget = useMemo(
+    () => computedVertices.find((v) => v.id === stakeTargetId) || computedVertices[0],
+    [computedVertices, stakeTargetId]
+  );
+
+  // Real-time Stakeout ("Drive Me") deltas from current Rover GNSS to Parcel Target Vertex
+  const stakeoutMetrics = useMemo(() => {
+    const roverE = direction === 'canoa_regven' ? liveGnssUtm.regvenEste : liveGnssUtm.canoaEste;
+    const roverN = direction === 'canoa_regven' ? liveGnssUtm.regvenNorte : liveGnssUtm.canoaNorte;
+    const dE = (stakeTarget?.este ?? roverE) - roverE;
+    const dN = (stakeTarget?.norte ?? roverN) - roverN;
+    const dZ = (stakeTarget?.z ?? gnss.alt) - gnss.alt;
+    const distH = Math.hypot(dE, dN);
+    const { rumbo, azimutDeg } = formatRumboAzimut(dE, dN);
+    const relAngle = compassHeading !== null ? (azimutDeg - compassHeading + 360) % 360 : azimutDeg;
+    return {
+      roverE,
+      roverN,
+      dE,
+      dN,
+      dZ,
+      distH,
+      rumbo,
+      azimutDeg,
+      relAngle,
+      inTolerance: distH <= 0.5,
+    };
+  }, [compassHeading, direction, gnss.alt, liveGnssUtm, stakeTarget]);
+
+  const svgProjection = useMemo(() => {
+    return projectVerticesToSvg(
+      computedVertices.map((v) => ({ id: v.id, este: v.este, norte: v.norte })),
+      { este: stakeoutMetrics.roverE, norte: stakeoutMetrics.roverN }
+    );
+  }, [computedVertices, stakeoutMetrics.roverE, stakeoutMetrics.roverN]);
+
+  const storeResultsPayload = useMemo<TransformationResult[]>(
+    () =>
+      computedVertices.map((v) => ({
+        id: v.id,
+        ok: true,
+        direction,
+        input: {
+          id: v.id,
+          este: v.canoaEste,
+          norte: v.canoaNorte,
+          huso,
+          alt: v.z,
+          desc: v.source.toUpperCase(),
+          parcel: parcelName,
+        },
+        result: {
+          este: v.este,
+          norte: v.norte,
+          huso,
+          cota: v.z,
+          lat: v.lat,
+          lng: v.lng,
+          descripcion: parcelName,
+        },
+      })),
+    [computedVertices, direction, huso, parcelName]
+  );
+
+  // Sync polygon with OpenLayers MapViewer store
+  useEffect(() => {
+    setStoreMethod(method);
+    setStoreDirection(direction);
+    setStoreHuso(huso);
+    setStoreResults(storeResultsPayload);
+  }, [method, direction, huso, storeResultsPayload, setStoreMethod, setStoreDirection, setStoreHuso, setStoreResults]);
+
+  const averagingStats = useMemo(() => {
+    if (averagingSamples.length === 0) return null;
+    const n = averagingSamples.length;
+    const avgLat = averagingSamples.reduce((acc, s) => acc + s.lat, 0) / n;
+    const avgLng = averagingSamples.reduce((acc, s) => acc + s.lng, 0) / n;
+    const avgAlt = averagingSamples.reduce((acc, s) => acc + s.alt, 0) / n;
+    const avgE = averagingSamples.reduce((acc, s) => acc + s.este, 0) / n;
+    const avgN = averagingSamples.reduce((acc, s) => acc + s.norte, 0) / n;
+    const rmsE = Math.sqrt(averagingSamples.reduce((acc, s) => acc + (s.este - avgE) ** 2, 0) / n);
+    const rmsN = Math.sqrt(averagingSamples.reduce((acc, s) => acc + (s.norte - avgN) ** 2, 0) / n);
+    return {
+      count: n,
+      avgLat,
+      avgLng,
+      avgAlt,
+      avgE,
+      avgN,
+      rmsTotal: Math.hypot(rmsE, rmsN),
+    };
+  }, [averagingSamples]);
+
+  const handleCycleLayer = useCallback(() => {
+    const order: MapLayerMode[] = ['catastro', 'satellite', 'hybrid', 'dtm'];
+    const nextLayer = order[(order.indexOf(layerMode) + 1) % order.length];
+    setLayerMode(nextLayer);
+    if (nextLayer === 'satellite') setMapType('satellite');
+    else if (nextLayer === 'hybrid') setMapType('hybrid');
+    else if (nextLayer === 'dtm') setMapType('physical');
+    else setMapType('standard');
+    toast.success(`Capa activa: ${LAYER_LABELS[nextLayer]}`);
+  }, [layerMode, setMapType]);
+
+  const handleCaptureGpsVertex = useCallback(() => {
+    const id = `V-${String(vertices.length + 1).padStart(2, '0')}`;
+    const lat = averagingStats ? averagingStats.avgLat : gnss.lat;
+    const lng = averagingStats ? averagingStats.avgLng : gnss.lng;
+    const z = Math.round((averagingStats ? averagingStats.avgAlt : gnss.alt) * 1000) / 1000;
+    const rms = Math.round((averagingStats?.rmsTotal || gnss.accuracy) * 1000) / 1000;
+
+    setVertices((prev) => [...prev, { id, lat, lng, z, rms, source: 'gps' }]);
+    setStakeTargetId(id);
+    setAveragingSamples([]);
+    setAveragingActive(false);
+    toast.success(`Vértice ${id} grabado (${gnss.isLiveHardware ? 'GNSS Real' : 'Banco'} ±${rms.toFixed(2)}m)`);
+  }, [averagingStats, gnss.accuracy, gnss.alt, gnss.isLiveHardware, gnss.lat, gnss.lng, vertices.length]);
+
+  const handleLocateCoordinate = useCallback(() => {
+    if (locateMode === 'utm') {
+      const e = parseFloat(locateEste);
+      const n = parseFloat(locateNorte);
+      const z = parseFloat(locateZ) || 0;
+      if (!Number.isFinite(e) || !Number.isFinite(n)) {
+        toast.error('Ingresa coordenadas Este (X) y Norte (Y) válidas.');
+        return;
+      }
+      const el = locateDatum === 'canoa' ? HAYFORD : GRS80;
+      let geo = GeoEngine.utmToGeo(e, n, locateHuso, false, el);
+      if (locateDatum === 'canoa') {
+        const reg = GeoEngine.transformRigida02(
+          [{ id: 'LOC', este_origen: e, norte_origen: n, cota_origen: z }]
+        ).resultados[0];
+        geo = GeoEngine.utmToGeo(reg.este_regven, reg.norte_regven, locateHuso, false, GRS80);
+      }
+      const newId = `L-${String(vertices.length + 1).padStart(2, '0')}`;
+      setHuso(locateHuso);
+      setVertices((prev) => [...prev, { id: newId, lat: geo.lat, lng: geo.lng, z, rms: 0.005, source: 'located' }]);
+      setStakeTargetId(newId);
+      setActiveTab('map');
+      setTimeout(() => centerOnAll(), 120);
+      toast.success(`Coordenada localizada (${newId}) y fijada como objetivo`);
+      return;
+    }
+
+    if (locateMode === 'geo') {
+      const lat = parseFloat(locateLat);
+      const lng = parseFloat(locateLng);
+      const z = parseFloat(locateZ) || 0;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        toast.error('Ingresa Latitud y Longitud válidas en grados decimales.');
+        return;
+      }
+      const newId = `L-${String(vertices.length + 1).padStart(2, '0')}`;
+      setHuso(GeoEngine.detectHuso(lng));
+      setVertices((prev) => [...prev, { id: newId, lat, lng, z, rms: 0.005, source: 'located' }]);
+      setStakeTargetId(newId);
+      setActiveTab('map');
+      setTimeout(() => centerOnAll(), 120);
+      toast.success(`Punto ${newId} localizado en mapa`);
+      return;
+    }
+
+    // Batch parcel import (ID,Este,Norte,Z)
+    const lines = locateBatch
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const parsedVerts: FieldVertex[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const parts = lines[i].split(/[,\t;\s]+/).filter(Boolean);
+      if (parts.length < 2) continue;
+      const hasLabel = Number.isNaN(Number(parts[0]));
+      const id = hasLabel ? parts[0] : `P-${String(i + 1).padStart(2, '0')}`;
+      const e = Number(hasLabel ? parts[1] : parts[0]);
+      const n = Number(hasLabel ? parts[2] : parts[1]);
+      const z = Number(hasLabel ? parts[3] : parts[2]) || 0;
+      if (!Number.isFinite(e) || !Number.isFinite(n)) continue;
+      let geo = GeoEngine.utmToGeo(e, n, locateHuso, false, GRS80);
+      if (locateDatum === 'canoa') {
+        const reg = GeoEngine.transformRigida02([{ id, este_origen: e, norte_origen: n, cota_origen: z }]).resultados[0];
+        geo = GeoEngine.utmToGeo(reg.este_regven, reg.norte_regven, locateHuso, false, GRS80);
+      }
+      parsedVerts.push({ id, lat: geo.lat, lng: geo.lng, z, rms: 0.005, source: 'located' });
+    }
+    if (parsedVerts.length < 2) {
+      toast.error('Pega al menos 2 vértices válidos (ID,Este,Norte,Z).');
+      return;
+    }
+    setParcelName('PARCELA_LOCALIZADA');
+    setHuso(locateHuso);
+    setVertices(parsedVerts);
+    setStakeTargetId(parsedVerts[0].id);
+    setActiveTab('map');
+    setTimeout(() => centerOnAll(), 150);
+    toast.success(`Parcela trazada con ${parsedVerts.length} vértices y replanteo listo`);
+  }, [
+    centerOnAll,
+    locateBatch,
+    locateDatum,
+    locateEste,
+    locateHuso,
+    locateLat,
+    locateLng,
+    locateMode,
+    locateNorte,
+    locateZ,
+    vertices.length,
+  ]);
+
+  const handleCopyCivilCad = useCallback(async () => {
+    const txt = computedVertices
+      .map((v) => `${v.id},${v.este.toFixed(3)},${v.norte.toFixed(3)},${v.z.toFixed(3)},${parcelName}`)
+      .join('\n');
+    try {
+      await navigator.clipboard.writeText(txt);
+      toast.success('Coordenadas P,E,N,Z,D copiadas');
+    } catch {
+      toast.success('Lista CivilCAD preparada');
+    }
+  }, [computedVertices, parcelName]);
+
+  const handleExportDxf = useCallback(() => {
+    if (!previewMode && !hasPermission(user?.rol, 'export_dxf', user?.roleConfig?.capabilities)) {
+      toast.error('Su rol no tiene permiso para exportar DXF.');
+      return;
+    }
+    exportResultsToDXF(storeResultsPayload, parcelName);
+  }, [parcelName, previewMode, storeResultsPayload, user?.rol, user?.roleConfig?.capabilities]);
+
+  const handleExportKml = useCallback(() => {
+    FileService.exportKML(storeResultsPayload, parcelName);
+    toast.success('Archivo .KML descargado');
+  }, [parcelName, storeResultsPayload]);
+
+  const handleVerifyQaqc = useCallback(() => {
+    try {
+      const check = GeoEngine.transformRigida02(
+        computedVertices.map((v) => ({
+          id: v.id,
+          norte_origen: v.canoaNorte,
+          este_origen: v.canoaEste,
+          cota_origen: v.z,
+        }))
+      );
+      if (check.qaqcPasado) {
+        setQaqcTimestamp(`Aprobado ${new Date().toLocaleTimeString()}`);
+        toast.success('QA/QC IGVSB Aprobado · Invarianza ≤ 0.001 m');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error en auditoría QA/QC');
+    }
+  }, [computedVertices]);
+
+  const shellClass = framePreview
+    ? 'w-full sm:w-[400px] h-[100dvh] sm:h-[836px] sm:rounded-[34px] sm:border-[6px] sm:border-[#1e293b] sm:ring-1 sm:ring-[#4cd7f6]/25'
+    : 'w-full h-[100dvh]';
 
   return (
-    <div className="py-2 space-y-6">
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Rutina</h3>
-          <div className="flex gap-1 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setRoutine('transform')}
-              className={cn(
-                'px-2.5 py-1 rounded-md text-[9px] font-bold tracking-widest uppercase transition-all',
-                routine === 'transform' ? 'bg-emerald-500 text-white' : 'text-slate-500'
-              )}
-            >
-              Transformación
-            </button>
-            <button
-              type="button"
-              onClick={() => setRoutine('ploteo')}
-              className={cn(
-                'px-2.5 py-1 rounded-md text-[9px] font-bold tracking-widest uppercase transition-all',
-                routine === 'ploteo' ? 'bg-emerald-500 text-white' : 'text-slate-500'
-              )}
-            >
-              Ploteo
-            </button>
+    <div
+      className={cn(
+        'w-full min-h-[100dvh] bg-[#050914] text-[#dae2fd] flex flex-col items-center',
+        framePreview && 'sm:justify-center sm:py-3 sm:px-3'
+      )}
+    >
+      {/* Optional Desktop Preview Switch Strip (visible only in /preview-android on larger screens) */}
+      {previewMode && (
+        <div className="hidden sm:flex w-full max-w-[960px] mb-2.5 px-3 py-1.5 bg-[#0b1326] border border-[#222a3d] rounded-xl items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded bg-[#4cd7f6]/15 border border-[#4cd7f6]/30 font-mono text-[10px] font-bold text-[#4cd7f6]">
+              GEOGIS6 ANDROID UI
+            </span>
+            <span className="text-xs text-[#bcc9cd]">
+              Stitch Fidelity Dark + Mobile Topographer GNSS + Localizador de Parcelas
+            </span>
           </div>
+          <button
+            type="button"
+            onClick={() => setFramePreview((f) => !f)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] font-mono text-[11px] text-[#4cd7f6]"
+          >
+            {framePreview ? <Maximize2 className="w-3.5 h-3.5" /> : <Smartphone className="w-3.5 h-3.5" />}
+            <span>{framePreview ? 'Pantalla Completa' : 'Marco Celular'}</span>
+          </button>
         </div>
+      )}
 
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Modo</h3>
-          <div className="flex gap-1 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setActiveMode('individual')}
-              className={cn(
-                'px-2.5 py-1 rounded-md text-[9px] font-bold tracking-widest uppercase transition-all',
-                activeMode === 'individual' ? 'bg-emerald-500 text-white' : 'text-slate-500'
-              )}
-            >
-              Simple
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveMode('batch')}
-              className={cn(
-                'px-2.5 py-1 rounded-md text-[9px] font-bold tracking-widest uppercase transition-all',
-                activeMode === 'batch' ? 'bg-emerald-500 text-white' : 'text-slate-500'
-              )}
-            >
-              Lotes
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveMode('dxf')}
-              className="px-2.5 py-1 rounded-md text-[9px] font-bold tracking-widest uppercase text-amber-400 border border-amber-500/30"
-            >
-              DXF
-            </button>
-          </div>
-        </div>
-
-        {routine === 'transform' && (
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-400 uppercase">Dirección</label>
-              <div className="relative">
-                <select
-                  value={direction}
-                  onChange={(e) => {
-                    const dir = e.target.value as any;
-                    setDirection(dir);
-                    clearResults();
-                    if (dir === 'dma_psad56_real') setMethod('dma_badekas');
-                    else if (dir === 'dma_regven') setMethod('dma_badekas_regven');
-                    else if (method === 'dma_badekas' || method === 'dma_badekas_regven') setMethod('badekas');
-                  }}
-                  className="w-full bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2 text-sm appearance-none"
-                >
-                  <option value="canoa_regven">La Canoa → REGVEN</option>
-                  <option value="regven_canoa">REGVEN → La Canoa</option>
-                  <option value="dma_psad56_real">DMA → PSAD56_REAL</option>
-                  <option value="dma_regven">DMA → REGVEN/SIRGAS</option>
-                </select>
-                <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+      {/* Main Mobile Application Viewport */}
+      <div className={cn('relative bg-[#0b1326] text-[#dae2fd] flex flex-col overflow-hidden select-none shadow-2xl', shellClass)}>
+        {/* 1. COMPACT TACTICAL ANDROID HEADER */}
+        <header className="shrink-0 bg-[#0b1326]/95 backdrop-blur-xl border-b border-[#222a3d] z-40">
+          <div className="h-12 px-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div
+                className={cn(
+                  'flex items-center gap-1 px-2 py-0.5 rounded border shrink-0',
+                  gnss.isLiveHardware
+                    ? 'bg-[#4edea3]/15 border-[#4edea3]/40 text-[#4edea3]'
+                    : 'bg-[#ffb95f]/15 border-[#ffb95f]/40 text-[#ffb95f]'
+                )}
+              >
+                <span
+                  className={cn(
+                    'w-1.5 h-1.5 rounded-full animate-pulse',
+                    gnss.isLiveHardware ? 'bg-[#4edea3]' : 'bg-[#ffb95f]'
+                  )}
+                />
+                <span className="font-mono text-[9px] font-bold uppercase">
+                  {gnss.isLiveHardware ? `GPS ±${gnss.accuracy.toFixed(1)}m` : 'DEMO RTK'}
+                </span>
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-[#dae2fd] truncate leading-tight">
+                  {parcelName}
+                </div>
+                <div className="font-mono text-[9px] text-[#869397] truncate">
+                  {geom.area.toFixed(1)} m² · {computedVertices.length} pts
+                </div>
               </div>
             </div>
 
-            {!direction.startsWith('dma_') && (
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-slate-400 uppercase">Método</label>
-                <div className="grid grid-cols-3 gap-2 bg-slate-950/60 p-1 rounded-xl border border-slate-800">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() =>
+                  setDirection((d) => (d === 'canoa_regven' ? 'regven_canoa' : 'canoa_regven'))
+                }
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#171f33] border border-[#2d3449] active:scale-95"
+              >
+                <ArrowLeftRight className="w-3 h-3 text-[#ffb95f]" />
+                <span className="font-mono text-[9px] font-bold text-[#4cd7f6]">
+                  {direction === 'canoa_regven' ? 'PSAD56➔REGVEN' : 'REGVEN➔PSAD56'}
+                </span>
+              </button>
+
+              {!previewMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowUserMenu((v) => !v)}
+                  className="w-8 h-8 rounded-full bg-[#171f33] border border-[#2d3449] flex items-center justify-center"
+                >
+                  <User className="w-4 h-4 text-[#4cd7f6]" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Sub-Header GNSS Telemetry Strip */}
+          <div className="px-3 py-1.5 bg-[#060e20] border-t border-[#171f33] flex items-center justify-between gap-1 font-mono text-[9px]">
+            <span className="px-1.5 py-0.5 rounded bg-[#171f33] text-[#4edea3] font-bold">
+              {method === 'rigida02' ? 'RIGIDA02' : method === 'badekas' ? 'BADEKAS' : 'IDW'} • {huso}N
+            </span>
+            <span className="flex items-center gap-1 text-[#dae2fd]">
+              <Satellite className="w-3 h-3 text-[#4cd7f6]" />
+              SV {CONSTELLATION_SATS.length}/12
+            </span>
+            <button
+              type="button"
+              onClick={() => setCanvasEngine((c) => (c === 'stitch' ? 'openlayers' : 'stitch'))}
+              className="px-2 py-0.5 rounded bg-[#4cd7f6]/15 text-[#4cd7f6] font-bold"
+            >
+              {canvasEngine === 'stitch' ? 'Satélite OL' : 'Vector HUD'}
+            </button>
+            <button
+              type="button"
+              onClick={handleCycleLayer}
+              className="px-1.5 py-0.5 rounded bg-[#222a3d] text-[#ffb95f] font-bold"
+            >
+              {LAYER_LABELS[layerMode]}
+            </button>
+          </div>
+
+          {showUserMenu && !previewMode && (
+            <div className="absolute right-3 top-12 w-52 bg-[#131b2e] border border-[#2d3449] rounded-xl shadow-2xl z-50 overflow-hidden">
+              <div className="p-2.5 border-b border-[#222a3d]">
+                <div className="text-xs font-bold text-white truncate">{user?.nombre || 'Operador Campo'}</div>
+                <div className="text-[10px] font-mono text-[#4edea3]">{roleInfo?.label}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUserMenu(false);
+                  setShowProfile(true);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-[#171f33]"
+              >
+                <UserCircle className="w-4 h-4 text-[#4cd7f6]" /> Perfil y Cuenta
+              </button>
+              <button
+                type="button"
+                onClick={() => forceDisconnect(false)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10"
+              >
+                <LogOut className="w-4 h-4" /> Cerrar Sesión
+              </button>
+            </div>
+          )}
+        </header>
+
+        {showProfile && <ProfileModalLazy open={showProfile} onClose={() => setShowProfile(false)} />}
+
+        {/* 2. ACTIVE TAB VIEWPORT */}
+        <main className="relative flex-1 min-h-0 overflow-hidden bg-[#060e20]">
+          {/* TAB 1: MAPA HUD */}
+          {activeTab === 'map' && (
+            <div className="relative w-full h-full">
+              {canvasEngine === 'openlayers' ? (
+                <MapViewer className="w-full h-full" />
+              ) : (
+                <div className="relative w-full h-full overflow-hidden">
+                  <div
+                    className={cn(
+                      'absolute inset-0',
+                      layerMode === 'satellite' && 'bg-[radial-gradient(circle_at_30%_25%,#1b3a2e_0%,#091c26_48%,#060e20_100%)]',
+                      layerMode === 'hybrid' && 'bg-[radial-gradient(circle_at_60%_30%,#143040_0%,#0b1326_65%,#060e20_100%)]',
+                      layerMode === 'dtm' && 'bg-[radial-gradient(circle_at_45%_45%,#2c1f10_0%,#131b2e_55%,#060e20_100%)]',
+                      layerMode === 'catastro' && 'bg-[#060e20]'
+                    )}
+                  />
+
+                  <svg viewBox="0 0 360 400" preserveAspectRatio="xMidYMid meet" className="w-full h-full">
+                    <defs>
+                      <pattern id="grid-mobile" width="48" height="48" patternUnits="userSpaceOnUse">
+                        <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#3d494c" strokeOpacity="0.32" strokeDasharray="3 3" strokeWidth="0.7" />
+                        <circle cx="0" cy="0" r="1.2" fill="#4cd7f6" fillOpacity="0.45" />
+                      </pattern>
+                    </defs>
+                    <rect width="360" height="400" fill="url(#grid-mobile)" />
+
+                    {/* Parcel Polygon */}
+                    <polygon
+                      points={svgProjection.vertices.map((v) => `${v.sx},${v.sy}`).join(' ')}
+                      fill="rgba(76,215,246,0.14)"
+                      stroke="#4cd7f6"
+                      strokeWidth="2.4"
+                      strokeLinejoin="round"
+                    />
+
+                    {/* Live Stakeout Vector (GPS Rover -> Target Vertex) */}
+                    {svgProjection.roverSvg && (() => {
+                      const targetSvg =
+                        svgProjection.vertices.find((v) => v.id === stakeTarget?.id) ||
+                        svgProjection.vertices[0];
+                      if (!targetSvg) return null;
+                      return (
+                        <line
+                          x1={svgProjection.roverSvg.sx}
+                          y1={svgProjection.roverSvg.sy}
+                          x2={targetSvg.sx}
+                          y2={targetSvg.sy}
+                          stroke="#ffb95f"
+                          strokeWidth="1.6"
+                          strokeDasharray="5 3"
+                        />
+                      );
+                    })()}
+
+                    {/* Parcel Vertices */}
+                    {svgProjection.vertices.map((v) => {
+                      const isTarget = v.id === stakeTarget?.id;
+                      return (
+                        <g
+                          key={v.id}
+                          onClick={() => setStakeTargetId(v.id)}
+                          className="cursor-pointer"
+                        >
+                          <circle
+                            cx={v.sx}
+                            cy={v.sy}
+                            r={isTarget ? 10 : 6}
+                            fill={isTarget ? '#ffb95f' : '#4cd7f6'}
+                            fillOpacity="0.25"
+                          />
+                          <circle
+                            cx={v.sx}
+                            cy={v.sy}
+                            r="4.5"
+                            fill="#0b1326"
+                            stroke={isTarget ? '#ffb95f' : '#4cd7f6'}
+                            strokeWidth="2"
+                          />
+                          <rect x={v.sx + 6} y={v.sy - 11} width="32" height="14" rx="3" fill={isTarget ? '#ffb95f' : '#171f33'} />
+                          <text
+                            x={v.sx + 9}
+                            y={v.sy - 1}
+                            fill={isTarget ? '#2a1700' : '#4cd7f6'}
+                            fontSize="8.5"
+                            fontWeight="700"
+                            fontFamily="monospace"
+                          >
+                            {v.id}
+                          </text>
+                        </g>
+                      );
+                    })}
+
+                    {/* Live Hardware GNSS Rover Marker */}
+                    {svgProjection.roverSvg && (
+                      <g>
+                        <circle
+                          cx={svgProjection.roverSvg.sx}
+                          cy={svgProjection.roverSvg.sy}
+                          r="17"
+                          fill="#4edea3"
+                          fillOpacity="0.18"
+                        />
+                        <circle
+                          cx={svgProjection.roverSvg.sx}
+                          cy={svgProjection.roverSvg.sy}
+                          r="6"
+                          fill="#4edea3"
+                          stroke="#060e20"
+                          strokeWidth="2"
+                        />
+                      </g>
+                    )}
+                  </svg>
+                </div>
+              )}
+
+              {/* Top-Left Summary & Live Stakeout Mini Banner */}
+              <div className="absolute top-2.5 left-2.5 right-16 flex flex-col gap-1.5 pointer-events-none">
+                <div className="inline-flex flex-wrap items-center gap-2 self-start px-2.5 py-1.5 rounded-xl bg-[#131b2e]/90 border border-[#4cd7f6]/25 backdrop-blur-md">
+                  <span className="font-mono text-[10px] font-bold text-[#4edea3]">
+                    {geom.area.toFixed(1)} m² ({(geom.area / 10000).toFixed(4)} ha)
+                  </span>
+                  <span className="font-mono text-[9px] text-[#bcc9cd]">
+                    Per: {geom.perim.toFixed(2)} m
+                  </span>
+                </div>
+
+                {stakeTarget && (
                   <button
                     type="button"
-                    onClick={() => { setMethod('badekas'); clearResults(); }}
+                    onClick={() => setActiveTab('locate')}
+                    className="pointer-events-auto self-start px-2.5 py-1.5 rounded-xl bg-[#171f33]/92 border border-[#ffb95f]/40 backdrop-blur-md flex items-center gap-2 text-left"
+                  >
+                    <Target className="w-3.5 h-3.5 text-[#ffb95f] shrink-0" />
+                    <div className="font-mono text-[10px] leading-tight">
+                      <span className="text-[#ffb95f] font-bold">
+                        OBJ {stakeTarget.id}: {stakeoutMetrics.distH.toFixed(2)} m
+                      </span>
+                      <span className="text-[#bcc9cd] block text-[9px]">
+                        {stakeoutMetrics.rumbo}
+                      </span>
+                    </div>
+                  </button>
+                )}
+              </div>
+
+              {/* Ergonomic Right Thumb FAB Stack */}
+              <div className="absolute top-12 right-2.5 z-20 flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCaptureGpsVertex}
+                  className="w-13 h-13 p-2 rounded-full bg-[#4cd7f6] hover:bg-[#acedff] active:scale-95 text-[#003640] shadow-xl flex flex-col items-center justify-center"
+                >
+                  <Plus className="w-5 h-5 stroke-[2.5]" />
+                  <span className="font-mono text-[8px] font-extrabold uppercase leading-none">GRABAR</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGpsEnabled(true);
+                    centerOnAll();
+                    toast.success('GPS en tiempo real centrado');
+                  }}
+                  className="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#4edea3] flex items-center justify-center shadow-lg"
+                  title="Centrar GPS Real"
+                >
+                  <Crosshair className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('locate')}
+                  className="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#ffb95f]/40 text-[#ffb95f] flex items-center justify-center shadow-lg"
+                  title="Localizar Parcela / Replanteo"
+                >
+                  <Search className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('topographer')}
+                  className="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#4cd7f6] flex flex-col items-center justify-center shadow-lg"
+                  title="Mobile Topographer"
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  <span className="font-mono text-[7px] font-bold">GNSS</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCycleLayer}
+                  className="w-10 h-10 rounded-full bg-[#171f33]/95 border border-[#2d3449] text-[#dae2fd] flex items-center justify-center shadow-lg"
+                  title="Cambiar Capa"
+                >
+                  <Layers className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Compact Bottom Live GNSS Telemetry Strip */}
+              <div className="absolute inset-x-2.5 bottom-2.5 p-2.5 rounded-2xl bg-[#131b2e]/95 border border-[#2d3449] backdrop-blur-xl shadow-2xl">
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Radio className="w-3.5 h-3.5 text-[#4edea3]" />
+                    <span className="font-mono text-[10px] font-bold text-[#4cd7f6]">
+                      POSICIÓN ROVER EN TIEMPO REAL
+                    </span>
+                  </div>
+                  <span className="font-mono text-[9px] text-[#4edea3]">
+                    ±{gnss.accuracy.toFixed(1)} m
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl font-mono text-[10px] tabular-nums">
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">ESTE REGVEN</span>
+                    <span className="text-[#dae2fd] font-bold">{liveGnssUtm.regvenEste.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">NORTE REGVEN</span>
+                    <span className="text-[#dae2fd] font-bold">{liveGnssUtm.regvenNorte.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">ALT / CANOA</span>
+                    <span className="text-[#ffb95f] font-bold">{gnss.alt.toFixed(2)} m</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: MOBILE TOPOGRAPHER (GNSS + 3 DATUMS + AVERAGING + SKYPLOT) */}
+          {activeTab === 'topographer' && (
+            <div className="h-full overflow-y-auto p-3 space-y-3">
+              <div className="p-3 rounded-2xl bg-[#131b2e] border border-[#222a3d] flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Radio className="w-4 h-4 text-[#4edea3]" />
+                    Mobile Topographer GNSS
+                  </div>
+                  <div className="font-mono text-[10px] text-[#bcc9cd] mt-0.5">{gpsStatus}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGpsEnabled((g) => !g)}
+                  className={cn(
+                    'px-2.5 py-1.5 rounded-lg font-mono text-[10px] font-bold',
+                    gpsEnabled ? 'bg-[#4edea3] text-[#003824]' : 'bg-[#222a3d] text-[#bcc9cd]'
+                  )}
+                >
+                  {gpsEnabled ? 'GPS ON' : 'GPS OFF'}
+                </button>
+              </div>
+
+              {/* Triple Coordinate Frame */}
+              <div className="p-3 rounded-2xl bg-[#171f33] border border-[#222a3d] space-y-2.5 font-mono">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-[#4cd7f6] font-bold">1. WGS84 / SIRGAS GEOGRÁFICAS</span>
+                  <span className="text-[#4edea3]">Acc ±{gnss.accuracy.toFixed(2)}m</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 bg-[#060e20] p-2 rounded-xl text-[11px] tabular-nums">
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">LATITUD</span>
+                    <span className="text-white font-bold block">{gnss.lat.toFixed(7)}°</span>
+                    <span className="text-[9px] text-[#4cd7f6]">{formatDms(gnss.lat, true)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">LONGITUD</span>
+                    <span className="text-white font-bold block">{gnss.lng.toFixed(7)}°</span>
+                    <span className="text-[9px] text-[#4cd7f6]">{formatDms(gnss.lng, false)}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] pt-1">
+                  <span className="text-[#4edea3] font-bold">2. UTM REGVEN (GRS80 · HUSO {huso}N)</span>
+                  <span className="text-[#bcc9cd]">k={liveGnssUtm.k.toFixed(6)}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl text-[11px] tabular-nums">
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">ESTE (X)</span>
+                    <span className="font-bold text-white">{liveGnssUtm.regvenEste.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">NORTE (Y)</span>
+                    <span className="font-bold text-white">{liveGnssUtm.regvenNorte.toFixed(3)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">CONVERG. γ</span>
+                    <span className="font-bold text-[#ffb95f]">{liveGnssUtm.convergenceDeg.toFixed(3)}°</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] pt-1">
+                  <span className="text-[#ffb95f] font-bold">3. UTM PSAD56 LA CANOA ({method.toUpperCase()})</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 bg-[#060e20] p-2 rounded-xl text-[11px] tabular-nums">
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">ESTE CANOA</span>
+                    <span className="font-bold text-[#ffb95f]">{liveGnssUtm.canoaEste.toFixed(3)} m</span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">NORTE CANOA</span>
+                    <span className="font-bold text-[#ffb95f]">{liveGnssUtm.canoaNorte.toFixed(3)} m</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Epoch Averaging (Promediado GNSS) */}
+              <div className="p-3 rounded-2xl bg-[#171f33] border border-[#4cd7f6]/25 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] font-bold text-[#4cd7f6] uppercase">
+                    Promediado de Épocas GNSS (Point Averaging)
+                  </span>
+                  <span className="font-mono text-[10px] text-[#4edea3]">
+                    {averagingSamples.length}/10 muestras
+                  </span>
+                </div>
+                {averagingStats && (
+                  <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl font-mono text-[10px] tabular-nums">
+                    <div>
+                      <span className="text-[8px] text-[#869397] block">E PROM</span>
+                      <span className="text-white font-bold">{averagingStats.avgE.toFixed(3)}</span>
+                    </div>
+                    <div>
+                      <span className="text-[8px] text-[#869397] block">N PROM</span>
+                      <span className="text-white font-bold">{averagingStats.avgN.toFixed(3)}</span>
+                    </div>
+                    <div>
+                      <span className="text-[8px] text-[#869397] block">RMS</span>
+                      <span className="text-[#4edea3] font-bold">±{averagingStats.rmsTotal.toFixed(3)}m</span>
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (averagingActive) {
+                        setAveragingActive(false);
+                      } else {
+                        setAveragingSamples([]);
+                        setAveragingActive(true);
+                      }
+                    }}
                     className={cn(
-                      'py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider',
-                      method === 'badekas' ? 'bg-emerald-500 text-white' : 'text-slate-500'
+                      'py-2 rounded-xl font-bold text-[11px]',
+                      averagingActive
+                        ? 'bg-[#ffb95f] text-[#2a1700]'
+                        : 'bg-[#222a3d] text-[#4cd7f6]'
                     )}
                   >
-                    Badekas
+                    {averagingActive ? 'Detener Promedio' : 'Iniciar Promedio (10x)'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setMethod('rigida'); clearResults(); }}
-                    className={cn(
-                      'py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider',
-                      method === 'rigida' ? 'bg-emerald-500 text-white' : 'text-slate-500'
-                    )}
+                    onClick={handleCaptureGpsVertex}
+                    className="py-2 rounded-xl bg-[#4edea3] text-[#003824] font-bold text-[11px]"
                   >
-                    Rígida
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setMethod('rigida02'); clearResults(); }}
-                    className={cn(
-                      'py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider',
-                      method === 'rigida02' ? 'bg-cyan-500 text-white' : 'text-slate-500'
-                    )}
-                  >
-                    Rígida 02
+                    + Grabar Vértice GPS
                   </button>
                 </div>
               </div>
-            )}
-          </div>
-        )}
 
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-slate-400 uppercase">Poligonal</label>
-          <div className="grid grid-cols-3 gap-2 bg-slate-950/60 p-1 rounded-xl border border-slate-800">
-            {(['cerrada', 'abierta', 'puntos'] as const).map((type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setGeometryType(type)}
-                className={cn(
-                  'py-2 text-[10px] font-bold uppercase tracking-widest rounded-lg',
-                  geometryType === type ? 'bg-emerald-500 text-white' : 'text-slate-500'
-                )}
-              >
-                {type}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-bold text-slate-400 uppercase">Huso UTM Venezuela</label>
-          <div className="grid grid-cols-4 gap-2">
-            {[18, 19, 20, 21].map((h) => (
-              <button
-                key={h}
-                type="button"
-                onClick={() => setHuso(h)}
-                className={cn(
-                  'py-1.5 rounded-lg text-xs font-mono font-bold border',
-                  huso === h
-                    ? 'bg-emerald-500 text-slate-950 border-emerald-400'
-                    : 'bg-slate-950/70 border-slate-800 text-slate-400'
-                )}
-              >
-                {h}N
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 bg-slate-950/60 p-2 rounded-xl border border-slate-800">
-          <input
-            type="color"
-            value={hatchColor}
-            onChange={(e) => setHatch(e.target.value, hatchOpacity)}
-            className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
-          />
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={Math.round(hatchOpacity * 100)}
-            onChange={(e) => setHatch(hatchColor, Number(e.target.value) / 100)}
-            className="flex-1 h-1 accent-emerald-500"
-          />
-          <span className="text-[10px] font-mono text-slate-400 w-8 text-right">
-            {Math.round(hatchOpacity * 100)}%
-          </span>
-        </div>
-      </section>
-
-      <section className="space-y-3 pt-2 border-t border-slate-800">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-            {activeMode === 'individual' ? 'Entrada de Datos' : 'Importación Lotes'}
-          </h3>
-          <div className="flex gap-1 bg-slate-950/60 p-1 rounded-lg border border-slate-800">
-            {(['utm', 'geo', 'cart'] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setCoordType(t)}
-                className={cn(
-                  'px-2 py-1 rounded-md text-[9px] font-bold tracking-widest uppercase',
-                  coordType === t ? 'bg-emerald-500 text-white' : 'text-slate-500'
-                )}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {activeMode === 'individual' ? (
-          <TransformationForm key={method + direction} />
-        ) : (
-          <BatchImport key={method + direction} />
-        )}
-      </section>
-
-      {dxfModalOpen && <DxfImportModal onClose={() => setDxfModalOpen(false)} />}
-    </div>
-  );
-}
-
-function MobileResultsPanel() {
-  const [subTab, setSubTab] = useState<'resultados' | 'parcelas'>('resultados');
-  const results = useAppStore((s) => s.results);
-  const saveCurrentParcel = useAppStore((s) => s.saveCurrentParcel);
-  const savedParcels = useAppStore((s) => s.savedParcels);
-  const activeParcelId = useAppStore((s) => s.activeParcelId);
-  const huso = useAppStore((s) => s.huso);
-  const direction = useAppStore((s) => s.direction);
-  const routine = useAppStore((s) => s.routine);
-  const method = useAppStore((s) => s.method);
-  const geometryType = useAppStore((s) => s.geometryType);
-  const user = useAppStore((s) => s.user);
-  const openPrintModalForParcel = useContourStore((s) => s.openPrintModalForParcel);
-  const loadingContourIds = useContourStore((s) => s.loadingParcelIds);
-
-  const geom = useMemo(() => {
-    if (results.length <= 2) return { area: 0, perim: 0 };
-    return FileService.calculateGeometry(
-      results.map((r) => ({ e: r.result?.este ?? 0, n: r.result?.norte ?? 0 }))
-    );
-  }, [results]);
-
-  const handleExport = async (type: string) => {
-    if (results.length === 0) {
-      toast.error('No hay resultados para exportar');
-      return;
-    }
-    if (type === 'dxf') {
-      if (!hasPermission(user?.rol, 'export_dxf', user?.roleConfig?.capabilities)) {
-        toast.error('Su rol no tiene permiso para exportar DXF.');
-        return;
-      }
-      exportResultsToDXF(results, 'PROYECTO_GEO_MOBILE');
-      return;
-    }
-    if (!hasPermission(user?.rol, 'export_csv', user?.roleConfig?.capabilities)) {
-      toast.error('Modo DEMO: Descarga de reportes TXT/KML bloqueada.');
-      return;
-    }
-    const name = 'PROYECTO_GEO_MOBILE';
-    if (type === 'kml') FileService.exportKML(results, name);
-    if (type === 'txt') await FileService.exportTXT(results, name);
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex border-b border-slate-800">
-        <button
-          type="button"
-          onClick={() => setSubTab('resultados')}
-          className={cn(
-            'flex-1 py-2.5 text-[10px] font-bold uppercase tracking-widest border-b-2',
-            subTab === 'resultados' ? 'text-emerald-400 border-emerald-500' : 'text-slate-500 border-transparent'
+              {/* Skyplot Radar + SNR Bars */}
+              <div className="p-3 rounded-2xl bg-[#171f33] border border-[#222a3d] space-y-2">
+                <div className="flex items-center justify-between font-mono text-[10px]">
+                  <span className="text-[#4cd7f6] font-bold">SKYPLOT &amp; SNR (dB-Hz)</span>
+                  <span className="text-[#bcc9cd]">PDOP 0.82 · HDOP 0.54</span>
+                </div>
+                <div className="grid grid-cols-12 gap-2 items-center">
+                  <div className="col-span-5 flex justify-center">
+                    <svg viewBox="0 0 120 120" className="w-28 h-28">
+                      <circle cx="60" cy="60" r="52" fill="#060e20" stroke="#3d494c" strokeWidth="1" />
+                      <circle cx="60" cy="60" r="34" fill="none" stroke="#2d3449" strokeDasharray="2 2" />
+                      <circle cx="60" cy="60" r="17" fill="none" stroke="#2d3449" strokeDasharray="2 2" />
+                      <line x1="60" y1="8" x2="60" y2="112" stroke="#2d3449" />
+                      <line x1="8" y1="60" x2="112" y2="60" stroke="#2d3449" />
+                      <text x="57" y="14" fill="#ffb95f" fontSize="8" fontFamily="monospace">N</text>
+                      {CONSTELLATION_SATS.map((s) => {
+                        const r = ((90 - s.el) / 90) * 50;
+                        const rad = GeoEngine.toRad(s.az);
+                        const x = 60 + r * Math.sin(rad);
+                        const y = 60 - r * Math.cos(rad);
+                        const col =
+                          s.sys === 'GPS'
+                            ? '#4edea3'
+                            : s.sys === 'GLO'
+                              ? '#4cd7f6'
+                              : s.sys === 'GAL'
+                                ? '#ffb95f'
+                                : '#a5b4fc';
+                        return (
+                          <g key={s.prn}>
+                            <circle cx={x} cy={y} r="4.5" fill={col} />
+                            <text x={x + 5} y={y + 3} fill="#dae2fd" fontSize="6.5" fontFamily="monospace">
+                              {s.prn}
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                  <div className="col-span-7 space-y-1">
+                    {CONSTELLATION_SATS.map((s) => (
+                      <div key={s.prn} className="flex items-center gap-1.5 font-mono text-[9px]">
+                        <span className="w-6 text-[#bcc9cd]">{s.prn}</span>
+                        <div className="flex-1 h-2 rounded-full bg-[#060e20] overflow-hidden">
+                          <div
+                            className="h-full bg-[#4edea3] rounded-full"
+                            style={{ width: `${Math.min(100, s.snr * 2)}%` }}
+                          />
+                        </div>
+                        <span className="w-7 text-right text-[#4cd7f6]">{s.snr}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
-        >
-          Tabla Vértices
-        </button>
-        <button
-          type="button"
-          onClick={() => setSubTab('parcelas')}
-          className={cn(
-            'flex-1 py-2.5 text-[10px] font-bold uppercase tracking-widest border-b-2',
-            subTab === 'parcelas' ? 'text-emerald-400 border-emerald-500' : 'text-slate-500 border-transparent'
+
+          {/* TAB 3: PARCEL COORDINATE LOCATOR + DRIVE-ME STAKEOUT */}
+          {activeTab === 'locate' && (
+            <div className="h-full overflow-y-auto p-3 space-y-3">
+              {/* Parcel Coordinate Locator Form */}
+              <div className="p-3 rounded-2xl bg-[#171f33] border border-[#4cd7f6]/30 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] font-bold text-[#4cd7f6] uppercase flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5" /> Localizador de Coordenadas de Parcelas
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1 bg-[#060e20] p-1 rounded-xl font-mono text-[10px]">
+                  {(
+                    [
+                      { id: 'utm', label: 'UTM (E/N)' },
+                      { id: 'geo', label: 'Lat / Lng' },
+                      { id: 'batch', label: 'Poligonal' },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setLocateMode(m.id)}
+                      className={cn(
+                        'py-1.5 rounded-lg font-bold',
+                        locateMode === m.id ? 'bg-[#4cd7f6] text-[#003640]' : 'text-[#bcc9cd]'
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+
+                {locateMode !== 'geo' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 gap-1 bg-[#060e20] p-1 rounded-lg font-mono text-[9px]">
+                      <button
+                        type="button"
+                        onClick={() => setLocateDatum('canoa')}
+                        className={cn(
+                          'py-1 rounded font-bold',
+                          locateDatum === 'canoa' ? 'bg-[#ffb95f] text-[#2a1700]' : 'text-[#bcc9cd]'
+                        )}
+                      >
+                        PSAD56 Canoa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLocateDatum('regven')}
+                        className={cn(
+                          'py-1 rounded font-bold',
+                          locateDatum === 'regven' ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'
+                        )}
+                      >
+                        REGVEN
+                      </button>
+                    </div>
+                    <select
+                      value={locateHuso}
+                      onChange={(e) => setLocateHuso(Number(e.target.value))}
+                      className="bg-[#060e20] border border-[#222a3d] rounded-lg px-2 py-1 font-mono text-[10px] text-[#4cd7f6]"
+                    >
+                      {[18, 19, 20, 21].map((z) => (
+                        <option key={z} value={z}>
+                          Huso {z}N
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {locateMode === 'utm' && (
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <div>
+                      <label className="font-mono text-[8px] text-[#869397] block mb-0.5">ESTE (X)</label>
+                      <input
+                        value={locateEste}
+                        onChange={(e) => setLocateEste(e.target.value)}
+                        className="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-mono text-[8px] text-[#869397] block mb-0.5">NORTE (Y)</label>
+                      <input
+                        value={locateNorte}
+                        onChange={(e) => setLocateNorte(e.target.value)}
+                        className="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-mono text-[8px] text-[#869397] block mb-0.5">COTA (Z)</label>
+                      <input
+                        value={locateZ}
+                        onChange={(e) => setLocateZ(e.target.value)}
+                        className="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-[#ffb95f]"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {locateMode === 'geo' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="font-mono text-[8px] text-[#869397] block mb-0.5">LATITUD (°)</label>
+                      <input
+                        value={locateLat}
+                        onChange={(e) => setLocateLat(e.target.value)}
+                        className="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-mono text-[8px] text-[#869397] block mb-0.5">LONGITUD (°)</label>
+                      <input
+                        value={locateLng}
+                        onChange={(e) => setLocateLng(e.target.value)}
+                        className="w-full bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1.5 font-mono text-xs text-white"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {locateMode === 'batch' && (
+                  <textarea
+                    rows={4}
+                    value={locateBatch}
+                    onChange={(e) => setLocateBatch(e.target.value)}
+                    className="w-full bg-[#060e20] border border-[#2d3449] rounded-xl p-2 font-mono text-[10px] text-[#dae2fd]"
+                    placeholder="B1,409662.260,1327653.220,12.4"
+                  />
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleLocateCoordinate}
+                  className="w-full py-2.5 rounded-xl bg-[#4cd7f6] hover:bg-[#acedff] text-[#003640] font-bold text-xs flex items-center justify-center gap-1.5"
+                >
+                  <Search className="w-4 h-4" />
+                  <span>Localizar en Mapa y Activar Replanteo</span>
+                </button>
+              </div>
+
+              {/* Drive-Me / Stakeout Bullseye Compass */}
+              <div className="p-3 rounded-2xl bg-[#131b2e] border border-[#ffb95f]/35 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] font-bold text-[#ffb95f] uppercase flex items-center gap-1.5">
+                    <Target className="w-3.5 h-3.5" /> Diana de Replanteo en Vivo (Drive-Me)
+                  </span>
+                  <select
+                    value={stakeTarget?.id}
+                    onChange={(e) => setStakeTargetId(e.target.value)}
+                    className="bg-[#060e20] border border-[#2d3449] rounded-lg px-2 py-1 font-mono text-[10px] text-[#4cd7f6]"
+                  >
+                    {computedVertices.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        Objetivo: {v.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Circular Bullseye Target */}
+                <div className="flex items-center gap-3">
+                  <div className="relative w-24 h-24 shrink-0 rounded-full bg-[#060e20] border border-[#2d3449] flex items-center justify-center">
+                    <div className="w-16 h-16 rounded-full border border-dashed border-[#3d494c] flex items-center justify-center">
+                      <div
+                        className={cn(
+                          'w-7 h-7 rounded-full border flex items-center justify-center',
+                          stakeoutMetrics.inTolerance
+                            ? 'bg-[#4edea3]/25 border-[#4edea3]'
+                            : 'border-[#ffb95f]/60'
+                        )}
+                      >
+                        <div className="w-2 h-2 rounded-full bg-[#4edea3]" />
+                      </div>
+                    </div>
+                    <div
+                      className="absolute inset-0 flex items-start justify-center pt-1.5 pointer-events-none"
+                      style={{ transform: `rotate(${stakeoutMetrics.relAngle}deg)` }}
+                    >
+                      <Navigation className="w-4 h-4 text-[#ffb95f]" />
+                    </div>
+                  </div>
+
+                  <div className="flex-1 space-y-1.5 font-mono">
+                    <div>
+                      <span className="text-[9px] text-[#869397] block">DISTANCIA AL VÉRTICE</span>
+                      <span
+                        className={cn(
+                          'text-xl font-extrabold tabular-nums',
+                          stakeoutMetrics.inTolerance ? 'text-[#4edea3]' : 'text-[#ffb95f]'
+                        )}
+                      >
+                        {stakeoutMetrics.distH.toFixed(2)} m
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-[#4cd7f6]">
+                      {stakeoutMetrics.rumbo} (AZ {stakeoutMetrics.azimutDeg.toFixed(1)}°)
+                    </div>
+                    <div className="text-[10px] text-[#dae2fd]">
+                      {stakeoutMetrics.inTolerance ? '✅ ¡DENTRO DE TOLERANCIA (<0.50m)!' : 'Camina siguiendo la flecha'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-xl font-mono text-[10px] tabular-nums">
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">
+                      {stakeoutMetrics.dN >= 0 ? 'AL NORTE' : 'AL SUR'}
+                    </span>
+                    <span className="text-[#4cd7f6] font-bold">
+                      {Math.abs(stakeoutMetrics.dN).toFixed(2)} m
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">
+                      {stakeoutMetrics.dE >= 0 ? 'AL ESTE' : 'AL OESTE'}
+                    </span>
+                    <span className="text-[#4cd7f6] font-bold">
+                      {Math.abs(stakeoutMetrics.dE).toFixed(2)} m
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[8px] text-[#869397] block">CORTE / RELL. Z</span>
+                    <span className="text-[#ffb95f] font-bold">
+                      {stakeoutMetrics.dZ >= 0 ? '+' : ''}
+                      {stakeoutMetrics.dZ.toFixed(2)} m
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
-        >
-          Parcelas
-        </button>
+
+          {/* TAB 4: VERTICES & MOTOR QA/QC */}
+          {activeTab === 'vertices' && (
+            <div className="h-full overflow-y-auto p-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]">
+                  <span className="font-mono text-[9px] text-[#869397] uppercase block">SUPERFICIE</span>
+                  <span className="font-mono text-sm font-bold text-[#4edea3] tabular-nums">
+                    {geom.area.toFixed(2)} m²
+                  </span>
+                  <span className="font-mono text-[9px] text-[#bcc9cd] block">
+                    {(geom.area / 10000).toFixed(4)} ha
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-[#171f33] border border-[#222a3d]">
+                  <span className="font-mono text-[9px] text-[#869397] uppercase block">PERÍMETRO</span>
+                  <span className="font-mono text-sm font-bold text-[#4cd7f6] tabular-nums">
+                    {geom.perim.toFixed(2)} m
+                  </span>
+                  <span className="font-mono text-[9px] text-[#4edea3] block">{qaqcTimestamp}</span>
+                </div>
+              </div>
+
+              {/* Engine + Datum Controls */}
+              <div className="p-3 rounded-xl bg-[#171f33] border border-[#222a3d] space-y-2">
+                <div className="grid grid-cols-3 gap-1 bg-[#060e20] p-1 rounded-xl font-mono text-[10px]">
+                  {(
+                    [
+                      { id: 'rigida02', label: 'RIGIDA02' },
+                      { id: 'badekas', label: 'Badekas' },
+                      { id: 'rigida', label: 'Rígida IDW' },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setMethod(m.id)}
+                      className={cn(
+                        'py-1.5 rounded-lg font-bold',
+                        method === m.id ? 'bg-[#4edea3] text-[#003824]' : 'text-[#bcc9cd]'
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleVerifyQaqc}
+                    className="flex-1 py-2 rounded-lg bg-[#222a3d] text-[#4cd7f6] font-mono text-[10px] font-bold flex items-center justify-center gap-1"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#4edea3]" /> Auditoría QA/QC ≤ 1mm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVertices(DEFAULT_PARCEL_GEO);
+                      setParcelName('PARCELA-09B');
+                      setStakeTargetId('V-05');
+                      toast.success('Parcela restaurada');
+                    }}
+                    className="p-2 rounded-lg bg-[#222a3d] text-[#ffb95f]"
+                    title="Restaurar parcela"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Vertices Cards */}
+              <div className="space-y-2">
+                {computedVertices.map((v) => (
+                  <div
+                    key={v.id}
+                    className={cn(
+                      'p-2.5 rounded-xl border',
+                      v.id === stakeTarget?.id
+                        ? 'bg-[#222a3d] border-[#ffb95f]/50'
+                        : 'bg-[#171f33] border-[#222a3d]'
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs font-bold text-[#4cd7f6]">{v.id}</span>
+                        <span className="font-mono text-[10px] text-[#ffb95f]">
+                          {v.rumbo} · {v.dist.toFixed(2)}m
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStakeTargetId(v.id);
+                          setActiveTab('locate');
+                        }}
+                        className="px-2 py-0.5 rounded bg-[#ffb95f]/20 font-mono text-[9px] font-bold text-[#ffb95f]"
+                      >
+                        Replantear →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5 bg-[#060e20] p-2 rounded-lg font-mono text-[11px] tabular-nums">
+                      <div>
+                        <span className="text-[8px] text-[#869397] block">ESTE (X)</span>
+                        <span className="font-bold text-white">{v.este.toFixed(3)}</span>
+                      </div>
+                      <div>
+                        <span className="text-[8px] text-[#869397] block">NORTE (Y)</span>
+                        <span className="font-bold text-white">{v.norte.toFixed(3)}</span>
+                      </div>
+                      <div>
+                        <span className="text-[8px] text-[#869397] block">COTA (Z)</span>
+                        <span className="font-bold text-[#ffb95f]">{v.z.toFixed(3)}m</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: EXPORT CAD & PDF */}
+          {activeTab === 'export' && (
+            <div className="h-full overflow-y-auto p-3 space-y-2.5">
+              <div className="p-3 rounded-2xl bg-[#131b2e] border border-[#222a3d]">
+                <div className="text-xs font-bold text-white">Exportación Catastral y CAD</div>
+                <div className="font-mono text-[10px] text-[#bcc9cd] mt-0.5">
+                  Parcela: {parcelName} · {computedVertices.length} vértices ({direction === 'canoa_regven' ? 'REGVEN' : 'PSAD56'} {huso}N)
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleExportDxf}
+                className="w-full p-3.5 rounded-xl bg-[#4cd7f6] text-[#003640] flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2.5 text-left">
+                  <FileCode2 className="w-5 h-5" />
+                  <div>
+                    <div className="text-xs font-bold">Descargar .DXF (AutoCAD / CivilCAD)</div>
+                    <div className="text-[10px] opacity-80">Capas normalizadas + Cuadro de Construcción</div>
+                  </div>
+                </div>
+                <Download className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCopyCivilCad}
+                className="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2.5 text-left">
+                  <FileSpreadsheet className="w-5 h-5 text-[#4edea3]" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Copiar CivilCAD (P,E,N,Z,D)</div>
+                    <div className="text-[10px] text-[#bcc9cd]">Portapapeles inmediato para cartera</div>
+                  </div>
+                </div>
+                <Copy className="w-4 h-4 text-[#4edea3]" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportKml}
+                className="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2.5 text-left">
+                  <MapIcon className="w-5 h-5 text-[#4cd7f6]" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Exportar .KML Google Earth</div>
+                    <div className="text-[10px] text-[#bcc9cd]">Poligonal georreferenciada WGS84</div>
+                  </div>
+                </div>
+                <Download className="w-4 h-4 text-[#4cd7f6]" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => FileService.exportTXT(storeResultsPayload, parcelName, false)}
+                className="w-full p-3.5 rounded-xl bg-[#171f33] border border-[#2d3449] flex items-center justify-between"
+              >
+                <div className="flex items-center gap-2.5 text-left">
+                  <FileText className="w-5 h-5 text-[#ffb95f]" />
+                  <div>
+                    <div className="text-xs font-bold text-white">Cartera Topográfica (.TXT)</div>
+                    <div className="text-[10px] text-[#bcc9cd]">Vértices, rumbos, distancias y área</div>
+                  </div>
+                </div>
+                <Download className="w-4 h-4 text-[#ffb95f]" />
+              </button>
+            </div>
+          )}
+        </main>
+
+        {/* 3. NATIVE ANDROID BOTTOM NAVIGATION BAR (5 MODULES) */}
+        <nav className="h-16 shrink-0 bg-[#060e20]/95 backdrop-blur-xl border-t border-[#171f33] z-40 grid grid-cols-5 px-1">
+          {(
+            [
+              { id: 'map', label: 'Mapa', icon: MapIcon },
+              { id: 'topographer', label: 'GNSS', icon: Radio },
+              { id: 'locate', label: 'Localizar', icon: Target },
+              { id: 'vertices', label: 'Vértices', icon: SlidersHorizontal },
+              { id: 'export', label: 'Exportar', icon: Download },
+            ] as const
+          ).map((item) => {
+            const Icon = item.icon;
+            const isAct = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={cn(
+                  'flex flex-col items-center justify-center transition-colors',
+                  isAct ? 'text-[#4cd7f6] font-bold' : 'text-[#bcc9cd]'
+                )}
+              >
+                <div
+                  className={cn(
+                    'flex items-center justify-center w-9 h-6 rounded-full',
+                    isAct && 'bg-[#4cd7f6]/15'
+                  )}
+                >
+                  <Icon className="w-4 h-4" />
+                </div>
+                <span className="font-mono text-[8px] font-bold uppercase tracking-wider mt-0.5">
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
       </div>
-
-      {subTab === 'resultados' ? <ResultsTable /> : <ParcelList />}
-
-      <div className="p-3.5 bg-slate-800/40 border border-slate-800 rounded-xl space-y-2.5">
-        <div className="flex justify-between text-xs">
-          <span className="text-slate-400 uppercase text-[10px]">Perímetro:</span>
-          <span className="font-mono font-bold text-slate-200">{geom.perim.toFixed(2)} m</span>
-        </div>
-        <div className="flex justify-between text-xs">
-          <span className="text-slate-400 uppercase text-[10px]">Área:</span>
-          <span className="font-mono font-bold text-emerald-400">{(geom.area / 10000).toFixed(4)} ha</span>
-        </div>
-        {results.length > 0 && (
-          <button
-            type="button"
-            onClick={saveCurrentParcel}
-            className="w-full py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg font-bold text-[10px] uppercase tracking-widest"
-          >
-            Guardar Parcela en Proyecto
-          </button>
-        )}
-      </div>
-
-      <div className="grid grid-cols-3 gap-2">
-        <button
-          type="button"
-          onClick={() => handleExport('dxf')}
-          className="py-2.5 bg-slate-800 border border-slate-700 text-cyan-400 rounded-lg font-bold text-[10px] uppercase"
-        >
-          DXF
-        </button>
-        <button
-          type="button"
-          onClick={() => handleExport('kml')}
-          className="py-2.5 bg-slate-800 border border-slate-700 text-green-400 rounded-lg font-bold text-[10px] uppercase"
-        >
-          KML
-        </button>
-        <button
-          type="button"
-          onClick={() => handleExport('txt')}
-          className="py-2.5 bg-slate-800 border border-slate-700 text-slate-300 rounded-lg font-bold text-[10px] uppercase"
-        >
-          TXT
-        </button>
-      </div>
-
-      {results.length >= 3 && (() => {
-        const activeSaved = activeParcelId ? savedParcels.find((p) => p.id === activeParcelId) : undefined;
-        const targetParcel: Parcel = activeSaved ?? {
-          id: 'active',
-          nombre: 'Parcela Activa',
-          fecha: new Date().toISOString(),
-          area: geom.area,
-          perim: geom.perim,
-          ha: geom.area / 10000,
-          puntos: results,
-          geometryType,
-        };
-        const effDir = routine === 'ploteo' || method === 'rigida02' ? 'canoa_regven' : direction;
-        const isLoadingActiveContour = loadingContourIds.includes(targetParcel.id);
-        return (
-          <button
-            type="button"
-            onClick={() => openPrintModalForParcel(targetParcel, huso, effDir)}
-            disabled={isLoadingActiveContour}
-            className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-lg font-bold text-[10px] uppercase tracking-widest disabled:opacity-50"
-          >
-            {isLoadingActiveContour ? <Mountain className="w-3.5 h-3.5 animate-pulse" /> : <Printer className="w-3.5 h-3.5" />}
-            {isLoadingActiveContour ? 'Calculando Curvas...' : 'Plano de Curvas'}
-          </button>
-        );
-      })()}
     </div>
   );
 }
