@@ -831,14 +831,14 @@ export default function DashboardMobile({
   }, [computedVertices]);
 
   const shellClass = framePreview
-    ? 'w-full sm:w-[400px] h-[100dvh] sm:h-[836px] sm:rounded-[34px] sm:border-[6px] sm:border-[#1e293b] sm:ring-1 sm:ring-[#4cd7f6]/25'
-    : 'w-full h-[100dvh]';
+    ? 'w-full sm:w-[400px] h-full min-h-0 sm:h-[836px] sm:rounded-[34px] sm:border-[6px] sm:border-[#1e293b] sm:ring-1 sm:ring-[#4cd7f6]/25'
+    : 'w-full h-full min-h-0';
 
   return (
     <div
       className={cn(
-        'w-full min-h-[100dvh] bg-[#050914] text-[#dae2fd] flex flex-col items-center',
-        framePreview && 'sm:justify-center sm:py-3 sm:px-3'
+        'fixed inset-0 w-full h-full bg-[#050914] text-[#dae2fd] flex flex-col items-center overflow-hidden pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]',
+        framePreview && 'sm:static sm:min-h-[100dvh] sm:justify-center sm:py-3 sm:px-3 sm:pt-3 sm:pb-3'
       )}
     >
       {/* Optional Desktop Preview Switch Strip (visible only in /preview-android on larger screens) */}
@@ -1822,7 +1822,7 @@ export default function DashboardMobile({
         </main>
 
         {/* 3. NATIVE ANDROID BOTTOM NAVIGATION BAR (5 MODULES) */}
-        <nav className="h-16 shrink-0 bg-[#060e20]/95 backdrop-blur-xl border-t border-[#171f33] z-40 grid grid-cols-5 px-1">
+        <nav className="min-h-[68px] shrink-0 bg-[#060e20]/95 backdrop-blur-xl border-t border-[#171f33] z-40 grid grid-cols-5 px-1 pt-1 pb-[calc(env(safe-area-inset-bottom,0px)+8px)]">
           {(
             [
               { id: 'map', label: 'Mapa', icon: MapIcon },
