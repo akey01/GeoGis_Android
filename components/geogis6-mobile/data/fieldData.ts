@@ -1,6 +1,9 @@
+import proj4 from 'proj4';
+
 export type GeoGis6ScreenId = 'auth' | 'mapa' | 'parcela' | 'localizacion' | 'satelites';
 export type CrsMode = 'regven' | 'psad56';
 export type GnssReceiverMode = 'external_rtk' | 'internal_l1l5';
+export type BaseMapLayerId = 'esri_sat' | 'hybrid' | 'google_sat' | 'cad_dark';
 
 export const PROD_API_URL =
   process.env.NEXT_PUBLIC_API_URL || 'https://geogis6-android.onrender.com';
@@ -10,8 +13,41 @@ export const GITHUB_RELEASE_API_URL =
   'https://api.github.com/repos/akey01/GeoGis_Android/releases/latest';
 
 // Stamped automatically by build-apk workflow (updated in production build)
-export const APP_VERSION_CODE = 610;
-export const APP_VERSION_NAME = '6.0.10';
+export const APP_VERSION_CODE = 611;
+export const APP_VERSION_NAME = '6.0.11';
+
+// ── Registrar proyecciones oficiales IGVSB Venezuela (Zonas 18N a 21N) ───────
+let projDefsRegistered = false;
+export function ensureVenezuelaProjections() {
+  if (projDefsRegistered) return;
+  projDefsRegistered = true;
+
+  proj4.defs('EPSG:4161', '+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs');
+
+  // REGVEN UTM Oficial IGVSB (Elipsoide GRS80, Husos 18N a 21N)
+  proj4.defs('EPSG:2201', '+proj=utm +zone=18 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
+  proj4.defs('EPSG:2202', '+proj=utm +zone=19 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
+  proj4.defs('EPSG:2203', '+proj=utm +zone=20 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
+  proj4.defs('EPSG:2204', '+proj=utm +zone=21 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
+
+  // WGS84 UTM (Husos 18N a 21N)
+  proj4.defs('EPSG:32618', '+proj=utm +zone=18 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
+  proj4.defs('EPSG:32619', '+proj=utm +zone=19 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
+  proj4.defs('EPSG:32620', '+proj=utm +zone=20 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
+  proj4.defs('EPSG:32621', '+proj=utm +zone=21 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
+
+  // PSAD56 / La Canoa UTM (Husos 18N a 21N)
+  const canoaParams =
+    '+ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs';
+  proj4.defs('EPSG:24818', `+proj=utm +zone=18 ${canoaParams}`);
+  proj4.defs('EPSG:24819', `+proj=utm +zone=19 ${canoaParams}`);
+  proj4.defs('EPSG:24820', `+proj=utm +zone=20 ${canoaParams}`);
+  proj4.defs('EPSG:24821', `+proj=utm +zone=21 ${canoaParams}`);
+  proj4.defs('EPSG:24878', `+proj=utm +zone=18 ${canoaParams}`);
+  proj4.defs('EPSG:24879', `+proj=utm +zone=19 ${canoaParams}`);
+  proj4.defs('EPSG:24880', `+proj=utm +zone=20 ${canoaParams}`);
+  proj4.defs('EPSG:24881', `+proj=utm +zone=21 ${canoaParams}`);
+}
 
 export interface CloudUser {
   id: string;
@@ -83,6 +119,7 @@ export interface FieldParcel {
   angularError: string;
   orientationLabel: string;
   huso: number;
+  geometryType?: 'cerrada' | 'abierta' | 'puntos';
   vertices: ParcelVertex[];
 }
 
@@ -127,14 +164,457 @@ export const ADICORA_RIGIDA02_SHIFT = {
   cotaGeoidal: -22.45,
 };
 
+function formatDmsShort(deg: number, isLat: boolean): string {
+  const abs = Math.abs(deg);
+  const d = Math.floor(abs);
+  const mf = (abs - d) * 60;
+  const m = Math.floor(mf);
+  const s = Math.round((mf - m) * 60);
+  const hemi = isLat ? (deg >= 0 ? 'N' : 'S') : deg >= 0 ? 'E' : 'W';
+  return `${d}°${String(m).padStart(2, '0')}'${String(s).padStart(2, '0')}"${hemi}`;
+}
+
+export function formatAzimuthDms(dx: number, dy: number): { degMin: string; sec: string; full: string } {
+  let az = (Math.atan2(dx, dy) * 180) / Math.PI;
+  if (az < 0) az += 360;
+  const d = Math.floor(az);
+  const mf = (az - d) * 60;
+  const m = Math.floor(mf);
+  const s = Math.round((mf - m) * 60);
+  const dd = String(d).padStart(2, '0');
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return {
+    degMin: `${dd}°${mm}'`,
+    sec: `${ss}"`,
+    full: `${dd}° ${mm}' ${ss}"`,
+  };
+}
+
+/** Construye una FieldParcel georreferenciada real a partir de vértices REGVEN UTM */
+export function buildFieldParcelFromVertices(input: {
+  id: string;
+  code: string;
+  location: string;
+  sector: string;
+  zoneTag?: string;
+  owner?: string;
+  cadastralId?: string;
+  huso?: number;
+  areaDocumentalM2?: number;
+  geometryType?: 'cerrada' | 'abierta' | 'puntos';
+  rawVertices: Array<{
+    id?: string;
+    shortId?: string;
+    code?: string;
+    description?: string;
+    esteRegven: number;
+    norteRegven: number;
+    estePsad56?: number;
+    nortePsad56?: number;
+    lat?: number;
+    lng?: number;
+    cota?: number;
+  }>;
+}): FieldParcel {
+  ensureVenezuelaProjections();
+  const huso = [18, 19, 20, 21].includes(Number(input.huso)) ? Number(input.huso) : 19;
+  const regvenEpsg = `EPSG:220${huso - 17}`;
+  const psadEpsg = `EPSG:248${huso}`;
+
+  const enriched = input.rawVertices.map((rv, idx) => {
+    let lat = rv.lat;
+    let lng = rv.lng;
+    if (typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      try {
+        const [lonOut, latOut] = proj4(regvenEpsg, 'EPSG:4326', [rv.esteRegven, rv.norteRegven]);
+        lng = lonOut;
+        lat = latOut;
+      } catch {
+        lat = 11.945;
+        lng = -69.805;
+      }
+    }
+
+    let estePsad56 = rv.estePsad56;
+    let nortePsad56 = rv.nortePsad56;
+    if (typeof estePsad56 !== 'number' || typeof nortePsad56 !== 'number' || !Number.isFinite(estePsad56)) {
+      try {
+        const [pe, pn] = proj4(regvenEpsg, psadEpsg, [rv.esteRegven, rv.norteRegven]);
+        estePsad56 = Math.round(pe * 1000) / 1000;
+        nortePsad56 = Math.round(pn * 1000) / 1000;
+      } catch {
+        estePsad56 = Math.round((rv.esteRegven - ADICORA_RIGIDA02_SHIFT.deltaEste) * 1000) / 1000;
+        nortePsad56 = Math.round((rv.norteRegven - ADICORA_RIGIDA02_SHIFT.deltaNorte) * 1000) / 1000;
+      }
+    }
+
+    return {
+      id: rv.id || `V-${String(idx + 1).padStart(2, '0')}`,
+      shortId: rv.shortId || `V${idx + 1}`,
+      code: rv.code || `Hito_${idx + 1}`,
+      description: rv.description || `Vértice ${idx + 1} · REGVEN UTM ${huso}N`,
+      esteRegven: Math.round(rv.esteRegven * 1000) / 1000,
+      norteRegven: Math.round(rv.norteRegven * 1000) / 1000,
+      estePsad56,
+      nortePsad56,
+      lat,
+      lng,
+      cota: typeof rv.cota === 'number' && Number.isFinite(rv.cota) ? rv.cota : 18.25,
+    };
+  });
+
+  // Shoelace area & perimeter
+  const n = enriched.length;
+  let areaSum = 0;
+  let perimeter = 0;
+  for (let i = 0; i < n; i++) {
+    const cur = enriched[i];
+    const nxt = enriched[(i + 1) % n];
+    if (n >= 3) {
+      areaSum += cur.esteRegven * nxt.norteRegven - nxt.esteRegven * cur.norteRegven;
+    }
+    if (n >= 2 && (input.geometryType !== 'abierta' || i < n - 1)) {
+      perimeter += Math.hypot(nxt.esteRegven - cur.esteRegven, nxt.norteRegven - cur.norteRegven);
+    }
+  }
+  const areaGraficaM2 = Math.round((Math.abs(areaSum) / 2) * 100) / 100;
+  const perimeterM = Math.round(perimeter * 100) / 100;
+
+  // Mini SVG projection (160x90 box with padding)
+  const allE = enriched.map((v) => v.esteRegven);
+  const allN = enriched.map((v) => v.norteRegven);
+  const minE = Math.min(...allE);
+  const maxE = Math.max(...allE);
+  const minN = Math.min(...allN);
+  const maxN = Math.max(...allN);
+  const spanE = Math.max(maxE - minE, 1);
+  const spanN = Math.max(maxN - minN, 1);
+  const scaleMini = Math.min(116 / spanE, 60 / spanN);
+  const centerE = (minE + maxE) / 2;
+  const centerN = (minN + maxN) / 2;
+
+  const avgLat = enriched.reduce((acc, v) => acc + v.lat, 0) / Math.max(1, n);
+  const avgLng = enriched.reduce((acc, v) => acc + v.lng, 0) / Math.max(1, n);
+
+  const vertices: ParcelVertex[] = enriched.map((v, idx) => {
+    const nxt = enriched[(idx + 1) % n] || v;
+    const segDx = nxt.esteRegven - v.esteRegven;
+    const segDy = nxt.norteRegven - v.norteRegven;
+    const segLen = Math.round(Math.hypot(segDx, segDy) * 100) / 100;
+    const az = formatAzimuthDms(segDx, segDy);
+
+    const miniX = Math.round((80 + (v.esteRegven - centerE) * scaleMini) * 10) / 10;
+    const miniY = Math.round((45 - (v.norteRegven - centerN) * scaleMini) * 10) / 10;
+
+    // Default simulated rover offset near vertex
+    const seedAngle = ((idx * 97 + 31) % 360) * (Math.PI / 180);
+    const simDist = Math.round((0.45 + ((idx % 4) * 0.35)) * 1000) / 1000;
+    const dN = Math.round(Math.cos(seedAngle) * simDist * 1000) / 1000;
+    const dE = Math.round(Math.sin(seedAngle) * simDist * 1000) / 1000;
+    const stakeAz = formatAzimuthDms(dE, dN);
+
+    return {
+      ...v,
+      segmentLengthToNext: segLen,
+      azimuthToNext: az.full,
+      mapX: Math.round(200 + (v.esteRegven - centerE) * 3),
+      mapY: Math.round(310 - (v.norteRegven - centerN) * 3),
+      miniX,
+      miniY,
+      stakeDist: simDist,
+      stakeNorthDelta: dN,
+      stakeEastDelta: dE,
+      stakeCutFill: idx % 2 === 0 ? -0.024 : 0.015,
+      stakeAzimuthDeg: stakeAz.degMin,
+      stakeAzimuthSec: stakeAz.sec,
+      roverOffsetX: Math.max(-62, Math.min(62, Math.round(dE * 42))),
+      roverOffsetY: Math.max(-62, Math.min(62, Math.round(-dN * 42))),
+    };
+  });
+
+  const areaDocumentalM2 =
+    typeof input.areaDocumentalM2 === 'number' && input.areaDocumentalM2 > 0
+      ? input.areaDocumentalM2
+      : areaGraficaM2;
+
+  return {
+    id: input.id,
+    code: input.code,
+    title: `PARCELA ${input.code}`,
+    location: input.location,
+    sector: input.sector,
+    zoneTag: input.zoneTag || 'Catastro',
+    owner: input.owner || 'PROPIETARIO REGISTRADO',
+    cadastralId: input.cadastralId || `VE-19N-${input.code}`,
+    geoCenterText: `${formatDmsShort(avgLat, true)} · ${formatDmsShort(avgLng, false)}`,
+    areaDocumentalM2,
+    areaGraficaM2,
+    toleranceM2: Math.max(1.5, Math.round(areaGraficaM2 * 0.002 * 10) / 10),
+    perimeterM,
+    linearClosureM: 0.002,
+    precisionRatio: '1:45,000',
+    angularError: `0° 00' 03"`,
+    orientationLabel: 'N 00°E',
+    huso,
+    geometryType: input.geometryType || 'cerrada',
+    vertices,
+  };
+}
+
+/**
+ * Parsea cualquier proyecto guardado desde GeoGIS6 Desktop o Mobile (PostgreSQL JSON)
+ * convirtiendo todas sus parcelas (`content.parcels`) a geometrías georreferenciadas reales.
+ */
+export function parseCloudProjectParcels(rawContent: unknown, projectName: string): FieldParcel[] {
+  ensureVenezuelaProjections();
+  let parsed: any = rawContent;
+  if (typeof rawContent === 'string') {
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch {
+      return [];
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return [];
+
+  const rawList: any[] = Array.isArray(parsed.parcels)
+    ? parsed.parcels
+    : Array.isArray(parsed.savedParcels)
+      ? parsed.savedParcels
+      : [];
+
+  const metaLocation = String(parsed?.meta?.ubicacion || parsed?.meta?.notas || projectName || 'Venezuela');
+  const results: FieldParcel[] = [];
+
+  for (let pIdx = 0; pIdx < rawList.length; pIdx++) {
+    const p = rawList[pIdx];
+    if (!p || !Array.isArray(p.puntos) || p.puntos.length === 0) continue;
+
+    // Detect huso from points
+    const firstValid = p.puntos.find((pt: any) => pt?.result?.huso || pt?.input?.huso);
+    const candidateHuso = Number(firstValid?.result?.huso ?? firstValid?.input?.huso ?? 19);
+    const huso = [18, 19, 20, 21].includes(candidateHuso) ? candidateHuso : 19;
+    const regvenEpsg = `EPSG:220${huso - 17}`;
+    const psadEpsg = `EPSG:248${huso}`;
+
+    const rawVertices: Array<{
+      id: string;
+      shortId: string;
+      code: string;
+      description: string;
+      esteRegven: number;
+      norteRegven: number;
+      estePsad56?: number;
+      nortePsad56?: number;
+      lat?: number;
+      lng?: number;
+      cota?: number;
+    }> = [];
+
+    for (let i = 0; i < p.puntos.length; i++) {
+      const pt = p.puntos[i];
+      if (!pt) continue;
+      const dir = String(pt.direction ?? pt.result?.direction ?? 'canoa_regven');
+      const isResultCanoa = dir === 'regven_canoa';
+      const isInputCanoa = dir === 'canoa_regven';
+
+      let esteRegven: number | undefined;
+      let norteRegven: number | undefined;
+      let estePsad56: number | undefined;
+      let nortePsad56: number | undefined;
+      let lat: number | undefined;
+      let lng: number | undefined;
+
+      const rE = Number(pt.result?.este);
+      const rN = Number(pt.result?.norte);
+      const iE = Number(pt.input?.este);
+      const iN = Number(pt.input?.norte);
+
+      if (Number.isFinite(rE) && Number.isFinite(rN) && (rE > 1000 || rN > 1000)) {
+        if (isResultCanoa) {
+          estePsad56 = rE;
+          nortePsad56 = rN;
+          if (Number.isFinite(iE) && Number.isFinite(iN) && (iE > 1000 || iN > 1000)) {
+            esteRegven = iE;
+            norteRegven = iN;
+          } else {
+            try {
+              const [re, rn] = proj4(psadEpsg, regvenEpsg, [rE, rN]);
+              esteRegven = re;
+              norteRegven = rn;
+            } catch {}
+          }
+        } else {
+          esteRegven = rE;
+          norteRegven = rN;
+          if (isInputCanoa && Number.isFinite(iE) && Number.isFinite(iN) && (iE > 1000 || iN > 1000)) {
+            estePsad56 = iE;
+            nortePsad56 = iN;
+          }
+        }
+      } else if (Number.isFinite(iE) && Number.isFinite(iN) && (iE > 1000 || iN > 1000)) {
+        if (isInputCanoa) {
+          estePsad56 = iE;
+          nortePsad56 = iN;
+          try {
+            const [re, rn] = proj4(psadEpsg, regvenEpsg, [iE, iN]);
+            esteRegven = re;
+            norteRegven = rn;
+          } catch {}
+        } else {
+          esteRegven = iE;
+          norteRegven = iN;
+        }
+      }
+
+      // Geographic fallback
+      const rLat = Number(pt.result?.lat ?? pt.input?.lat);
+      const rLng = Number(pt.result?.lng ?? pt.input?.lng);
+      if (
+        Number.isFinite(rLat) &&
+        Number.isFinite(rLng) &&
+        Math.abs(rLat) <= 90 &&
+        Math.abs(rLng) <= 180 &&
+        (rLat !== 0 || rLng !== 0)
+      ) {
+        lat = rLat;
+        lng = rLng;
+        if (esteRegven === undefined || norteRegven === undefined) {
+          try {
+            const [re, rn] = proj4('EPSG:4326', regvenEpsg, [rLng, rLat]);
+            esteRegven = re;
+            norteRegven = rn;
+          } catch {}
+        }
+      }
+
+      if (esteRegven === undefined || norteRegven === undefined) continue;
+
+      const ptLabel = String(pt.id || pt.input?.id || `V${i + 1}`);
+      const cotaVal = Number(pt.result?.cota ?? pt.input?.alt ?? pt.input?.cota ?? 18.25);
+
+      rawVertices.push({
+        id: ptLabel.startsWith('V-') ? ptLabel : `V-${String(i + 1).padStart(2, '0')}`,
+        shortId: ptLabel.length <= 5 ? ptLabel : `V${i + 1}`,
+        code: String(pt.codigo || pt.code || `PT_${i + 1}`),
+        description: `Vértice ${ptLabel} · Proyecto ${projectName}`,
+        esteRegven,
+        norteRegven,
+        estePsad56,
+        nortePsad56,
+        lat,
+        lng,
+        cota: Number.isFinite(cotaVal) ? cotaVal : 18.25,
+      });
+    }
+
+    if (rawVertices.length === 0) continue;
+
+    const code = String(p.nombre || p.code || `PARCELA-${pIdx + 1}`).trim();
+    const geomType: 'cerrada' | 'abierta' | 'puntos' =
+      p.geometryType === 'abierta' || p.geometryType === 'puntos' ? p.geometryType : 'cerrada';
+
+    results.push(
+      buildFieldParcelFromVertices({
+        id: String(p.id || `cloud-parcel-${pIdx + 1}`),
+        code,
+        location: projectName,
+        sector: metaLocation,
+        zoneTag: geomType === 'cerrada' ? 'Polígono' : geomType === 'abierta' ? 'Polilínea' : 'Puntos',
+        owner: String(p.propietario || parsed?.meta?.cliente || projectName),
+        cadastralId: String(p.codigoCatastral || p.id || code),
+        huso,
+        areaDocumentalM2: Number(p.area) > 0 ? Number(p.area) : undefined,
+        geometryType: geomType,
+        rawVertices,
+      })
+    );
+  }
+
+  return results;
+}
+
+// ── Conjunto Multi-Parcela Offline/Demo Georreferenciado en Adícora, Falcón ──
+// Coordenadas reales en REGVEN UTM Huso 19N (Adícora: ~11.9445°N, -69.8053°W)
+export const DEFAULT_PROJECT_PARCELS: FieldParcel[] = [
+  buildFieldParcelFromVertices({
+    id: 'POL-5371-JAR',
+    code: '5371-JAR',
+    location: 'Adícora',
+    sector: 'Sector Falcón · Urbano',
+    zoneTag: 'Urbano',
+    owner: 'J. A. RODRÍGUEZ (ADÍCORA)',
+    cadastralId: '11-06-01-U-5371-JAR',
+    huso: 19,
+    areaDocumentalM2: 1250.0,
+    rawVertices: [
+      { id: 'V-01', shortId: 'V1', code: 'Cerco_NO', description: 'Hito Lindero Principal · REGVEN UTM 19N', esteRegven: 412265.22, norteRegven: 1320694.41, cota: 18.25 },
+      { id: 'V-02', shortId: 'V2', code: 'Cerco_NE', description: 'Esquina Noreste · Calle Marina Adícora', esteRegven: 412302.95, norteRegven: 1320701.85, cota: 18.31 },
+      { id: 'V-03', shortId: 'V3', code: 'Hito_SE', description: 'Hito Concreto Sureste · Colindancia 5375', esteRegven: 412309.45, norteRegven: 1320669.92, cota: 18.42 },
+      { id: 'V-04', shortId: 'V4', code: 'Hito_SO', description: 'Hito Suroeste · Límite Manzana MAN1', esteRegven: 412271.15, norteRegven: 1320662.3, cota: 18.19 },
+    ],
+  }),
+  buildFieldParcelFromVertices({
+    id: 'POL-5373-NOR',
+    code: '5373',
+    location: 'Adícora',
+    sector: 'Sector Falcón · Colindante Norte',
+    zoneTag: 'Urbano',
+    owner: 'SUC. GONZÁLEZ (ADÍCORA)',
+    cadastralId: '11-06-01-U-5373-NOR',
+    huso: 19,
+    rawVertices: [
+      { id: 'V-01', shortId: 'V1', code: 'N_NO', esteRegven: 412258.9, norteRegven: 1320726.1, cota: 18.15 },
+      { id: 'V-02', shortId: 'V2', code: 'N_NE', esteRegven: 412296.8, norteRegven: 1320733.5, cota: 18.22 },
+      { id: 'V-03', shortId: 'V3', code: 'N_SE', esteRegven: 412302.95, norteRegven: 1320701.85, cota: 18.31 },
+      { id: 'V-04', shortId: 'V4', code: 'N_SO', esteRegven: 412265.22, norteRegven: 1320694.41, cota: 18.25 },
+    ],
+  }),
+  buildFieldParcelFromVertices({
+    id: 'POL-5375-EST',
+    code: '5375',
+    location: 'Adícora',
+    sector: 'Sector Falcón · Colindante Este',
+    zoneTag: 'Urbano',
+    owner: 'INVERSIONES PARAGUANÁ C.A.',
+    cadastralId: '11-06-01-U-5375-EST',
+    huso: 19,
+    rawVertices: [
+      { id: 'V-01', shortId: 'V1', code: 'E_NO', esteRegven: 412302.95, norteRegven: 1320701.85, cota: 18.31 },
+      { id: 'V-02', shortId: 'V2', code: 'E_NE', esteRegven: 412343.1, norteRegven: 1320709.6, cota: 18.4 },
+      { id: 'V-03', shortId: 'V3', code: 'E_SE', esteRegven: 412349.6, norteRegven: 1320677.5, cota: 18.48 },
+      { id: 'V-04', shortId: 'V4', code: 'E_SO', esteRegven: 412309.45, norteRegven: 1320669.92, cota: 18.42 },
+    ],
+  }),
+  buildFieldParcelFromVertices({
+    id: 'POL-MAN1-RES',
+    code: 'MAN1-RESERVA',
+    location: 'Adícora',
+    sector: 'Reserva Municipal · Paraguaná',
+    zoneTag: 'Reserva',
+    owner: 'ALCALDÍA MUNICIPIO FALCÓN',
+    cadastralId: '11-06-01-R-MAN1',
+    huso: 19,
+    rawVertices: [
+      { id: 'V-01', shortId: 'V1', code: 'R_NO', esteRegven: 412271.15, norteRegven: 1320662.3, cota: 18.19 },
+      { id: 'V-02', shortId: 'V2', code: 'R_NE', esteRegven: 412349.6, norteRegven: 1320677.5, cota: 18.48 },
+      { id: 'V-03', shortId: 'V3', code: 'R_SE', esteRegven: 412357.2, norteRegven: 1320638.0, cota: 18.55 },
+      { id: 'V-04', shortId: 'V4', code: 'R_SO', esteRegven: 412278.5, norteRegven: 1320622.9, cota: 18.12 },
+    ],
+  }),
+];
+
+export const DEFAULT_PARCEL_5371_JAR: FieldParcel = DEFAULT_PROJECT_PARCELS[0];
+
 export const DEFAULT_SYNCED_PROJECTS: SyncedProject[] = [
   {
     id: 'prj-adicora-norte',
     name: 'Adícora Sector Norte',
     crsLabel: 'REGVEN 19N | RIGIDA02',
     crsBadgeColor: 'secondary',
-    parcelsText: '12/12 Parcelas Almacenadas',
-    syncStatus: 'Sync: hace 15m',
+    parcelsText: `${DEFAULT_PROJECT_PARCELS.length} Parcelas Catastrales (Local)`,
+    syncStatus: 'Caché GIS activa',
     defaultCrs: 'regven',
     activeParcelCode: '5371-JAR',
     sectorLabel: 'Sector Falcón · Urbano',
@@ -145,153 +625,14 @@ export const DEFAULT_SYNCED_PROJECTS: SyncedProject[] = [
     name: 'Pueblo Nuevo Catastro',
     crsLabel: 'PSAD56 La Canoa',
     crsBadgeColor: 'tertiary',
-    parcelsText: '8 Parcelas Relevadas',
-    syncStatus: 'Caché local activa',
+    parcelsText: `${DEFAULT_PROJECT_PARCELS.length} Parcelas Relevadas (Local)`,
+    syncStatus: 'Modo Off-Grid',
     syncHighlight: true,
     defaultCrs: 'psad56',
     activeParcelCode: '5371-JAR',
     sectorLabel: 'Península de Paraguaná · Urbano',
     source: 'local',
   },
-];
-
-export const DEFAULT_PARCEL_5371_JAR: FieldParcel = {
-  id: 'POL-5371-JAR',
-  code: '5371-JAR',
-  title: 'PARCELA 5371-JAR',
-  location: 'Adícora',
-  sector: 'Sector Falcón · Urbano',
-  zoneTag: 'Urbano',
-  owner: 'J. A. RODRÍGUEZ (ADÍCORA)',
-  cadastralId: '11-06-01-U-5371-JAR',
-  geoCenterText: `11°56'42"N · 69°48'19"W`,
-  areaDocumentalM2: 1250.0,
-  areaGraficaM2: 1249.85,
-  toleranceM2: 2.5,
-  perimeterM: 145.2,
-  linearClosureM: 0.002,
-  precisionRatio: '1:45,000',
-  angularError: `0° 00' 03"`,
-  orientationLabel: 'N 12°W',
-  huso: 19,
-  vertices: [
-    {
-      id: 'V-01',
-      shortId: 'V1',
-      code: 'Cerco_NO',
-      description: 'Hito Lindero Principal · REGVEN UTM 19N',
-      esteRegven: 398394.22,
-      norteRegven: 1284882.41,
-      estePsad56: 398598.55,
-      nortePsad56: 1285193.95,
-      lat: 11.94518,
-      lng: -69.80548,
-      cota: 18.25,
-      segmentLengthToNext: 38.45,
-      azimuthToNext: `54° 22' 10"`,
-      mapX: 80,
-      mapY: 225,
-      miniX: 28,
-      miniY: 26,
-      stakeDist: 1.658,
-      stakeNorthDelta: 1.42,
-      stakeEastDelta: 0.855,
-      stakeCutFill: -0.035,
-      stakeAzimuthDeg: `31°04'`,
-      stakeAzimuthSec: `15"`,
-      roverOffsetX: 52,
-      roverOffsetY: -68,
-    },
-    {
-      id: 'V-02',
-      shortId: 'V2',
-      code: 'Cerco_NE',
-      description: 'Esquina Noreste · Calle Marina Adícora',
-      esteRegven: 398425.1,
-      norteRegven: 1284904.55,
-      estePsad56: 398629.43,
-      nortePsad56: 1285216.09,
-      lat: 11.94538,
-      lng: -69.80519,
-      cota: 18.31,
-      segmentLengthToNext: 32.6,
-      azimuthToNext: `171° 56' 40"`,
-      mapX: 330,
-      mapY: 205,
-      miniX: 126,
-      miniY: 14,
-      stakeDist: 0.942,
-      stakeNorthDelta: 0.78,
-      stakeEastDelta: -0.528,
-      stakeCutFill: 0.018,
-      stakeAzimuthDeg: `325°54'`,
-      stakeAzimuthSec: `08"`,
-      roverOffsetX: -36,
-      roverOffsetY: -50,
-    },
-    {
-      id: 'V-03',
-      shortId: 'V3',
-      code: 'Hito_SE',
-      description: 'Hito Concreto Sureste · Colindancia 5375',
-      esteRegven: 398432.8,
-      norteRegven: 1284850.12,
-      estePsad56: 398637.13,
-      nortePsad56: 1285161.66,
-      lat: 11.94489,
-      lng: -69.80512,
-      cota: 18.42,
-      segmentLengthToNext: 39.1,
-      azimuthToNext: `235° 02' 18"`,
-      mapX: 355,
-      mapY: 420,
-      miniX: 140,
-      miniY: 68,
-      stakeDist: 0.312,
-      stakeNorthDelta: -0.24,
-      stakeEastDelta: 0.2,
-      stakeCutFill: -0.012,
-      stakeAzimuthDeg: `140°11'`,
-      stakeAzimuthSec: `40"`,
-      roverOffsetX: 20,
-      roverOffsetY: 22,
-    },
-    {
-      id: 'V-04',
-      shortId: 'V4',
-      code: 'Hito_SO',
-      description: 'Hito Suroeste · Límite Manzana MAN1',
-      esteRegven: 398401.65,
-      norteRegven: 1284828.3,
-      estePsad56: 398605.98,
-      nortePsad56: 1285139.84,
-      lat: 11.94469,
-      lng: -69.80541,
-      cota: 18.19,
-      segmentLengthToNext: 35.05,
-      azimuthToNext: `352° 11' 05"`,
-      mapX: 105,
-      mapY: 445,
-      miniX: 44,
-      miniY: 78,
-      stakeDist: 0.042,
-      stakeNorthDelta: 0.03,
-      stakeEastDelta: -0.029,
-      stakeCutFill: 0.004,
-      stakeAzimuthDeg: `315°58'`,
-      stakeAzimuthSec: `22"`,
-      roverOffsetX: -7,
-      roverOffsetY: -6,
-    },
-  ],
-};
-
-export const ADICORA_SATELLITE_TILE_CENTER = { z: 17, x: 40120, y: 61155 };
-
-export const ADJACENT_PARCELS = [
-  { code: '5373', points: '40,90 170,75 195,190 75,205', labelX: 110, labelY: 145, areaM2: 1180.4 },
-  { code: '5375', points: '205,80 365,65 385,195 230,210', labelX: 290, labelY: 140, areaM2: 1315.2 },
-  { code: 'MAN1 - RESERVA', points: '50,470 360,450 375,560 65,580', labelX: 210, labelY: 520, areaM2: 3420.0 },
 ];
 
 export const GNSS_SATELLITES: SatellitePoint[] = [

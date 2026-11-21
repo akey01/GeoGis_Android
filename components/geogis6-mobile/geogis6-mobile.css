@@ -61,3 +61,22 @@
   background-image:
     linear-gradient(to bottom, rgba(13, 19, 34, 0.9) 0%, rgba(19, 33, 52, 0.45) 38%, rgba(69, 43, 30, 0.72) 55%, rgba(44, 28, 20, 0.94) 100%);
 }
+
+/* OpenLayers Tactical GIS Viewport Overrides */
+.geogis6-mobile-root .ol-viewport {
+  touch-action: none;
+  background-color: #080e1d;
+}
+
+.geogis6-mobile-root .ol-control {
+  display: none !important;
+}
+
+.geogis6-mobile-root .cad-dark-grid {
+  background-color: #080e1d;
+  background-image:
+    radial-gradient(rgba(134, 147, 151, 0.25) 1px, transparent 1px),
+    linear-gradient(to right, rgba(76, 215, 246, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(76, 215, 246, 0.05) 1px, transparent 1px);
+  background-size: 36px 36px, 72px 72px, 72px 72px;
+}

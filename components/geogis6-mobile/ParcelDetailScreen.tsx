@@ -177,36 +177,39 @@ export default function ParcelDetailScreen({
                 stroke="#4cd7f6"
                 strokeWidth="1.6"
               />
-              {parcel.vertices.map((v) => {
+              {parcel.vertices.map((v, idx) => {
                 const isSel = v.id === selectedVertexId;
+                const nextV = parcel.vertices[(idx + 1) % parcel.vertices.length];
+                const midX = nextV ? (v.miniX + nextV.miniX) / 2 : v.miniX;
+                const midY = nextV ? (v.miniY + nextV.miniY) / 2 : v.miniY;
                 return (
                   <g key={v.id} className="cursor-pointer" onClick={() => onStakeVertex(v.id)}>
+                    {parcel.vertices.length <= 8 && v.segmentLengthToNext > 0 && nextV && (
+                      <text
+                        fill="#4edea3"
+                        fontFamily="var(--font-stitch-mono), monospace"
+                        fontSize="6"
+                        textAnchor="middle"
+                        x={midX}
+                        y={midY - 2}
+                      >
+                        {v.segmentLengthToNext.toFixed(1)}m
+                      </text>
+                    )}
                     <circle cx={v.miniX} cy={v.miniY} fill={isSel ? '#ffb95f' : '#06b6d4'} r={isSel ? 3.8 : 2.8} />
                     <text
                       fill={isSel ? '#ffb95f' : '#dde2f8'}
                       fontFamily="var(--font-stitch-mono), monospace"
-                      fontSize="7.5"
+                      fontSize="7.2"
                       fontWeight="700"
-                      x={v.miniX + (v.shortId === 'V1' || v.shortId === 'V4' ? -10 : 5)}
-                      y={v.miniY + (v.shortId === 'V3' || v.shortId === 'V4' ? 8 : -2)}
+                      x={v.miniX + (v.miniX < 80 ? -9 : 5)}
+                      y={v.miniY + (v.miniY > 45 ? 8 : -2)}
                     >
                       {v.shortId}
                     </text>
                   </g>
                 );
               })}
-              <text fill="#4edea3" fontFamily="var(--font-stitch-mono), monospace" fontSize="6.5" x="72" y="15">
-                38.45m
-              </text>
-              <text fill="#4edea3" fontFamily="var(--font-stitch-mono), monospace" fontSize="6.5" x="132" y="44">
-                32.60m
-              </text>
-              <text fill="#4edea3" fontFamily="var(--font-stitch-mono), monospace" fontSize="6.5" x="84" y="83">
-                39.10m
-              </text>
-              <text fill="#4edea3" fontFamily="var(--font-stitch-mono), monospace" fontSize="6.5" x="16" y="56">
-                35.05m
-              </text>
             </svg>
             <span className="absolute bottom-1 right-1 font-stitch-mono text-[8px] text-[#bcc9cd] bg-[#0d1322]/85 px-1 rounded">
               {parcel.orientationLabel}

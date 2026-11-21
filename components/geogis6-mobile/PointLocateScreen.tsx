@@ -22,7 +22,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import type { CrsMode, FieldParcel, LiveGnssFix } from './data/fieldData';
+import { formatAzimuthDms, type CrsMode, type FieldParcel, type LiveGnssFix } from './data/fieldData';
 
 interface PointLocateScreenProps {
   parcel: FieldParcel;
@@ -103,10 +103,26 @@ export default function PointLocateScreen({
     };
   }, [viewMode]);
 
-  const adjustedNorth = target.stakeNorthDelta + shiftNorte;
-  const adjustedEast = target.stakeEastDelta + shiftEste;
+  const rawNorth = gnssFix.isLiveHardware
+    ? target.norteRegven - gnssFix.norteRegven
+    : target.stakeNorthDelta;
+  const rawEast = gnssFix.isLiveHardware
+    ? target.esteRegven - gnssFix.esteRegven
+    : target.stakeEastDelta;
+  const adjustedNorth = rawNorth + shiftNorte;
+  const adjustedEast = rawEast + shiftEste;
   const adjustedRadial = Math.hypot(adjustedNorth, adjustedEast);
   const inTolerance = adjustedRadial <= 0.05;
+  const liveAz = formatAzimuthDms(adjustedEast, adjustedNorth);
+  const displayAzDeg = gnssFix.isLiveHardware ? liveAz.degMin : target.stakeAzimuthDeg;
+  const displayAzSec = gnssFix.isLiveHardware ? liveAz.sec : target.stakeAzimuthSec;
+  const liveCutFill = gnssFix.isLiveHardware ? target.cota - gnssFix.alt : target.stakeCutFill;
+  const roverPxX = gnssFix.isLiveHardware
+    ? Math.max(-72, Math.min(72, Math.round(-adjustedEast * 24)))
+    : target.roverOffsetX;
+  const roverPxY = gnssFix.isLiveHardware
+    ? Math.max(-72, Math.min(72, Math.round(adjustedNorth * 24)))
+    : target.roverOffsetY;
 
   const handlePrev = () => {
     const nextIdx = (currentIdx - 1 + vertices.length) % vertices.length;
@@ -287,21 +303,21 @@ export default function PointLocateScreen({
                 <span className="font-stitch-mono text-[10px] uppercase font-bold">Azimut</span>
               </div>
               <span className="font-stitch-mono text-[13px] text-[#dde2f8] font-bold tracking-tight mt-1 truncate max-w-full">
-                {target.stakeAzimuthDeg}
+                {displayAzDeg}
               </span>
-              <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">{target.stakeAzimuthSec}</span>
+              <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">{displayAzSec}</span>
             </div>
 
             <div className="bg-[#191f2f] p-2 rounded flex flex-col items-center justify-center text-center">
               <div className="flex items-center gap-0.5 text-[#4edea3]">
                 <ArrowDownToLine className="w-3.5 h-3.5" />
                 <span className="font-stitch-mono text-[10px] uppercase font-bold">
-                  {target.stakeCutFill < 0 ? 'Corte' : 'Relleno'}
+                  {liveCutFill < 0 ? 'Corte' : 'Relleno'}
                 </span>
               </div>
               <span className="font-stitch-mono text-[15px] text-[#4edea3] font-bold tracking-tight mt-0.5">
-                {target.stakeCutFill >= 0 ? '+' : ''}
-                {target.stakeCutFill.toFixed(3)}
+                {liveCutFill >= 0 ? '+' : ''}
+                {liveCutFill.toFixed(3)}
               </span>
               <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">m</span>
             </div>
@@ -401,7 +417,7 @@ export default function PointLocateScreen({
                 <div
                   className="absolute z-10 flex flex-col items-center transition-all duration-300"
                   style={{
-                    transform: `translate(${target.roverOffsetX}px, ${target.roverOffsetY}px)`,
+                    transform: `translate(${roverPxX}px, ${roverPxY}px)`,
                   }}
                 >
                   <div className="w-7 h-7 rounded-full bg-[#4cd7f6]/20 flex items-center justify-center shadow-lg">

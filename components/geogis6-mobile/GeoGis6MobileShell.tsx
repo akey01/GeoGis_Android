@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import {
   Crosshair,
   Download,
@@ -16,12 +17,13 @@ import {
   APK_DOWNLOAD_URL,
   APP_VERSION_CODE,
   APP_VERSION_NAME,
-  DEFAULT_PARCEL_5371_JAR,
+  DEFAULT_PROJECT_PARCELS,
   DEFAULT_SYNCED_PROJECTS,
   GITHUB_RELEASE_API_URL,
   PROD_API_URL,
   geoToUtmGrs80,
   getOrCreateFieldDeviceId,
+  parseCloudProjectParcels,
   type CloudUser,
   type CrsMode,
   type FieldParcel,
@@ -31,13 +33,23 @@ import {
   type SyncedProject,
 } from './data/fieldData';
 import AuthProjectsScreen from './AuthProjectsScreen';
-import ProjectMapScreen from './ProjectMapScreen';
 import ParcelDetailScreen from './ParcelDetailScreen';
 import PointLocateScreen from './PointLocateScreen';
 import GnssDiagnosticsScreen from './GnssDiagnosticsScreen';
 import './geogis6-mobile.css';
 
+const ProjectMapScreen = dynamic(() => import('./ProjectMapScreen'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full bg-[#080e1d] flex flex-col items-center justify-center gap-2 text-[#4cd7f6] font-stitch-mono text-xs">
+      <div className="w-7 h-7 border-2 border-[#4cd7f6]/30 border-t-[#4cd7f6] rounded-full animate-spin" />
+      <span>Iniciando Motor Cartográfico OpenLayers...</span>
+    </div>
+  ),
+});
+
 const STORAGE_AUTH_KEY = 'geogis6_mobile_auth_v6';
+const STORAGE_PRJ_CACHE_PREFIX = 'geogis6_prj_parcels_v1_';
 
 const SCREEN_TITLES: Record<GeoGis6ScreenId, string> = {
   auth: 'Autenticación y Proyectos',
@@ -67,7 +79,10 @@ export default function GeoGis6MobileShell() {
 
   const [projects, setProjects] = useState<SyncedProject[]>(DEFAULT_SYNCED_PROJECTS);
   const [selectedProject, setSelectedProject] = useState<SyncedProject>(DEFAULT_SYNCED_PROJECTS[0]);
-  const [activeParcel, setActiveParcel] = useState<FieldParcel>(DEFAULT_PARCEL_5371_JAR);
+  const [parcels, setParcels] = useState<FieldParcel[]>(DEFAULT_PROJECT_PARCELS);
+  const [activeParcelId, setActiveParcelId] = useState<string>(DEFAULT_PROJECT_PARCELS[0].id);
+  const [mapFitTrigger, setMapFitTrigger] = useState<number>(0);
+
   const [crsMode, setCrsMode] = useState<CrsMode>('regven');
   const [selectedVertexId, setSelectedVertexId] = useState<string>('V-01');
   const [shiftEste, setShiftEste] = useState<number>(0.012);
@@ -78,13 +93,18 @@ export default function GeoGis6MobileShell() {
   const [cloudSyncing, setCloudSyncing] = useState<boolean>(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
+  const activeParcel = useMemo(
+    () => parcels.find((p) => p.id === activeParcelId) || parcels[0] || DEFAULT_PROJECT_PARCELS[0],
+    [parcels, activeParcelId]
+  );
+
   const [gnssFix, setGnssFix] = useState<LiveGnssFix>({
-    lat: 11.94501,
-    lng: -69.80531,
+    lat: DEFAULT_PROJECT_PARCELS[0].vertices[0].lat,
+    lng: DEFAULT_PROJECT_PARCELS[0].vertices[0].lng,
     alt: 18.28,
     accuracy: 0.012,
-    esteRegven: 398412.5,
-    norteRegven: 1284866.2,
+    esteRegven: DEFAULT_PROJECT_PARCELS[0].vertices[0].esteRegven,
+    norteRegven: DEFAULT_PROJECT_PARCELS[0].vertices[0].norteRegven,
     isLiveHardware: false,
     timestamp: Date.now(),
   });
@@ -142,7 +162,7 @@ export default function GeoGis6MobileShell() {
         });
       },
       () => {
-        // Fallback smoothly to field simulation when GPS fix is unavailable indoors
+        // Fallback smoothly indoors
       },
       { enableHighAccuracy: true, maximumAge: 1500, timeout: 15000 }
     );
@@ -222,13 +242,93 @@ export default function GeoGis6MobileShell() {
       parcelsText: 'Sincronizado en PostgreSQL',
       syncStatus: p.actualizado ? new Date(p.actualizado).toLocaleDateString('es-VE') : 'En línea',
       defaultCrs: 'regven',
-      activeParcelCode: '5371-JAR',
+      activeParcelCode: '',
       sectorLabel: 'GeoGIS6 Cloud',
       source: 'cloud',
       updatedAt: p.actualizado,
     }));
     return [...cloudMapped, ...DEFAULT_SYNCED_PROJECTS];
   };
+
+  // Load ALL parcels of a Cloud PostgreSQL project (with automatic localStorage offline fallback)
+  const loadCloudProjectContent = useCallback(
+    async (project: SyncedProject, tokenOverride?: string | null) => {
+      const token = tokenOverride ?? authToken;
+      const cacheKey = `${STORAGE_PRJ_CACHE_PREFIX}${project.id}`;
+
+      if (project.source !== 'cloud') {
+        setParcels(DEFAULT_PROJECT_PARCELS);
+        setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
+        setSelectedVertexId(DEFAULT_PROJECT_PARCELS[0].vertices[0]?.id || 'V-01');
+        setMapFitTrigger((n) => n + 1);
+        return;
+      }
+
+      setCloudSyncing(true);
+      try {
+        if (token) {
+          const res = await fetch(`${PROD_API_URL}/api/projects?id=${encodeURIComponent(project.id)}`, {
+            headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.success && data.content) {
+            const parsedParcels = parseCloudProjectParcels(data.content, project.name);
+            if (parsedParcels.length > 0) {
+              setParcels(parsedParcels);
+              setActiveParcelId(parsedParcels[0].id);
+              setSelectedVertexId(parsedParcels[0].vertices[0]?.id || 'V-01');
+              setMapFitTrigger((n) => n + 1);
+              setProjects((prev) =>
+                prev.map((pr) =>
+                  pr.id === project.id
+                    ? { ...pr, parcelsText: `${parsedParcels.length} Parcelas cargadas` }
+                    : pr
+                )
+              );
+              try {
+                localStorage.setItem(cacheKey, JSON.stringify(parsedParcels));
+              } catch {
+                // storage full
+              }
+              notify(`${parsedParcels.length} parcelas cargadas en mapa satelital`);
+              return;
+            }
+            notify(`Proyecto "${project.name}" sin polígonos aún · Mostrando referencia`);
+            setParcels(DEFAULT_PROJECT_PARCELS);
+            setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
+            setMapFitTrigger((n) => n + 1);
+            return;
+          }
+        }
+        throw new Error('offline');
+      } catch {
+        // Fallback to offline cached parcels if previously synced
+        try {
+          const cachedRaw = localStorage.getItem(cacheKey);
+          if (cachedRaw) {
+            const cachedParcels = JSON.parse(cachedRaw) as FieldParcel[];
+            if (Array.isArray(cachedParcels) && cachedParcels.length > 0) {
+              setParcels(cachedParcels);
+              setActiveParcelId(cachedParcels[0].id);
+              setSelectedVertexId(cachedParcels[0].vertices[0]?.id || 'V-01');
+              setMapFitTrigger((n) => n + 1);
+              notify(`Offline: ${cachedParcels.length} parcelas cargadas desde caché local`);
+              return;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        notify('Sin conexión al servidor · Usando parcelas de referencia local');
+        setParcels(DEFAULT_PROJECT_PARCELS);
+        setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
+        setMapFitTrigger((n) => n + 1);
+      } finally {
+        setCloudSyncing(false);
+      }
+    },
+    [authToken, deviceId, notify]
+  );
 
   const handleRefreshProjects = useCallback(async () => {
     if (!authToken) {
@@ -269,18 +369,27 @@ export default function GeoGis6MobileShell() {
       setIsDemoMode(false);
       localStorage.setItem(STORAGE_AUTH_KEY, JSON.stringify({ token: data.token, user: data.user }));
       if (Array.isArray(data.projects)) {
-        setProjects(mapCloudProjects(data.projects));
+        const mapped = mapCloudProjects(data.projects);
+        setProjects(mapped);
+        if (data.projects.length > 0) {
+          const firstCloud = mapped[0];
+          setSelectedProject(firstCloud);
+          void loadCloudProjectContent(firstCloud, data.token);
+        }
       }
       setActiveScreen('mapa');
       notify(`Bienvenido ${data.user.nombre || data.user.username}`);
     },
-    [notify]
+    [loadCloudProjectContent, notify]
   );
 
   const handleLogout = useCallback(() => {
     setAuthToken(null);
     setUser(null);
     setProjects(DEFAULT_SYNCED_PROJECTS);
+    setSelectedProject(DEFAULT_SYNCED_PROJECTS[0]);
+    setParcels(DEFAULT_PROJECT_PARCELS);
+    setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
     localStorage.removeItem(STORAGE_AUTH_KEY);
     notify('Sesión cerrada · Modo Campo Local activo');
   }, [notify]);
@@ -294,25 +403,23 @@ export default function GeoGis6MobileShell() {
     try {
       const content = {
         meta: { nombre: selectedProject.name, notas: activeParcel.sector },
-        parcels: [
-          {
-            id: activeParcel.id,
-            nombre: activeParcel.code,
-            fecha: new Date().toLocaleDateString('es-VE'),
-            area: activeParcel.areaGraficaM2,
-            perim: activeParcel.perimeterM,
-            ha: activeParcel.areaGraficaM2 / 10000,
-            geometryType: 'cerrada',
-            method: 'rigida02',
-            puntos: activeParcel.vertices.map((v) => ({
-              id: v.shortId,
-              ok: true,
-              direction: 'canoa_regven',
-              input: { id: v.shortId, este: v.estePsad56, norte: v.nortePsad56, huso: activeParcel.huso, alt: v.cota },
-              result: { este: v.esteRegven, norte: v.norteRegven, huso: activeParcel.huso, cota: v.cota, lat: v.lat, lng: v.lng },
-            })),
-          },
-        ],
+        parcels: parcels.map((p) => ({
+          id: p.id,
+          nombre: p.code,
+          fecha: new Date().toLocaleDateString('es-VE'),
+          area: p.areaGraficaM2,
+          perim: p.perimeterM,
+          ha: p.areaGraficaM2 / 10000,
+          geometryType: p.geometryType || 'cerrada',
+          method: 'rigida02',
+          puntos: p.vertices.map((v) => ({
+            id: v.shortId,
+            ok: true,
+            direction: 'canoa_regven',
+            input: { id: v.shortId, este: v.estePsad56, norte: v.nortePsad56, huso: p.huso, alt: v.cota },
+            result: { este: v.esteRegven, norte: v.norteRegven, huso: p.huso, cota: v.cota, lat: v.lat, lng: v.lng },
+          })),
+        })),
       };
       const res = await fetch(`${PROD_API_URL}/api/projects`, {
         method: 'POST',
@@ -329,14 +436,14 @@ export default function GeoGis6MobileShell() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) throw new Error(data.error || 'Error al guardar en la nube');
-      notify('Proyecto sincronizado en PostgreSQL');
+      notify(`Proyecto (${parcels.length} parcelas) guardado en PostgreSQL`);
       await handleRefreshProjects();
     } catch (err: any) {
       notify(err?.message || 'Error guardando en la nube');
     } finally {
       setCloudSyncing(false);
     }
-  }, [activeParcel, authToken, deviceId, handleRefreshProjects, notify, selectedProject]);
+  }, [activeParcel.sector, authToken, deviceId, handleRefreshProjects, notify, parcels, selectedProject]);
 
   const handleToggleCrs = () => {
     setCrsMode((prev) => {
@@ -354,7 +461,14 @@ export default function GeoGis6MobileShell() {
     setSelectedProject(project);
     setCrsMode(project.defaultCrs);
     if (openMap) setActiveScreen('mapa');
-    notify(`Proyecto activo: ${project.name}`);
+    void loadCloudProjectContent(project);
+  };
+
+  const handleSelectParcel = (parcelId: string) => {
+    const found = parcels.find((p) => p.id === parcelId);
+    if (!found) return;
+    setActiveParcelId(found.id);
+    setSelectedVertexId(found.vertices[0]?.id || 'V-01');
   };
 
   const handleStakeVertex = (vertexId: string) => {
@@ -365,21 +479,27 @@ export default function GeoGis6MobileShell() {
 
   const handleCaptureCurrentVertex = () => {
     if (!gnssFix.isLiveHardware) return;
-    setActiveParcel((prev) => ({
-      ...prev,
-      vertices: prev.vertices.map((v) =>
-        v.id === selectedVertexId
+    setParcels((prevList) =>
+      prevList.map((p) =>
+        p.id === activeParcel.id
           ? {
-              ...v,
-              esteRegven: gnssFix.esteRegven,
-              norteRegven: gnssFix.norteRegven,
-              lat: gnssFix.lat,
-              lng: gnssFix.lng,
-              cota: Math.round(gnssFix.alt * 100) / 100,
+              ...p,
+              vertices: p.vertices.map((v) =>
+                v.id === selectedVertexId
+                  ? {
+                      ...v,
+                      esteRegven: gnssFix.esteRegven,
+                      norteRegven: gnssFix.norteRegven,
+                      lat: gnssFix.lat,
+                      lng: gnssFix.lng,
+                      cota: Math.round(gnssFix.alt * 100) / 100,
+                    }
+                  : v
+              ),
             }
-          : v
-      ),
-    }));
+          : p
+      )
+    );
   };
 
   const handleRestartRtk = () => {
@@ -507,18 +627,21 @@ export default function GeoGis6MobileShell() {
         {activeScreen === 'mapa' && (
           <ProjectMapScreen
             project={selectedProject}
-            parcel={activeParcel}
+            parcels={parcels}
+            activeParcel={activeParcel}
             crsMode={crsMode}
             isDemoMode={isDemoMode}
             gnssFix={gnssFix}
+            fitTrigger={mapFitTrigger}
             onToggleCrs={handleToggleCrs}
+            onSelectParcel={handleSelectParcel}
             onOpenParcel={() => setActiveScreen('parcela')}
             onStakeVertex={handleStakeVertex}
             onCenterGps={() =>
               notify(
                 gnssFix.isLiveHardware
                   ? `Centrado en GPS Real (${gnssFix.esteRegven.toFixed(2)}E, ${gnssFix.norteRegven.toFixed(2)}N)`
-                  : 'Centrado en estación Rover RTK · Adícora Sector Norte'
+                  : `Centrado en Parcela ${activeParcel.code}`
               )
             }
             onNotify={notify}
