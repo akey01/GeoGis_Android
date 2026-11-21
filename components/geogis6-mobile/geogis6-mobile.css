@@ -1,0 +1,63 @@
+/* GeoGIS6 Field Collector — Production Fidelity Dark Design System */
+.geogis6-mobile-root {
+  --st-surface: #0d1322;
+  --st-surface-lowest: #080e1d;
+  --st-surface-low: #151b2b;
+  --st-surface-container: #191f2f;
+  --st-surface-high: #242a3a;
+  --st-surface-highest: #2f3445;
+  --st-surface-bright: #33394a;
+  --st-primary: #4cd7f6;
+  --st-primary-container: #06b6d4;
+  --st-primary-fixed: #acedff;
+  --st-on-primary: #003640;
+  --st-on-primary-container: #00424f;
+  --st-secondary: #4edea3;
+  --st-secondary-container: #00a572;
+  --st-secondary-fixed: #6ffbbe;
+  --st-on-secondary: #003824;
+  --st-tertiary: #ffb95f;
+  --st-tertiary-container: #e79400;
+  --st-on-tertiary-container: #563400;
+  --st-error: #ffb4ab;
+  --st-on-error: #690005;
+  --st-on-surface: #dde2f8;
+  --st-on-surface-variant: #bcc9cd;
+  --st-outline: #869397;
+  --st-outline-variant: #3d494c;
+
+  font-family: var(--font-stitch-body), 'Hanken Grotesk', Inter, system-ui, sans-serif;
+  background-color: #0d1322;
+  color: #dde2f8;
+  width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.geogis6-mobile-root .font-stitch-headline {
+  font-family: var(--font-stitch-headline), 'Space Grotesk', Inter, system-ui, sans-serif;
+}
+
+.geogis6-mobile-root .font-stitch-body {
+  font-family: var(--font-stitch-body), 'Hanken Grotesk', Inter, system-ui, sans-serif;
+}
+
+.geogis6-mobile-root .font-stitch-mono {
+  font-family: var(--font-stitch-mono), 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.geogis6-mobile-root .no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.geogis6-mobile-root .no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.geogis6-mobile-root .stitch-ar-grid {
+  background-image:
+    linear-gradient(to bottom, rgba(13, 19, 34, 0.9) 0%, rgba(19, 33, 52, 0.45) 38%, rgba(69, 43, 30, 0.72) 55%, rgba(44, 28, 20, 0.94) 100%);
+}

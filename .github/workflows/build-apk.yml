@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies (Capacitor & Next core)
         run: npm install --legacy-peer-deps
 
-      - name: Stamp APK OTA version into web bundle and apk-version.json
+      - name: Stamp APK OTA version into Next.js bundle and apk-version.json
         id: ota_version
         run: |
           python3 - <<'EOF'
@@ -58,16 +58,16 @@ jobs:
           from datetime import datetime, timezone
           from pathlib import Path
 
-          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "1"))
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "10"))
           version_code = 600 + run_number
           version_name = f"6.0.{run_number}"
 
-          html_path = Path("public/index.html")
-          html = html_path.read_text(encoding="utf-8")
-          html = re.sub(r"const APP_VERSION_CODE\s*=\s*\d+;", f"const APP_VERSION_CODE = {version_code};", html, count=1)
-          html = re.sub(r"const APP_VERSION_NAME\s*=\s*'[^']+';", f"const APP_VERSION_NAME = '{version_name}';", html, count=1)
-          html = re.sub(r'id="btn-ota-header"([^>]*)>\s*v6\.0\.\d+\s*</button>', f'id="btn-ota-header"\\1>v{version_name}</button>', html, count=1)
-          html_path.write_text(html, encoding="utf-8")
+          field_data = Path("components/geogis6-mobile/data/fieldData.ts")
+          if field_data.exists():
+              ts = field_data.read_text(encoding="utf-8")
+              ts = re.sub(r"export const APP_VERSION_CODE\s*=\s*\d+;", f"export const APP_VERSION_CODE = {version_code};", ts, count=1)
+              ts = re.sub(r"export const APP_VERSION_NAME\s*=\s*'[^']+';", f"export const APP_VERSION_NAME = '{version_name}';", ts, count=1)
+              field_data.write_text(ts, encoding="utf-8")
 
           manifest_path = Path("public/apk-version.json")
           manifest = {
@@ -77,7 +77,7 @@ jobs:
               "publishedAt": datetime.now(timezone.utc).isoformat(),
               "downloadUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk",
               "releaseApiUrl": "https://api.github.com/repos/akey01/GeoGis_Android/releases/latest",
-              "notes": f"Compilación v{version_name} (Build {version_code}): Parcelas Desktop, Proyectos PostgreSQL/Local, Login Integrado y Auto-Update OTA."
+              "notes": f"GeoGIS6 Mobile v{version_name} (Build {version_code}): 5 pantallas Stitch nativas activas por defecto (Auth/Proyectos, Mapa, Parcela, Localización RTK/AR y Satélites GNSS) compiladas con Next.js output:export."
           }
           manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -89,7 +89,14 @@ jobs:
           print(f"Stamped OTA version v{version_name} (code={version_code})")
           EOF
 
-      - name: Generate native Capacitor Android project
+      - name: Build Next.js Static Export (out/)
+        env:
+          NEXT_EXPORT_APK: "1"
+          NEXT_PUBLIC_API_URL: "https://geogis6-android.onrender.com"
+          NEXT_PUBLIC_APP_PLATFORM: "android"
+        run: npm run build:apk
+
+      - name: Generate native Capacitor Android project and sync out/
         run: |
           rm -rf android
           npx cap add android
@@ -105,7 +112,7 @@ jobs:
           gradle_path = Path("android/app/build.gradle")
           text = gradle_path.read_text(encoding="utf-8")
 
-          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "1"))
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "10"))
           version_code = 600 + run_number
           version_name = f"6.0.{run_number}"
 
@@ -140,7 +147,7 @@ jobs:
           print(gradle_path.read_text(encoding="utf-8"))
           EOF
 
-      - name: Ensure GPS, Internet and Cleartext permissions in AndroidManifest.xml
+      - name: Ensure GPS, Camera, Internet and Cleartext permissions in AndroidManifest.xml
         run: |
           python3 - <<'EOF'
           from pathlib import Path
@@ -152,6 +159,8 @@ jobs:
               '<uses-permission android:name="android.permission.INTERNET" />',
               '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',
               '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />',
+              '<uses-permission android:name="android.permission.CAMERA" />',
+              '<uses-feature android:name="android.hardware.camera" android:required="false" />',
           ]
           for perm in perms:
               if perm not in text:
@@ -159,7 +168,7 @@ jobs:
           manifest.write_text(text, encoding="utf-8")
           EOF
 
-      - name: Configure runtime GPS permissions and WebView geolocation in MainActivity.java
+      - name: Configure runtime GPS/Camera permissions, WindowInsets & DownloadListener in MainActivity.java
         run: |
           python3 - <<'EOF'
           from pathlib import Path
@@ -185,6 +194,7 @@ jobs:
           import android.view.Window;
           import android.webkit.DownloadListener;
           import android.webkit.GeolocationPermissions;
+          import android.webkit.PermissionRequest;
           import androidx.core.app.ActivityCompat;
           import androidx.core.content.ContextCompat;
           import androidx.core.graphics.Insets;
@@ -196,7 +206,7 @@ jobs:
           import com.getcapacitor.BridgeWebChromeClient;
 
           public class MainActivity extends BridgeActivity {{
-              private static final int LOCATION_PERMISSION_REQUEST_CODE = 1001;
+              private static final int FIELD_PERMISSIONS_REQUEST_CODE = 1001;
 
               @Override
               public void onCreate(Bundle savedInstanceState) {{
@@ -204,8 +214,8 @@ jobs:
 
                   Window window = getWindow();
                   if (window != null) {{
-                      window.setStatusBarColor(0xFF060E20);
-                      window.setNavigationBarColor(0xFF060E20);
+                      window.setStatusBarColor(0xFF0D1322);
+                      window.setNavigationBarColor(0xFF0D1322);
                       WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
                       if (controller != null) {{
                           controller.setAppearanceLightStatusBars(false);
@@ -215,7 +225,7 @@ jobs:
 
                   View rootView = findViewById(android.R.id.content);
                   if (rootView != null) {{
-                      rootView.setBackgroundColor(0xFF060E20);
+                      rootView.setBackgroundColor(0xFF0D1322);
                       ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, windowInsets) -> {{
                           Insets insets = windowInsets.getInsets(
                               WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
@@ -229,14 +239,17 @@ jobs:
                   if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                           != PackageManager.PERMISSION_GRANTED
                           || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                          != PackageManager.PERMISSION_GRANTED
+                          || ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                           != PackageManager.PERMISSION_GRANTED) {{
                       ActivityCompat.requestPermissions(
                           this,
                           new String[] {{
                               Manifest.permission.ACCESS_FINE_LOCATION,
-                              Manifest.permission.ACCESS_COARSE_LOCATION
+                              Manifest.permission.ACCESS_COARSE_LOCATION,
+                              Manifest.permission.CAMERA
                           }},
-                          LOCATION_PERMISSION_REQUEST_CODE
+                          FIELD_PERMISSIONS_REQUEST_CODE
                       );
                   }}
 
@@ -259,6 +272,11 @@ jobs:
                                       String origin, GeolocationPermissions.Callback callback) {{
                                   callback.invoke(origin, true, false);
                               }}
+
+                              @Override
+                              public void onPermissionRequest(final PermissionRequest request) {{
+                                  request.grant(request.getResources());
+                              }}
                           }}
                       );
                   }}
@@ -266,11 +284,9 @@ jobs:
           }}
           '''
 
-          # Strip the 10-space YAML indentation cleanly
           dedented = "\n".join(line[10:] if line.startswith("          ") else line for line in java_code.splitlines()) + "\n"
           main_activity.write_text(dedented, encoding="utf-8")
           print(f"Updated {main_activity}")
-          print(main_activity.read_text(encoding="utf-8"))
           EOF
 
       - name: Build Signed Release APK with Gradle
@@ -300,9 +316,9 @@ jobs:
           tag_name: v6.0.0
           name: GeoGIS6 Mobile v6.0.0 (Android APK)
           body: |
-            APK oficial de producción de GeoGIS6 Mobile (Release firmada v1+v2) compilado con Capacitor 7 y Android SDK.
+            APK oficial de producción de GeoGIS6 Mobile (Release firmada v1+v2) compilado con Next.js output:export + Capacitor 7 + Android SDK.
             [APK_VERSION_CODE=${{ steps.ota_version.outputs.version_code }}] [APK_VERSION_NAME=${{ steps.ota_version.outputs.version_name }}]
-            Incluye Manejo Multiparcela Desktop, Gestión de Proyectos Cloud PostgreSQL/Local, Login Integrado y Auto-Actualizaciones OTA.
+            Incluye las 5 pantallas nuevas Stitch activas por defecto: Autenticación/Proyectos, Mapa del Proyecto, Parcela Individual, Localización RTK/AR y Satélites GNSS.
           files: |
             GeoGis6_Android.apk
             public/apk-version.json

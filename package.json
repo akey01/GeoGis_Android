@@ -8,6 +8,7 @@
     "start": "next start",
     "dev": "next dev -p 3001",
     "build": "next build",
+    "build:apk": "node scripts/build-apk-export.mjs",
     "cap:sync": "npx cap sync android",
     "cap:open": "npx cap open android"
   },
