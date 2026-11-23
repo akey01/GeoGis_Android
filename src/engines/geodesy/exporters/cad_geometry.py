@@ -1147,3 +1147,148 @@ def render_adaptive_construction_tables(
 
     return (annex_outer_x + annex_outer_w + margin) - (outer['x'] + outer['w'])
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIFICACIÓN TOPOLÓGICA DE PARCELAS (SOLO PUNTOS EXTERIORES)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ring_remove_collinear(pts, dist_tol=0.01):
+    """Elimina vértices repetidos y puntos colineales redundantes de un anillo cerrado."""
+    cleaned = []
+    for pt in pts:
+        if not cleaned or math.hypot(pt['x'] - cleaned[-1]['x'], pt['y'] - cleaned[-1]['y']) > 1e-4:
+            cleaned.append(dict(pt))
+    while len(cleaned) > 1 and math.hypot(cleaned[0]['x'] - cleaned[-1]['x'], cleaned[0]['y'] - cleaned[-1]['y']) <= 1e-4:
+        cleaned.pop()
+    if len(cleaned) <= 3:
+        return cleaned
+
+    changed = True
+    while changed and len(cleaned) > 3:
+        changed = False
+        next_pts = []
+        n = len(cleaned)
+        for i in range(n):
+            prev = cleaned[(i - 1) % n]
+            curr = cleaned[i]
+            nxt = cleaned[(i + 1) % n]
+            dx1, dy1 = curr['x'] - prev['x'], curr['y'] - prev['y']
+            dx2, dy2 = nxt['x'] - curr['x'], nxt['y'] - curr['y']
+            l1 = math.hypot(dx1, dy1)
+            l2 = math.hypot(dx2, dy2)
+            if l1 < 1e-6 or l2 < 1e-6:
+                changed = True
+                continue
+            seg_dx, seg_dy = nxt['x'] - prev['x'], nxt['y'] - prev['y']
+            seg_len = math.hypot(seg_dx, seg_dy)
+            perp = abs(seg_dx * (curr['y'] - prev['y']) - seg_dy * (curr['x'] - prev['x'])) / max(seg_len, 1e-9)
+            dot = dx1 * dx2 + dy1 * dy2
+            if dot > 0 and perp <= dist_tol:
+                changed = True
+                continue
+            next_pts.append(curr)
+        cleaned = next_pts
+    return cleaned
+
+
+def unify_parcels_exterior(processed_parcels, snap_tol=0.05, project_name='PARCELA_UNIFICADA'):
+    """
+    Fusiona múltiples parcelas procesadas en un único polígono exterior cerrado,
+    descartando todos los linderos internos compartidos y vértices interiores.
+    """
+    if not processed_parcels or len(processed_parcels) <= 1:
+        return processed_parcels
+
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+    except ImportError as exc:
+        raise RuntimeError(f"Shapely requerido para unificación topológica de parcelas: {exc}")
+
+    polys = []
+    orig_vertices = []
+    total_area_doc = 0.0
+
+    for p_item in processed_parcels:
+        total_area_doc += float(p_item.get('area_doc') or p_item.get('area_mensura') or 0.0)
+        pts = p_item.get('pts') or []
+        if len(pts) < 3:
+            continue
+        coords = [(float(pt['x']), float(pt['y'])) for pt in pts]
+        orig_vertices.extend(coords)
+        poly = Polygon(coords)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if not poly.is_empty and poly.area > 1e-6:
+            polys.append(poly)
+
+    if len(polys) <= 1:
+        return processed_parcels
+
+    # Cierre morfológico suave para soldar linderos colindantes con micro-separaciones <= snap_tol
+    buffered = [poly.buffer(snap_tol, join_style=2) for poly in polys]
+    merged = unary_union(buffered).buffer(-snap_tol, join_style=2)
+    merged = merged.simplify(0.01, preserve_topology=True)
+
+    if merged.geom_type == 'Polygon':
+        ext_coords = list(merged.exterior.coords[:-1])
+    elif merged.geom_type == 'MultiPolygon':
+        # Parcelas disjuntas: envolvente exterior única sin puntos interiores
+        hull = merged.convex_hull
+        ext_coords = list(hull.exterior.coords[:-1])
+    else:
+        raise ValueError(f"Geometría resultante no poligonal al unificar: {merged.geom_type}")
+
+    # Recuperar coordenadas exactas originales dentro de tolerancia para evitar deriva milimétrica
+    snapped_pts = []
+    snap_recover_tol = snap_tol * 1.5
+    for vx, vy in ext_coords:
+        best_pt = (vx, vy)
+        best_dist = snap_recover_tol
+        for ox, oy in orig_vertices:
+            d = math.hypot(vx - ox, vy - oy)
+            if d <= best_dist:
+                best_dist = d
+                best_pt = (ox, oy)
+        snapped_pts.append({'x': best_pt[0], 'y': best_pt[1], 'id': ''})
+
+    final_pts = _ring_remove_collinear(snapped_pts, dist_tol=0.01)
+    if len(final_pts) < 3:
+        raise ValueError("La unificación produjo menos de 3 vértices externos válidos.")
+
+    for idx, pt in enumerate(final_pts):
+        pt['id'] = str(idx + 1)
+
+    # Recalcular área, perímetro y orientación (Shoelace)
+    n = len(final_pts)
+    signed_a = 0.0
+    perim_m = 0.0
+    for i in range(n):
+        p1 = final_pts[i]
+        p2 = final_pts[(i + 1) % n]
+        signed_a += p1['x'] * p2['y'] - p2['x'] * p1['y']
+        perim_m += math.hypot(p2['x'] - p1['x'], p2['y'] - p1['y'])
+    signed_a *= 0.5
+    area_m = abs(signed_a)
+
+    p_xs = [pt['x'] for pt in final_pts]
+    p_ys = [pt['y'] for pt in final_pts]
+
+    return [{
+        'nombre': project_name or 'PARCELA_UNIFICADA',
+        'geometryType': 'cerrada',
+        'pts': final_pts,
+        'area_mensura': area_m,
+        'area_doc': total_area_doc if total_area_doc > 0 else area_m,
+        'perim': perim_m,
+        'is_ccw': signed_a > 0,
+        'min_x': min(p_xs),
+        'max_x': max(p_xs),
+        'min_y': min(p_ys),
+        'max_y': max(p_ys),
+        'cx': (min(p_xs) + max(p_xs)) * 0.5,
+        'cy': (min(p_ys) + max(p_ys)) * 0.5,
+        'data_w': max(p_xs) - min(p_xs),
+        'data_h': max(p_ys) - min(p_ys),
+    }]
+

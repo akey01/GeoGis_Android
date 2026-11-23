@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import toast from 'react-hot-toast';
 import { Parcel } from './store';
 import { DXF_SCALE_FACTOR, DXF_OFFSET_X, DXF_OFFSET_Y } from '@/lib/servicesConfig';
+import { unifyParcelsToSingleParcel } from './polygon-union';
 
 type Point2D = {
   x: number;
@@ -636,6 +637,117 @@ export async function exportIntegratedMultiParcelDXF(
   } catch (err) {
     console.error('Error al exportar DXF integrado:', err);
     alert('Ocurrió un error inesperado al procesar la exportación del DXF integrado.');
+  }
+}
+
+/**
+ * Unifica múltiples parcelas seleccionadas conservando únicamente el perímetro exterior
+ * (sin linderos internos compartidos) y exporta un plano DXF oficial del polígono unificado.
+ */
+export async function exportUnifiedParcelDXF(
+  projectName: string,
+  parcels: Parcel[]
+): Promise<{ success: boolean; unifiedParcel?: Parcel }> {
+  if (!parcels || parcels.length < 2) {
+    toast.error('Selecciona al menos 2 parcelas para unificar y exportar.');
+    return { success: false };
+  }
+
+  const validParcels = parcels.filter(
+    (p) => p.puntos && p.puntos.length >= 3
+  );
+  if (validParcels.length < 2) {
+    toast.error('Se requieren al menos 2 polígonos cerrados con 3 o más vértices.');
+    return { success: false };
+  }
+
+  const baseName = cleanText(projectName, 'PARCELA_UNIFICADA') || 'PARCELA_UNIFICADA';
+  const unifiedParcel = unifyParcelsToSingleParcel(validParcels, `${baseName}_UNIFICADA`);
+
+  const unifiedPointsPayload = (unifiedParcel.puntos || []).map((pt: any, idx: number) => ({
+    x: Number(pt.result?.este ?? pt.input?.este ?? 0),
+    y: Number(pt.result?.norte ?? pt.input?.norte ?? 0),
+    id: cleanText(pt.id, String(idx + 1)) || String(idx + 1),
+    ...pt,
+  }));
+
+  const payloadParcels = validParcels.map((p, pIdx) => ({
+    nombre: cleanText(p.nombre, `PARCELA_${pIdx + 1}`),
+    geometryType: p.geometryType || 'cerrada',
+    area: p.area,
+    points: (p.puntos || []).map((pt: any, idx: number) => ({
+      x: Number(pt.x ?? pt.result?.este ?? pt.result?.x ?? pt.input?.x ?? 0),
+      y: Number(pt.y ?? pt.result?.norte ?? pt.result?.y ?? pt.input?.y ?? 0),
+      id: cleanText(pt.id, String(idx + 1)) || String(idx + 1),
+      ...pt,
+    })),
+  }));
+
+  const totalAreaDoc = validParcels.reduce((acc, p) => acc + Math.abs(p.area ?? 0), 0);
+  const firstParcel = unifiedParcel as any;
+  const projectEncoded = encodeURIComponent(cleanText(unifiedParcel.nombre, 'PARCELA_UNIFICADA') || 'PARCELA_UNIFICADA');
+
+  try {
+    const res = await fetch('/api/cad-layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        points: unifiedPointsPayload,
+        parcels: payloadParcels,
+        unifyParcels: true,
+        dxfScaleFactor: DXF_SCALE_FACTOR,
+        dxfOffsetX: DXF_OFFSET_X,
+        dxfOffsetY: DXF_OFFSET_Y,
+        geometryType: 'cerrada',
+        metadata: {
+          unifyParcels: true,
+          projectName: projectEncoded,
+          areaDoc: totalAreaDoc > 0 ? totalAreaDoc : unifiedParcel.area,
+          fecha: unifiedParcel.fecha,
+          estado: firstParcel.estado || '',
+          municipio: firstParcel.municipio || '',
+          parroquia: firstParcel.parroquia || '',
+          propietario: firstParcel.propietario || '',
+          rif: firstParcel.rif || '',
+          domicilio: firstParcel.domicilio || '',
+          profesional: firstParcel.profesional || '',
+          civ: firstParcel.civ || '',
+          zona: firstParcel.zona || '',
+          seccion: firstParcel.seccion || '',
+          cedulaCat: firstParcel.cedulaCat || '',
+          observaciones: firstParcel.observaciones || '',
+        },
+      }),
+      signal: AbortSignal.timeout(180000),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      toast.error(errData.error || `Error al generar DXF unificado (${res.status})`);
+      return { success: false };
+    }
+
+    const data = await res.json();
+    const downloadUrl = data.dxfUrl || data.download_url || data.file || data.fileUrl;
+    if (data.status !== 'success' || !downloadUrl) {
+      toast.error(data.message || data.error || 'Respuesta inválida del motor CAD');
+      return { success: false };
+    }
+
+    const fileStem = baseName.replace(/\s+/g, '_');
+    const ok = await downloadViaBlob(downloadUrl, `${fileStem}_UNIFICADO.dxf`);
+    if (!ok) {
+      toast.error('No se pudo descargar el archivo DXF unificado');
+      return { success: false };
+    }
+
+    toast.success(`Plano unificado ${fileStem}_UNIFICADO.dxf (${unifiedPointsPayload.length} vértices externos) descargado`);
+    return { success: true, unifiedParcel };
+  } catch (err: any) {
+    console.error('[DXF Unificado Error]', err);
+    toast.error(`Error al exportar DXF unificado: ${err?.message || 'error inesperado'}`);
+    return { success: false };
   }
 }
 

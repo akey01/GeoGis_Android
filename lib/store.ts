@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { DXFPolygon } from '@/lib/file-service';
+import { unifyParcelsToSingleParcel } from './polygon-union';
 
 export interface Point {
   id: string;
@@ -190,6 +191,7 @@ interface AppState {
   renameParcel: (id: string, name: string) => void;
   updateParcelMetadata: (id: string, metadata: Partial<Parcel>) => void;
   deleteParcel: (id: string) => void;
+  unifySelectedParcels: (parcelIds: string[], customName?: string) => Parcel | null;
   moveParcel: (id: string, dLat: number, dLng: number, dEste?: number, dNorte?: number) => void;
   importProject: (data: any) => void;
   clearCurrentParcel: () => void;
@@ -413,6 +415,31 @@ export const useAppStore = create<AppState>()(
       activeParcelId: activeParcelId === id ? null : activeParcelId,
       movableParcelIds: movableParcelIds.filter(pid => pid !== id),
     });
+  },
+
+  unifySelectedParcels: (parcelIds: string[], customName?: string) => {
+    const { savedParcels } = get();
+    const selected = savedParcels.filter(
+      (p) => parcelIds.includes(p.id) && (p.puntos?.length ?? 0) >= 3
+    );
+    if (selected.length < 2) return null;
+
+    const unified = unifyParcelsToSingleParcel(selected, customName);
+    const id = createUniqueParcelId(new Set(savedParcels.map((p) => p.id)));
+    const newParcel: Parcel = { ...unified, id };
+    const updatedParcels = [...savedParcels, newParcel].sort((a, b) =>
+      a.nombre.localeCompare(b.nombre)
+    );
+
+    set((state) => ({
+      savedParcels: updatedParcels,
+      activeParcelId: newParcel.id,
+      results: [...newParcel.puntos],
+      geometryType: 'cerrada',
+      viewTarget: { type: 'parcel', id: newParcel.id, trigger: state.viewTarget.trigger + 1 },
+    }));
+
+    return newParcel;
   },
 
   moveParcel: (id, dLat, dLng, dEste, dNorte) => {

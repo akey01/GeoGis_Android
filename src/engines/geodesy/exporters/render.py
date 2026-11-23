@@ -32,6 +32,7 @@ from cad_geometry import (
     draw_segment_ticks,
     draw_utm_grid_left_top,
     render_adaptive_construction_tables,
+    unify_parcels_exterior,
 )
 
 # ── Caché de template DXF (en memoria, por proceso Python) ──────────────────────
@@ -555,6 +556,14 @@ def main():
 
     if not processed_parcels:
         raise ValueError("No se encontraron parcelas o vértices válidos para exportar.")
+
+    should_unify = bool(
+        payload.get('unifyParcels')
+        or (isinstance(metadata, dict) and metadata.get('unifyParcels'))
+    )
+    if should_unify and len(processed_parcels) > 1:
+        unify_name = clean_text(metadata.get('projectName') or 'PARCELA_UNIFICADA', 'PARCELA_UNIFICADA')
+        processed_parcels = unify_parcels_exterior(processed_parcels, project_name=unify_name)
 
     if all_raw_xs and all_raw_ys:
         cx_raw = (min(all_raw_xs) + max(all_raw_xs)) / 2.0

@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FileService } from '@/lib/file-service';
-import { exportParcelToDXF, exportProjectPolygonsToDXF, exportMultiParcelDXF, exportIntegratedMultiParcelDXF } from '@/lib/exportDxf';
+import { exportParcelToDXF, exportProjectPolygonsToDXF, exportMultiParcelDXF, exportIntegratedMultiParcelDXF, exportUnifiedParcelDXF } from '@/lib/exportDxf';
 import { Parcel } from '@/lib/store';
 import ParcelEditModal from './ParcelEditModal';
 import ParcelSummaryModal from './ParcelSummaryModal';
@@ -133,6 +133,7 @@ export default function ParcelList() {
     viewParcelResults,
     centerOnParcel,
     updateParcelMetadata,
+    unifySelectedParcels,
     user,
     projectMeta,
     hatchColor,
@@ -333,6 +334,42 @@ export default function ParcelList() {
     await exportMultiParcelDXF(name, selected);
   }, [selectedIds, savedParcels, projectMeta.nombre]);
 
+  const handleUnifySelected = useCallback(() => {
+    if (selectedIds.length < 2) {
+      toast.error('Selecciona al menos 2 parcelas para unificar.');
+      return;
+    }
+    try {
+      const name = projectMeta.nombre ? `UNIFICADA_${projectMeta.nombre}` : undefined;
+      const unified = unifySelectedParcels(selectedIds, name);
+      if (!unified) {
+        toast.error('Se requieren al menos 2 polígonos cerrados válidos para unificar.');
+        return;
+      }
+      setSelectedIds([]);
+      toast.success(
+        `Parcelas unificadas en "${unified.nombre}" (${unified.puntos.length} vértices externos, ${formatArea(unified.area)})`
+      );
+    } catch (err: any) {
+      toast.error(err?.message || 'No se pudieron unificar las parcelas');
+    }
+  }, [selectedIds, projectMeta.nombre, unifySelectedParcels]);
+
+  const handleExportUnifiedDxf = useCallback(async () => {
+    if (selectedIds.length < 2) {
+      toast.error('Selecciona al menos 2 parcelas para exportar unificadas.');
+      return;
+    }
+    const selected = savedParcels.filter((p) => selectedIds.includes(p.id));
+    const name = projectMeta.nombre || 'PARCELA_UNIFICADA';
+    useAppStore.getState().setExportingState(true, 'DXF', 20);
+    try {
+      await exportUnifiedParcelDXF(name, selected);
+    } finally {
+      useAppStore.getState().setExportingState(false);
+    }
+  }, [selectedIds, savedParcels, projectMeta.nombre]);
+
   const handleDeleteSelected = useCallback(() => {
     if (selectedIds.length === 0) return;
     if (window.confirm(`¿Eliminar las ${selectedIds.length} parcelas seleccionadas?`)) {
@@ -480,6 +517,26 @@ export default function ParcelList() {
             <Printer className="w-3 h-3" />
             DXF Integrado
           </button>
+          {selectedIds.length >= 2 && (
+            <>
+              <button
+                onClick={handleUnifySelected}
+                title="Unificar parcelas seleccionadas conservando únicamente los puntos externos del perímetro"
+                className="flex items-center gap-1 px-2 py-1 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25 hover:text-cyan-200 rounded text-[10px] font-bold uppercase tracking-wider transition-colors border border-cyan-500/30"
+              >
+                <Layers className="w-3 h-3 text-cyan-400" />
+                Unificar ({selectedIds.length})
+              </button>
+              <button
+                onClick={handleExportUnifiedDxf}
+                title="Exportar plano DXF del polígono unificado solo con puntos externos"
+                className="flex items-center gap-1 px-2 py-1 bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 hover:text-sky-200 rounded text-[10px] font-bold uppercase tracking-wider transition-colors border border-sky-500/30"
+              >
+                <Printer className="w-3 h-3 text-sky-400" />
+                DXF Unificado
+              </button>
+            </>
+          )}
           <button
             onClick={handleExportSelectedDxf}
             title="Exportar solo las líneas poligonales en DXF sin plantilla"
