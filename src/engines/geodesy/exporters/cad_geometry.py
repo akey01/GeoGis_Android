@@ -615,3 +615,532 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
         max_h_fit = (max_clearance * 1.65) / max(len(p_name) * 0.65, 1.0)
         interior_text_h = max(print_scale * 0.0018, min(interior_text_h, max_h_fit))
     _draw_centered_text(msp, in_x, in_y, interior_text_h, p_name, layer='TEXTOS', style=text_style)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MOTOR ADAPTATIVO DE CUADROS DE CONSTRUCCIÓN EN 3 NIVELES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _draw_rect(msp, x, y, w, h, thickness=0.0, layer='MARCO'):
+    pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+    attribs = {'layer': layer}
+    if thickness > 0:
+        attribs['const_width'] = thickness
+    msp.add_lwpolyline(pts, close=True, dxfattribs=attribs)
+
+
+def _draw_cell_text_fit(msp, x, y, text_height, col_w, text, layer='TEXTOS', style='GEO_ARIAL'):
+    """Dibuja texto centrado en celda ajustando factor de ancho y altura si excede el ancho de columna."""
+    txt_str = str(text)
+    if not txt_str:
+        return None
+    h = max(text_height, 1e-4)
+    est_w = max(len(txt_str), 1) * h * 0.62
+    avail_w = max(col_w * 0.88, 1e-4)
+    width_factor = 1.0
+    if est_w > avail_w:
+        width_factor = max(0.60, min(0.98, avail_w / est_w))
+        if est_w * width_factor > avail_w:
+            h = h * (avail_w / (est_w * width_factor))
+    t = msp.add_text(
+        txt_str,
+        dxfattribs={
+            'layer': layer,
+            'height': h,
+            'width': width_factor,
+            'rotation': 0,
+            'color': 7,
+            'style': style,
+        },
+    )
+    t.set_placement((x, y), align=TextEntityAlignment.MIDDLE_CENTER)
+    return t
+
+
+def _resolve_punto_apoyo(p_item, p_pts, metadata, clean_text_fn, extract_coords_fn):
+    pa_custom = None
+    if isinstance(metadata, dict):
+        pa_custom = metadata.get('puntoApoyo')
+    if pa_custom is None:
+        pa_custom = p_item.get('puntoApoyo')
+    if isinstance(pa_custom, dict):
+        pa_id = clean_text_fn(pa_custom.get('id', 'V.P.'), 'V.P.') or 'V.P.'
+        pa_x_val, pa_y_val = extract_coords_fn(pa_custom)
+        pa_x = pa_x_val if pa_x_val is not None else p_pts[0]['x']
+        pa_y = pa_y_val if pa_y_val is not None else p_pts[0]['y']
+    else:
+        pa_id = 'V.P.'
+        pa_x = p_pts[0]['x']
+        pa_y = p_pts[0]['y']
+    return pa_id, pa_x, pa_y
+
+
+def _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn):
+    p_pts = p_item['pts']
+    p_geom = p_item.get('geometryType', 'cerrada')
+    n_pts = len(p_pts)
+    rows = []
+    for idx, p1 in enumerate(p_pts):
+        is_last = idx == n_pts - 1
+        has_next = (p_geom == 'cerrada' and n_pts >= 2) or (p_geom == 'abierta' and not is_last)
+        if has_next:
+            p2 = p_pts[(idx + 1) % n_pts]
+            dx = p2['x'] - p1['x']
+            dy = p2['y'] - p1['y']
+            lado_str = f"{p1['id']}-{p2['id']}"
+            rumbo_str = get_bearing_fn(dx, dy)
+            dist_str = format_number_fn(math.hypot(dx, dy), 2)
+        else:
+            lado_str = str(p1['id'])
+            rumbo_str = '-'
+            dist_str = '-'
+        rows.append(
+            {
+                'lado': lado_str,
+                'rumbo': rumbo_str,
+                'dist': dist_str,
+                'vert': str(p1['id']),
+                'norte': format_number_fn(p1['y'], 3),
+                'este': format_number_fn(p1['x'], 3),
+            }
+        )
+    return rows
+
+
+def _draw_compact_balance_and_pa(msp, box_x, top_y, box_w, hdr_h, row_h, title,
+                                 area_doc_txt, area_mens_txt, pa_id, pa_x, pa_y,
+                                 frame_thickness, text_h, text_style, format_number_fn):
+    """Dibuja cuadro compacto Balance de Superficie + Punto de Apoyo (1 hdr + 2 rows)."""
+    total_h = hdr_h + 2.0 * row_h
+    _draw_rect(msp, box_x, top_y - total_h, box_w, total_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, top_y - hdr_h, box_x + box_w, top_y - hdr_h, layer='MARCO')
+    _draw_line(msp, box_x, top_y - hdr_h - row_h, box_x + box_w, top_y - hdr_h - row_h, layer='MARCO')
+
+    _draw_cell_text_fit(
+        msp, box_x + box_w * 0.5, top_y - hdr_h * 0.5,
+        min(text_h * 0.85, hdr_h * 0.50), box_w, title, layer='TEXTOS', style=text_style
+    )
+
+    # Fila 1: Área Documento | Área Mensura
+    y1 = top_y - hdr_h - row_h * 0.5
+    c_mid = box_w * 0.5
+    _draw_line(msp, box_x + c_mid, top_y - hdr_h, box_x + c_mid, top_y - hdr_h - row_h, layer='MARCO')
+    cell_h = min(text_h * 0.78, row_h * 0.62)
+    _draw_cell_text_fit(msp, box_x + c_mid * 0.5, y1, cell_h, c_mid, f"A.DOC: {area_doc_txt}", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c_mid * 1.5, y1, cell_h, c_mid, f"A.MENS: {area_mens_txt}", layer='TEXTOS', style=text_style)
+
+    # Fila 2: Punto de Apoyo | N | E
+    y2 = top_y - hdr_h - row_h * 1.5
+    c_pa1 = box_w * 0.24
+    c_pa2 = box_w * 0.38
+    c_pa3 = box_w - c_pa1 - c_pa2
+    _draw_line(msp, box_x + c_pa1, top_y - hdr_h - row_h, box_x + c_pa1, top_y - total_h, layer='MARCO')
+    _draw_line(msp, box_x + c_pa1 + c_pa2, top_y - hdr_h - row_h, box_x + c_pa1 + c_pa2, top_y - total_h, layer='MARCO')
+    _draw_cell_text_fit(msp, box_x + c_pa1 * 0.5, y2, cell_h, c_pa1, f"PA: {pa_id}", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c_pa1 + c_pa2 * 0.5, y2, cell_h, c_pa2, f"N:{format_number_fn(pa_y, 2)}", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c_pa1 + c_pa2 + c_pa3 * 0.5, y2, cell_h, c_pa3, f"E:{format_number_fn(pa_x, 2)}", layer='TEXTOS', style=text_style)
+    return total_h
+
+
+def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, title, rows,
+                                     frame_thickness, text_h, text_style, footer_note=None):
+    """Dibuja un Cuadro de Construcción Unificado de 6 columnas (EST-PV | RUMBO | DIST | VERT | NORTE | ESTE)."""
+    colhdr_h = hdr_h * 0.85
+    has_footer = bool(footer_note)
+    total_h = hdr_h + colhdr_h + len(rows) * row_h + (row_h if has_footer else 0.0)
+
+    _draw_rect(msp, box_x, top_y - total_h, box_w, total_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, top_y - hdr_h, box_x + box_w, top_y - hdr_h, layer='MARCO')
+    _draw_line(msp, box_x, top_y - hdr_h - colhdr_h, box_x + box_w, top_y - hdr_h - colhdr_h, layer='MARCO')
+
+    _draw_cell_text_fit(
+        msp, box_x + box_w * 0.5, top_y - hdr_h * 0.5,
+        min(text_h * 0.85, hdr_h * 0.50), box_w, title, layer='TEXTOS', style=text_style
+    )
+
+    col_fracs = [0.14, 0.25, 0.13, 0.10, 0.19, 0.19]
+    col_widths = [box_w * f for f in col_fracs]
+    col_labels = ['EST-PV', 'RUMBO', 'DIST(m)', 'VERT', 'NORTE(m)', 'ESTE(m)']
+    data_bottom_y = top_y - hdr_h - colhdr_h - len(rows) * row_h
+
+    acc_x = box_x
+    col_centers = []
+    for c_idx, cw in enumerate(col_widths):
+        col_centers.append(acc_x + cw * 0.5)
+        if c_idx > 0:
+            _draw_line(msp, acc_x, top_y - hdr_h, acc_x, data_bottom_y, layer='MARCO')
+        acc_x += cw
+
+    col_y = top_y - hdr_h - colhdr_h * 0.5
+    col_lbl_h = min(text_h * 0.72, colhdr_h * 0.48)
+    for c_idx, lbl in enumerate(col_labels):
+        _draw_cell_text_fit(msp, col_centers[c_idx], col_y, col_lbl_h, col_widths[c_idx], lbl, layer='TEXTOS', style=text_style)
+
+    val_h = min(text_h * 0.78, row_h * 0.64)
+    for r_idx, row in enumerate(rows):
+        y_top = top_y - hdr_h - colhdr_h - r_idx * row_h
+        y_mid = y_top - row_h * 0.5
+        if r_idx > 0:
+            _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
+        vals = [row['lado'], row['rumbo'], row['dist'], row['vert'], row['norte'], row['este']]
+        for c_idx, val in enumerate(vals):
+            _draw_cell_text_fit(msp, col_centers[c_idx], y_mid, val_h, col_widths[c_idx], val, layer='TEXTOS', style=text_style)
+
+    if has_footer:
+        _draw_line(msp, box_x, data_bottom_y, box_x + box_w, data_bottom_y, layer='MARCO')
+        _draw_cell_text_fit(
+            msp, box_x + box_w * 0.5, data_bottom_y - row_h * 0.5,
+            min(text_h * 0.74, row_h * 0.60), box_w, footer_note, layer='TEXTOS', style=text_style
+        )
+
+    return total_h
+
+
+def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table_unit,
+                                frame_thickness, text_h, text_style, metadata,
+                                get_bearing_fn, format_number_fn, clean_text_fn, extract_coords_fn):
+    """Nivel 1 (N <= 15): Formato clásico de 4 tablas separadas, encuadrado exactamente dentro de avail_h."""
+    p_pts = p_item['pts']
+    p_geom_type = p_item['geometryType']
+    p_area_m = p_item['area_mensura']
+    p_area_doc = p_item['area_doc']
+
+    pa_id, pa_x, pa_y = _resolve_punto_apoyo(p_item, p_pts, metadata, clean_text_fn, extract_coords_fn)
+    n_pts = len(p_pts)
+    n_segments = n_pts if p_geom_type == 'cerrada' else max(1, n_pts - 1)
+
+    total_hdr_mult = 7.4  # balance(1.0) + pa(2.7) + rumbos(1.85) + coords(1.85)
+    total_rows = 2 + 1 + n_segments + n_pts
+    gap_h = min(table_unit * 0.9, avail_h * 0.012)
+    total_gaps = 3.0 * gap_h
+    usable_h = max(avail_h - total_gaps, 1e-4)
+
+    hdr_h = min(table_unit * 2.8, usable_h / (total_hdr_mult + total_rows * 0.85))
+    row_h = min(table_unit * 2.6, max(usable_h - total_hdr_mult * hdr_h, 1e-4) / max(total_rows, 1))
+
+    t_y = top_y
+    area_doc_txt = f"{format_number_fn(p_area_doc, 2)} m2"
+    area_mens_txt = f"{format_number_fn(p_area_m, 2)} m2"
+
+    # 1. Balance de Superficie
+    bal_h = hdr_h + 2 * row_h
+    _draw_rect(msp, box_x, t_y - bal_h, box_w, bal_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, t_y - hdr_h, box_x + box_w, t_y - hdr_h, layer='MARCO')
+    _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - hdr_h * 0.5, min(text_h * 0.88, hdr_h * 0.50), box_w, 'BALANCE DE SUPERFICIE', layer='TEXTOS', style=text_style)
+
+    bal_c1 = box_w * 0.58
+    _draw_line(msp, box_x + bal_c1, t_y - hdr_h, box_x + bal_c1, t_y - bal_h, layer='MARCO')
+    _draw_line(msp, box_x, t_y - hdr_h - row_h, box_x + box_w, t_y - hdr_h - row_h, layer='MARCO')
+
+    bal_txt_h = min(text_h * 0.88, row_h * 0.65)
+    bal_lbl_h = min(text_h * 0.60, row_h * 0.48)
+    y1_mid = t_y - hdr_h - row_h * 0.5
+    _draw_left_text(msp, box_x + text_h * 0.3, y1_mid, bal_lbl_h, 'AREA SEGUN DOCUMENTO', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + bal_c1 + (box_w - bal_c1) * 0.5, y1_mid, bal_txt_h, box_w - bal_c1, area_doc_txt, layer='TEXTOS', style=text_style)
+
+    y2_mid = t_y - hdr_h - row_h * 1.5
+    _draw_left_text(msp, box_x + text_h * 0.3, y2_mid, bal_lbl_h, 'AREA SEGUN MENSURA', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + bal_c1 + (box_w - bal_c1) * 0.5, y2_mid, bal_txt_h, box_w - bal_c1, area_mens_txt, layer='TEXTOS', style=text_style)
+    t_y -= bal_h + gap_h
+
+    # 2. Punto de Apoyo
+    pa_subhdr_h = hdr_h * 0.85
+    pa_colhdr_h = hdr_h * 0.85
+    pa_h = hdr_h + pa_subhdr_h + pa_colhdr_h + row_h
+    _draw_rect(msp, box_x, t_y - pa_h, box_w, pa_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, t_y - hdr_h, box_x + box_w, t_y - hdr_h, layer='MARCO')
+    _draw_line(msp, box_x, t_y - hdr_h - pa_subhdr_h, box_x + box_w, t_y - hdr_h - pa_subhdr_h, layer='MARCO')
+    _draw_line(msp, box_x, t_y - hdr_h - pa_subhdr_h - pa_colhdr_h, box_x + box_w, t_y - hdr_h - pa_subhdr_h - pa_colhdr_h, layer='MARCO')
+
+    _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - hdr_h * 0.5, min(text_h * 0.86, hdr_h * 0.48), box_w, 'PUNTO DE APOYO (RED GEODESICA)', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - hdr_h - pa_subhdr_h * 0.5, min(text_h * 0.78, pa_subhdr_h * 0.48), box_w, 'COORDENADAS REGVEN (UTM)', layer='TEXTOS', style=text_style)
+
+    pa_c1 = box_w * 0.20
+    pa_c2 = box_w * 0.40
+    pa_c3 = box_w * 0.40
+    _draw_line(msp, box_x + pa_c1, t_y - hdr_h - pa_subhdr_h, box_x + pa_c1, t_y - pa_h, layer='MARCO')
+    _draw_line(msp, box_x + pa_c1 + pa_c2, t_y - hdr_h - pa_subhdr_h, box_x + pa_c1 + pa_c2, t_y - pa_h, layer='MARCO')
+
+    pa_col_y = t_y - hdr_h - pa_subhdr_h - pa_colhdr_h * 0.5
+    pa_chdr_h = min(text_h * 0.76, pa_colhdr_h * 0.48)
+    _draw_cell_text_fit(msp, box_x + pa_c1 * 0.5, pa_col_y, pa_chdr_h, pa_c1, 'PUNTO', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + pa_c1 + pa_c2 * 0.5, pa_col_y, pa_chdr_h, pa_c2, 'NORTE', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + pa_c1 + pa_c2 + pa_c3 * 0.5, pa_col_y, pa_chdr_h, pa_c3, 'ESTE', layer='TEXTOS', style=text_style)
+
+    pa_row_y = t_y - hdr_h - pa_subhdr_h - pa_colhdr_h - row_h * 0.5
+    pa_val_h = min(text_h * 0.88, row_h * 0.65)
+    _draw_cell_text_fit(msp, box_x + pa_c1 * 0.5, pa_row_y, pa_val_h, pa_c1, pa_id, layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + pa_c1 + pa_c2 * 0.5, pa_row_y, pa_val_h, pa_c2, format_number_fn(pa_y, 3), layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + pa_c1 + pa_c2 + pa_c3 * 0.5, pa_row_y, pa_val_h, pa_c3, format_number_fn(pa_x, 3), layer='TEXTOS', style=text_style)
+    t_y -= pa_h + gap_h
+
+    # 3. Cuadro de Rumbos y Distancias
+    rb_hdr_h = hdr_h
+    rb_colhdr_h = hdr_h * 0.85
+    rb_h = rb_hdr_h + rb_colhdr_h + n_segments * row_h
+    _draw_rect(msp, box_x, t_y - rb_h, box_w, rb_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, t_y - rb_hdr_h, box_x + box_w, t_y - rb_hdr_h, layer='MARCO')
+    _draw_line(msp, box_x, t_y - rb_hdr_h - rb_colhdr_h, box_x + box_w, t_y - rb_hdr_h - rb_colhdr_h, layer='MARCO')
+
+    r_c_est = box_w * 0.12
+    r_c_pv = box_w * 0.12
+    r_c_lado = r_c_est + r_c_pv
+    r_c_rumbo = box_w * 0.48
+    r_c_dist = box_w - r_c_lado - r_c_rumbo
+    _draw_line(msp, box_x + r_c_lado, t_y, box_x + r_c_lado, t_y - rb_h, layer='MARCO')
+    _draw_line(msp, box_x + r_c_lado + r_c_rumbo, t_y, box_x + r_c_lado + r_c_rumbo, t_y - rb_h, layer='MARCO')
+    _draw_line(msp, box_x + r_c_est, t_y - rb_hdr_h, box_x + r_c_est, t_y - rb_h, layer='MARCO')
+
+    _draw_cell_text_fit(msp, box_x + r_c_lado * 0.5, t_y - rb_hdr_h * 0.5, min(text_h * 0.85, rb_hdr_h * 0.50), r_c_lado, 'LADO', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo * 0.5, t_y - rb_hdr_h * 0.5, min(text_h * 0.85, rb_hdr_h * 0.50), r_c_rumbo, 'RUMBO', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, t_y - rb_hdr_h * 0.5, min(text_h * 0.78, rb_hdr_h * 0.48), r_c_dist, 'DISTANCIA', layer='TEXTOS', style=text_style)
+
+    rb_sub_y = t_y - rb_hdr_h - rb_colhdr_h * 0.5
+    rb_sh_h = min(text_h * 0.74, rb_colhdr_h * 0.48)
+    _draw_cell_text_fit(msp, box_x + r_c_est * 0.5, rb_sub_y, rb_sh_h, r_c_est, 'EST', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + r_c_est + r_c_pv * 0.5, rb_sub_y, rb_sh_h, r_c_pv, 'PV', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo * 0.5, rb_sub_y, rb_sh_h * 0.92, r_c_rumbo, '(GEODESICO)', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, rb_sub_y, rb_sh_h * 0.92, r_c_dist, '(m)', layer='TEXTOS', style=text_style)
+
+    rb_txt_h = min(text_h * 0.88, row_h * 0.65)
+    for s_idx in range(n_segments):
+        p1 = p_pts[s_idx]
+        p2 = p_pts[(s_idx + 1) % n_pts]
+        dx = p2['x'] - p1['x']
+        dy = p2['y'] - p1['y']
+        edge_dist = math.hypot(dx, dy)
+        bearing_str = get_bearing_fn(dx, dy)
+        y_top = t_y - rb_hdr_h - rb_colhdr_h - s_idx * row_h
+        y_mid = y_top - row_h * 0.5
+        if s_idx > 0:
+            _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
+        _draw_cell_text_fit(msp, box_x + r_c_est * 0.5, y_mid, rb_txt_h, r_c_est, str(p1['id']), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + r_c_est + r_c_pv * 0.5, y_mid, rb_txt_h, r_c_pv, str(p2['id']), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo * 0.5, y_mid, rb_txt_h, r_c_rumbo, bearing_str, layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, y_mid, rb_txt_h, r_c_dist, format_number_fn(edge_dist, 2), layer='TEXTOS', style=text_style)
+    t_y -= rb_h + gap_h
+
+    # 4. Tabla de Coordenadas UTM
+    coo_hdr_h = hdr_h
+    coo_colhdr_h = hdr_h * 0.85
+    coo_h = coo_hdr_h + coo_colhdr_h + n_pts * row_h
+    _draw_rect(msp, box_x, t_y - coo_h, box_w, coo_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, t_y - coo_hdr_h, box_x + box_w, t_y - coo_hdr_h, layer='MARCO')
+    _draw_line(msp, box_x, t_y - coo_hdr_h - coo_colhdr_h, box_x + box_w, t_y - coo_hdr_h - coo_colhdr_h, layer='MARCO')
+    _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - coo_hdr_h * 0.5, min(text_h * 0.85, coo_hdr_h * 0.50), box_w, 'COORDENADAS (U.T.M)', layer='TEXTOS', style=text_style)
+
+    c_c1 = box_w * 0.20
+    c_c2 = box_w * 0.40
+    c_c3 = box_w * 0.40
+    _draw_line(msp, box_x + c_c1, t_y - coo_hdr_h, box_x + c_c1, t_y - coo_h, layer='MARCO')
+    _draw_line(msp, box_x + c_c1 + c_c2, t_y - coo_hdr_h, box_x + c_c1 + c_c2, t_y - coo_h, layer='MARCO')
+
+    coo_col_y = t_y - coo_hdr_h - coo_colhdr_h * 0.5
+    coo_ch_h = min(text_h * 0.76, coo_colhdr_h * 0.48)
+    _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, coo_col_y, coo_ch_h, c_c1, 'PUNTO', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, coo_col_y, coo_ch_h, c_c2, 'NORTE', layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, coo_col_y, coo_ch_h, c_c3, 'ESTE', layer='TEXTOS', style=text_style)
+
+    coord_txt_h = min(text_h * 0.90, row_h * 0.65)
+    for idx, pt in enumerate(p_pts):
+        y_top = t_y - coo_hdr_h - coo_colhdr_h - idx * row_h
+        y_center = y_top - row_h * 0.5
+        if idx > 0:
+            _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
+        _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, y_center, coord_txt_h, c_c1, str(pt['id']), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, y_center, coord_txt_h, c_c2, format_number_fn(pt['y'], 3), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, y_center, coord_txt_h, c_c3, format_number_fn(pt['x'], 3), layer='TEXTOS', style=text_style)
+
+
+def render_adaptive_construction_tables(
+    msp,
+    processed_parcels,
+    middle_box,
+    inner,
+    outer,
+    margin,
+    print_scale,
+    text_h,
+    frame_thickness,
+    text_style,
+    get_bearing_fn,
+    format_number_fn,
+    clean_text_fn,
+    extract_coords_fn,
+    metadata=None,
+    project_name='PARCELA',
+):
+    """
+    Motor Adaptativo de Cuadros de Construcción en 3 Niveles:
+      - Nivel 1 (1 parcela, <= 15 pts): 4 tablas clásicas separadas encuadradas exactamente en middle_box.
+      - Nivel 2 (16..38 pts o multiparcela que quepa legible en middle_box): Cuadro Unificado (1 fila/vértice).
+      - Nivel 3 (> 38 pts o desborde): 35 filas en lámina principal + Módulo Anexo Lateral paginado (45 filas/col).
+    Retorna extra_right_extent (0.0 si no hubo anexo).
+    """
+    if not processed_parcels:
+        return 0.0
+
+    table_unit = inner['h'] / 100.0
+    t_y = inner['y'] + inner['h'] - table_unit * 1.5
+    min_y_limit = inner['y'] + margin
+    avail_h = max(t_y - min_y_limit, 1e-4)
+
+    box_x = middle_box['x'] + margin
+    box_w = middle_box['w'] - 2.0 * margin
+
+    n_parcels = len(processed_parcels)
+    total_vertices = sum(len(p['pts']) for p in processed_parcels)
+
+    # ─ Nivel 1: 1 parcela y hasta 15 puntos ──────────────────────────────────
+    if n_parcels == 1 and total_vertices <= 15:
+        _draw_level1_classic_tables(
+            msp, processed_parcels[0], box_x, t_y, avail_h, box_w, table_unit,
+            frame_thickness, text_h, text_style, metadata,
+            get_bearing_fn, format_number_fn, clean_text_fn, extract_coords_fn
+        )
+        return 0.0
+
+    # ─ Evaluar si cabe completo en Nivel 2 (Cuadro Unificado) ────────────────
+    gap_l2 = min(table_unit * 0.75, avail_h * 0.01)
+    hdr_l2 = min(table_unit * 2.5, avail_h * 0.03)
+    n_hdr_mult_l2 = n_parcels * (1.0 + 1.85)
+    n_rows_l2 = n_parcels * 2 + total_vertices
+    n_gaps_l2 = max(1, 2 * n_parcels - 1)
+    avail_rows_l2 = avail_h - n_gaps_l2 * gap_l2 - n_hdr_mult_l2 * hdr_l2
+    projected_row_h_l2 = avail_rows_l2 / max(n_rows_l2, 1)
+
+    if total_vertices <= 38 and projected_row_h_l2 >= table_unit * 1.55:
+        row_h = min(table_unit * 2.5, projected_row_h_l2)
+        for p_item in processed_parcels:
+            p_pts = p_item['pts']
+            p_name = p_item['nombre']
+            pa_id, pa_x, pa_y = _resolve_punto_apoyo(p_item, p_pts, metadata, clean_text_fn, extract_coords_fn)
+            area_doc_txt = f"{format_number_fn(p_item['area_doc'], 2)} m2"
+            area_mens_txt = f"{format_number_fn(p_item['area_mensura'], 2)} m2"
+            bal_title = 'BALANCE Y PUNTO DE APOYO (REGVEN)' if n_parcels == 1 else f"{p_name}: BALANCE Y PTO. APOYO"
+            used_bal = _draw_compact_balance_and_pa(
+                msp, box_x, t_y, box_w, hdr_l2, row_h, bal_title,
+                area_doc_txt, area_mens_txt, pa_id, pa_x, pa_y,
+                frame_thickness, text_h, text_style, format_number_fn
+            )
+            t_y -= used_bal + gap_l2
+
+            rows = _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn)
+            cuadro_title = 'CUADRO DE CONSTRUCCION CATASTRAL (UTM)' if n_parcels == 1 else f"CUADRO DE CONSTRUCCION: {p_name}"
+            used_cuadro = _draw_unified_construction_block(
+                msp, box_x, t_y, box_w, hdr_l2, row_h, cuadro_title, rows,
+                frame_thickness, text_h, text_style
+            )
+            t_y -= used_cuadro + gap_l2
+        return 0.0
+
+    # ─ Nivel 3: Paginación (Primeros 35 en lámina + Anexo Lateral de 45/col) ─
+    MAX_MAIN_ROWS = 35
+    MAX_ANNEX_ROWS = 45
+
+    all_rows = []
+    for p_item in processed_parcels:
+        p_rows = _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn)
+        if n_parcels > 1:
+            p_tag = p_item['nombre'][:6]
+            for r in p_rows:
+                r['lado'] = f"{p_tag}:{r['lado']}"
+        all_rows.extend(p_rows)
+
+    main_rows = all_rows[:MAX_MAIN_ROWS]
+    annex_rows = all_rows[MAX_MAIN_ROWS:]
+
+    # Bloque superior en middle_box: Balance total + Punto de Apoyo
+    first_parcel = processed_parcels[0]
+    pa_id, pa_x, pa_y = _resolve_punto_apoyo(first_parcel, first_parcel['pts'], metadata, clean_text_fn, extract_coords_fn)
+    total_area_doc = sum(p['area_doc'] for p in processed_parcels)
+    total_area_mens = sum(p['area_mensura'] for p in processed_parcels)
+
+    gap_l3 = table_unit * 0.8
+    hdr_l3 = table_unit * 2.4
+    n_main_slots = 2 + len(main_rows) + (1 if annex_rows else 0)
+    avail_rows_l3 = avail_h - gap_l3 - (1.0 + 1.85) * hdr_l3
+    row_h_l3 = min(table_unit * 2.4, max(avail_rows_l3 / max(n_main_slots, 1), table_unit * 1.45))
+
+    used_bal = _draw_compact_balance_and_pa(
+        msp, box_x, t_y, box_w, hdr_l3, row_h_l3,
+        'BALANCE GENERAL Y PUNTO DE APOYO (REGVEN)',
+        f"{format_number_fn(total_area_doc, 2)} m2",
+        f"{format_number_fn(total_area_mens, 2)} m2",
+        pa_id, pa_x, pa_y,
+        frame_thickness, text_h, text_style, format_number_fn
+    )
+    t_y -= used_bal + gap_l3
+
+    footer_note = None
+    if annex_rows:
+        footer_note = f"CONTINUA EN CUADRO ANEXO LATERAL -> ({len(annex_rows)} PTS)"
+    _draw_unified_construction_block(
+        msp, box_x, t_y, box_w, hdr_l3, row_h_l3,
+        f"CUADRO DE CONSTRUCCION (1-{len(main_rows)} DE {len(all_rows)})",
+        main_rows,
+        frame_thickness, text_h, text_style,
+        footer_note=footer_note
+    )
+
+    if not annex_rows:
+        return 0.0
+
+    # Módulo Anexo Oficial a la derecha del plano
+    chunks = [annex_rows[i:i + MAX_ANNEX_ROWS] for i in range(0, len(annex_rows), MAX_ANNEX_ROWS)]
+    n_cols = len(chunks)
+    col_w = box_w
+    col_gap = margin
+    annex_outer_x = outer['x'] + outer['w'] + margin * 2.0
+    annex_outer_y = outer['y']
+    annex_outer_h = outer['h']
+    annex_outer_w = n_cols * col_w + max(0, n_cols - 1) * col_gap + 4.0 * margin
+
+    annex_inner_x = annex_outer_x + margin
+    annex_inner_y = inner['y']
+    annex_inner_w = annex_outer_w - 2.0 * margin
+    annex_inner_h = inner['h']
+
+    _draw_rect(msp, annex_outer_x, annex_outer_y, annex_outer_w, annex_outer_h, thickness=0.0, layer='MARCO')
+    _draw_rect(msp, annex_inner_x, annex_inner_y, annex_inner_w, annex_inner_h, thickness=frame_thickness, layer='MARCO')
+
+    title_band_h = table_unit * 4.0
+    _draw_line(
+        msp,
+        annex_inner_x, annex_inner_y + annex_inner_h - title_band_h,
+        annex_inner_x + annex_inner_w, annex_inner_y + annex_inner_h - title_band_h,
+        layer='MARCO',
+    )
+    _draw_cell_text_fit(
+        msp,
+        annex_inner_x + annex_inner_w * 0.5,
+        annex_inner_y + annex_inner_h - title_band_h * 0.5,
+        min(text_h * 1.05, title_band_h * 0.48),
+        annex_inner_w,
+        f"ANEXO: CONTINUACION CUADRO DE CONSTRUCCION - {project_name}",
+        layer='TEXTOS',
+        style=text_style,
+    )
+
+    col_top_y = annex_inner_y + annex_inner_h - title_band_h - margin
+    col_avail_h = col_top_y - (annex_inner_y + margin)
+    hdr_annex = table_unit * 2.4
+    row_h_annex = min(
+        table_unit * 2.4,
+        max((col_avail_h - 1.85 * hdr_annex) / MAX_ANNEX_ROWS, table_unit * 1.4),
+    )
+
+    start_idx = MAX_MAIN_ROWS + 1
+    for c_idx, chunk in enumerate(chunks):
+        cx_box = annex_inner_x + margin + c_idx * (col_w + col_gap)
+        end_idx = start_idx + len(chunk) - 1
+        _draw_unified_construction_block(
+            msp, cx_box, col_top_y, col_w, hdr_annex, row_h_annex,
+            f"CUADRO ANEXO ({start_idx}-{end_idx} DE {len(all_rows)})",
+            chunk,
+            frame_thickness, text_h, text_style
+        )
+        start_idx = end_idx + 1
+
+    return (annex_outer_x + annex_outer_w + margin) - (outer['x'] + outer['w'])
+

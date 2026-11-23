@@ -31,6 +31,7 @@ from cad_geometry import (
     annotate_parcel_cad,
     draw_segment_ticks,
     draw_utm_grid_left_top,
+    render_adaptive_construction_tables,
 )
 
 # ── Caché de template DXF (en memoria, por proceso Python) ──────────────────────
@@ -716,218 +717,31 @@ def main():
             draw_ticks_fn=draw_segment_ticks,
         )
     
-    # ================= 5. MIDDLE COLUMN (CATASTRAL TABLES: BALANCE, PUNTO DE APOYO, RUMBOS, COORDENADAS) ================= //
+    # ================= 5. MIDDLE COLUMN (ADAPTIVE 3-LEVEL CATASTRAL TABLES + ANNEX) ================= //
     table_unit = inner['h'] / 100.0
-    t_y = inner['y'] + inner['h'] - table_unit * 1.5
+    pa_override = payload.get('puntoApoyo') or metadata.get('puntoApoyo')
+    table_meta = dict(metadata)
+    if pa_override is not None:
+        table_meta['puntoApoyo'] = pa_override
 
-    box_x = middle_box['x'] + margin
-    box_w = middle_box['w'] - 2.0 * margin
-
-    for p_idx, p_item in enumerate(processed_parcels):
-        p_pts = p_item['pts']
-        p_name = p_item['nombre']
-        p_geom_type = p_item['geometryType']
-        p_area_m = p_item['area_mensura']
-        p_area_doc = p_item['area_doc']
-
-        # Extraer o calcular punto de apoyo (V.P.)
-        pa_custom = payload.get('puntoApoyo') or metadata.get('puntoApoyo') or p_item.get('puntoApoyo')
-        if isinstance(pa_custom, dict):
-            pa_id = clean_text(pa_custom.get('id', 'V.P.'), 'V.P.')
-            pa_x_val, pa_y_val = _extract_coords(pa_custom)
-            pa_x = (pa_x_val if pa_x_val is not None else p_pts[0]['x'])
-            pa_y = (pa_y_val if pa_y_val is not None else p_pts[0]['y'])
-        else:
-            pa_id = 'V.P.'
-            pa_x = p_pts[0]['x']
-            pa_y = p_pts[0]['y']
-
-        # Calcular número de segmentos para tabla de rumbos
-        n_pts = len(p_pts)
-        n_segments = n_pts if p_geom_type == 'cerrada' else max(1, n_pts - 1)
-
-        # Cálculo dinámico de alturas para ajustar exactamente al alto de middle_box con legibilidad optimizada
-        total_items_count = 2 + 1 + n_segments + n_pts  # balance(2) + pa(1) + rumbos(n_seg) + coords(n_pts)
-        total_headers_count = 4  # 4 tablas con encabezados
-        avail_h = (t_y - (inner['y'] + margin))
-        row_h = max(table_unit * 1.8, min(table_unit * 2.8, (avail_h * 0.72) / max(total_items_count, 1)))
-        hdr_h = max(table_unit * 2.2, min(table_unit * 3.2, (avail_h * 0.25) / max(total_headers_count, 1)))
-        gap_h = table_unit * 0.9
-
-        # Formatos de área para Balance de Superficie (solo m2, sin hectáreas)
-        area_doc_txt = f"{format_number(p_area_doc, 2)} m2"
-        area_mens_txt = f"{format_number(p_area_m, 2)} m2"
-
-        # -------------------------------------------------------------
-        # 5.1 TABLA DE BALANCE DE SUPERFICIE
-        # -------------------------------------------------------------
-        bal_rows = 2
-        bal_h = hdr_h + bal_rows * row_h
-        draw_rect(msp, box_x, t_y - bal_h, box_w, bal_h, thickness=frame_thickness * 0.5, layer='MARCO')
-        draw_line(msp, box_x, t_y - hdr_h, box_x + box_w, t_y - hdr_h, layer='MARCO')
-        draw_centered_text(msp, box_x + box_w / 2.0, t_y - hdr_h * 0.5, min(text_h * 0.90, hdr_h * 0.50),
-                           'BALANCE DE SUPERFICIE', layer='TEXTOS', style=text_style)
-
-        # División vertical etiquetas / valores
-        bal_c1 = box_w * 0.58
-        draw_line(msp, box_x + bal_c1, t_y - hdr_h, box_x + bal_c1, t_y - bal_h, layer='MARCO')
-        draw_line(msp, box_x, t_y - hdr_h - row_h, box_x + box_w, t_y - hdr_h - row_h, layer='MARCO')
-
-        bal_txt_h = max(print_scale * 0.0035, min(text_h * 0.92, row_h * 0.68))  # valores numéricos
-        bal_lbl_h  = max(print_scale * 0.0018, min(text_h * 0.55, row_h * 0.44))  # etiquetas descriptivas
-        y1_mid = t_y - hdr_h - row_h * 0.5
-        draw_left_text(msp, box_x + text_h * 0.3, y1_mid, bal_lbl_h, 'AREA SEGUN DOCUMENTO', layer='TEXTOS', style=text_style)
-        draw_centered_text(msp, box_x + bal_c1 + (box_w - bal_c1) / 2.0, y1_mid, bal_txt_h, area_doc_txt, layer='TEXTOS', style=text_style)
-
-        y2_mid = t_y - hdr_h - row_h * 1.5
-        draw_left_text(msp, box_x + text_h * 0.3, y2_mid, bal_lbl_h, 'AREA SEGUN MENSURA', layer='TEXTOS', style=text_style)
-        draw_centered_text(msp, box_x + bal_c1 + (box_w - bal_c1) / 2.0, y2_mid, bal_txt_h, area_mens_txt, layer='TEXTOS', style=text_style)
-
-        t_y -= bal_h + gap_h
-
-        # -------------------------------------------------------------
-        # 5.2 TABLA DE PUNTO DE APOYO (RED GEODÉSICA)
-        # -------------------------------------------------------------
-        pa_subhdr_h = hdr_h * 0.85
-        pa_colhdr_h = hdr_h * 0.85
-        pa_rows = 1
-        pa_h = hdr_h + pa_subhdr_h + pa_colhdr_h + pa_rows * row_h
-        draw_rect(msp, box_x, t_y - pa_h, box_w, pa_h, thickness=frame_thickness * 0.5, layer='MARCO')
-
-        # Líneas de encabezados
-        draw_line(msp, box_x, t_y - hdr_h, box_x + box_w, t_y - hdr_h, layer='MARCO')
-        draw_line(msp, box_x, t_y - hdr_h - pa_subhdr_h, box_x + box_w, t_y - hdr_h - pa_subhdr_h, layer='MARCO')
-        draw_line(msp, box_x, t_y - hdr_h - pa_subhdr_h - pa_colhdr_h, box_x + box_w, t_y - hdr_h - pa_subhdr_h - pa_colhdr_h, layer='MARCO')
-
-        draw_centered_text(msp, box_x + box_w / 2.0, t_y - hdr_h * 0.5, min(text_h * 0.88, hdr_h * 0.48),
-                           'PUNTO DE APOYO (RED GEODESICA)', layer='TEXTOS', style=text_style)
-        draw_centered_text(msp, box_x + box_w / 2.0, t_y - hdr_h - pa_subhdr_h * 0.5, min(text_h * 0.80, pa_subhdr_h * 0.48),
-                           'COORDENADAS REGVEN (UTM)', layer='TEXTOS', style=text_style)
-
-        # Columnas PUNTO | NORTE | ESTE
-        pa_c1 = box_w * 0.20
-        pa_c2 = box_w * 0.40
-        pa_c3 = box_w * 0.40
-        draw_line(msp, box_x + pa_c1, t_y - hdr_h - pa_subhdr_h, box_x + pa_c1, t_y - pa_h, layer='MARCO')
-        draw_line(msp, box_x + pa_c1 + pa_c2, t_y - hdr_h - pa_subhdr_h, box_x + pa_c1 + pa_c2, t_y - pa_h, layer='MARCO')
-
-        pa_col_y = t_y - hdr_h - pa_subhdr_h - pa_colhdr_h * 0.5
-        draw_cell_text(msp, box_x + pa_c1 * 0.5, pa_col_y, min(text_h * 0.78, pa_colhdr_h * 0.48), 'PUNTO', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + pa_c1 + pa_c2 * 0.5, pa_col_y, min(text_h * 0.78, pa_colhdr_h * 0.48), 'NORTE', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + pa_c1 + pa_c2 + pa_c3 * 0.5, pa_col_y, min(text_h * 0.78, pa_colhdr_h * 0.48), 'ESTE', layer='TEXTOS', style=text_style)
-
-        pa_row_y = t_y - hdr_h - pa_subhdr_h - pa_colhdr_h - row_h * 0.5
-        pa_val_txt_h = max(print_scale * 0.0035, min(text_h * 0.92, row_h * 0.68))
-        draw_cell_text(msp, box_x + pa_c1 * 0.5, pa_row_y, pa_val_txt_h, pa_id, layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + pa_c1 + pa_c2 * 0.5, pa_row_y, pa_val_txt_h, format_number(pa_y, 3), layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + pa_c1 + pa_c2 + pa_c3 * 0.5, pa_row_y, pa_val_txt_h, format_number(pa_x, 3), layer='TEXTOS', style=text_style)
-
-        t_y -= pa_h + gap_h
-
-        # -------------------------------------------------------------
-        # 5.3 CUADRO DE RUMBOS Y DISTANCIAS
-        # -------------------------------------------------------------
-        rb_hdr_h = hdr_h
-        rb_colhdr_h = hdr_h * 0.85
-        rb_rows = n_segments
-        rb_h = rb_hdr_h + rb_colhdr_h + rb_rows * row_h
-        draw_rect(msp, box_x, t_y - rb_h, box_w, rb_h, thickness=frame_thickness * 0.5, layer='MARCO')
-
-        # Líneas de encabezados
-        draw_line(msp, box_x, t_y - rb_hdr_h, box_x + box_w, t_y - rb_hdr_h, layer='MARCO')
-        draw_line(msp, box_x, t_y - rb_hdr_h - rb_colhdr_h, box_x + box_w, t_y - rb_hdr_h - rb_colhdr_h, layer='MARCO')
-
-        # Columnas: LADO (EST | PV) | RUMBO | DISTANCIA
-        r_c_est = box_w * 0.12
-        r_c_pv  = box_w * 0.12
-        r_c_lado = r_c_est + r_c_pv
-        r_c_rumbo = box_w * 0.48
-        r_c_dist  = box_w - r_c_lado - r_c_rumbo
-
-        # Línea vertical entre LADO y RUMBO
-        draw_line(msp, box_x + r_c_lado, t_y, box_x + r_c_lado, t_y - rb_h, layer='MARCO')
-        # Línea vertical entre RUMBO y DISTANCIA
-        draw_line(msp, box_x + r_c_lado + r_c_rumbo, t_y, box_x + r_c_lado + r_c_rumbo, t_y - rb_h, layer='MARCO')
-        # Línea vertical interna entre EST y PV
-        draw_line(msp, box_x + r_c_est, t_y - rb_hdr_h, box_x + r_c_est, t_y - rb_h, layer='MARCO')
-
-        # Textos de encabezados principales
-        draw_centered_text(msp, box_x + r_c_lado * 0.5, t_y - rb_hdr_h * 0.5, min(text_h * 0.88, rb_hdr_h * 0.50), 'LADO', layer='TEXTOS', style=text_style)
-        draw_centered_text(msp, box_x + r_c_lado + r_c_rumbo * 0.5, t_y - rb_hdr_h * 0.5, min(text_h * 0.88, rb_hdr_h * 0.50), 'RUMBO', layer='TEXTOS', style=text_style)
-        draw_centered_text(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, t_y - rb_hdr_h * 0.5, min(text_h * 0.80, rb_hdr_h * 0.48), 'DISTANCIA', layer='TEXTOS', style=text_style)
-
-        # Sub-encabezados EST y PV
-        rb_sub_y = t_y - rb_hdr_h - rb_colhdr_h * 0.5
-        draw_cell_text(msp, box_x + r_c_est * 0.5, rb_sub_y, min(text_h * 0.78, rb_colhdr_h * 0.48), 'EST', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + r_c_est + r_c_pv * 0.5, rb_sub_y, min(text_h * 0.78, rb_colhdr_h * 0.48), 'PV', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + r_c_lado + r_c_rumbo * 0.5, rb_sub_y, min(text_h * 0.72, rb_colhdr_h * 0.45), '(GEODESICO)', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, rb_sub_y, min(text_h * 0.72, rb_colhdr_h * 0.45), '(m)', layer='TEXTOS', style=text_style)
-
-        for s_idx in range(n_segments):
-            p1 = p_pts[s_idx]
-            p2 = p_pts[(s_idx + 1) % n_pts]
-            dx = p2['x'] - p1['x']
-            dy = p2['y'] - p1['y']
-            edge_dist = math.hypot(dx, dy)
-            bearing_str = get_bearing(dx, dy)
-
-            y_top = t_y - rb_hdr_h - rb_colhdr_h - s_idx * row_h
-            y_mid = y_top - row_h * 0.5
-            rb_txt_h = max(print_scale * 0.0035, min(text_h * 0.92, row_h * 0.68))
-
-            if s_idx > 0:
-                draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
-
-            draw_cell_text(msp, box_x + r_c_est * 0.5, y_mid, rb_txt_h, str(p1['id']), layer='TEXTOS', style=text_style)
-            draw_cell_text(msp, box_x + r_c_est + r_c_pv * 0.5, y_mid, rb_txt_h, str(p2['id']), layer='TEXTOS', style=text_style)
-            draw_cell_text(msp, box_x + r_c_lado + r_c_rumbo * 0.5, y_mid, rb_txt_h, bearing_str, layer='TEXTOS', style=text_style)
-            draw_cell_text(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, y_mid, rb_txt_h, format_number(edge_dist, 2), layer='TEXTOS', style=text_style)
-
-        t_y -= rb_h + gap_h
-
-        # -------------------------------------------------------------
-        # 5.4 TABLA DE COORDENADAS REGVEN (U.T.M)
-        # -------------------------------------------------------------
-        coo_hdr_h = hdr_h
-        coo_colhdr_h = hdr_h * 0.85
-        coo_rows = n_pts
-        coo_h = coo_hdr_h + coo_colhdr_h + coo_rows * row_h
-
-        draw_rect(msp, box_x, t_y - coo_h, box_w, coo_h, thickness=frame_thickness * 0.5, layer='MARCO')
-        draw_line(msp, box_x, t_y - coo_hdr_h, box_x + box_w, t_y - coo_hdr_h, layer='MARCO')
-        draw_line(msp, box_x, t_y - coo_hdr_h - coo_colhdr_h, box_x + box_w, t_y - coo_hdr_h - coo_colhdr_h, layer='MARCO')
-
-        draw_centered_text(msp, box_x + box_w / 2.0, t_y - coo_hdr_h * 0.5, min(text_h * 0.88, coo_hdr_h * 0.50),
-                           'COORDENADAS (U.T.M)', layer='TEXTOS', style=text_style)
-
-        c_c1 = box_w * 0.20
-        c_c2 = box_w * 0.40
-        c_c3 = box_w * 0.40
-
-        draw_line(msp, box_x + c_c1, t_y - coo_hdr_h, box_x + c_c1, t_y - coo_h, layer='MARCO')
-        draw_line(msp, box_x + c_c1 + c_c2, t_y - coo_hdr_h, box_x + c_c1 + c_c2, t_y - coo_h, layer='MARCO')
-
-        coo_col_y = t_y - coo_hdr_h - coo_colhdr_h * 0.5
-        draw_cell_text(msp, box_x + c_c1 * 0.5, coo_col_y, min(text_h * 0.78, coo_colhdr_h * 0.48), 'PUNTO', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + c_c1 + c_c2 * 0.5, coo_col_y, min(text_h * 0.78, coo_colhdr_h * 0.48), 'NORTE', layer='TEXTOS', style=text_style)
-        draw_cell_text(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, coo_col_y, min(text_h * 0.78, coo_colhdr_h * 0.48), 'ESTE', layer='TEXTOS', style=text_style)
-
-        for idx, pt in enumerate(p_pts):
-            y_top = t_y - coo_hdr_h - coo_colhdr_h - idx * row_h
-            coord_text_h = max(print_scale * 0.0038, min(text_h * 0.95, row_h * 0.72))
-            y_center = y_top - row_h / 2.0
-
-            if idx > 0:
-                draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
-
-            draw_cell_text(msp, box_x + c_c1 * 0.5, y_center,
-                           coord_text_h, str(pt['id']), layer='TEXTOS', style=text_style)
-            draw_cell_text(msp, box_x + c_c1 + c_c2 * 0.5, y_center,
-                           coord_text_h, format_number(pt['y'], 3), layer='TEXTOS', style=text_style)
-            draw_cell_text(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, y_center,
-                           coord_text_h, format_number(pt['x'], 3), layer='TEXTOS', style=text_style)
-
-        t_y -= coo_h + gap_h
+    extra_right_extent = render_adaptive_construction_tables(
+        msp=msp,
+        processed_parcels=processed_parcels,
+        middle_box=middle_box,
+        inner=inner,
+        outer=outer,
+        margin=margin,
+        print_scale=print_scale,
+        text_h=text_h,
+        frame_thickness=frame_thickness,
+        text_style=text_style,
+        get_bearing_fn=get_bearing,
+        format_number_fn=format_number,
+        clean_text_fn=clean_text,
+        extract_coords_fn=_extract_coords,
+        metadata=table_meta,
+        project_name=project_name,
+    )
 
     # ================= 6. TITLE BLOCK COLUMN (SIDE) ================= //
     s_unit = inner['h'] / 75.0
@@ -1209,7 +1023,7 @@ def main():
         )
 
     ext_min = (outer['x'] - margin, outer['y'] - margin, 0.0)
-    ext_max = (outer['x'] + outer['w'] + margin, outer['y'] + outer['h'] + margin, 0.0)
+    ext_max = (outer['x'] + outer['w'] + extra_right_extent + margin, outer['y'] + outer['h'] + margin, 0.0)
     doc.header['$EXTMIN'] = ext_min
     doc.header['$EXTMAX'] = ext_max
     doc.header['$LIMMIN'] = (ext_min[0], ext_min[1])
@@ -1219,9 +1033,9 @@ def main():
     # Encuadrar automáticamente la cámara inicial (*Active VPORT)
     # para que al abrir el DXF en AutoCAD/Civil3D/BricsCAD aparezca el plano completo
     # en pantalla sin necesidad de ejecutar ZOOM -> EXTENTS (Z E).
-    view_cx = outer['x'] + outer['w'] * 0.5
+    view_cx = outer['x'] + (outer['w'] + extra_right_extent) * 0.5
     view_cy = outer['y'] + outer['h'] * 0.5
-    view_w = (outer['w'] + margin * 2.0) * 1.06
+    view_w = (outer['w'] + extra_right_extent + margin * 2.0) * 1.06
     view_h = max((outer['h'] + margin * 2.0) * 1.06, view_w / 1.34)
     view_aspect = max(1.34, view_w / max(1e-6, view_h))
 

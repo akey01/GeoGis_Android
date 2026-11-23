@@ -40,6 +40,7 @@ from cad_geometry import (
     annotate_parcel_cad,
     draw_segment_ticks,
     draw_utm_grid_left_top,
+    render_adaptive_construction_tables,
 )
 
 ezdxf.options.support_dir = str(Path(__file__).parent / "fonts")
@@ -615,93 +616,39 @@ def main():
     draw_line(msp, plot_box['x']+text_h*5, plot_box['y']+plot_box['h']-text_h*2,
                    plot_box['x']+text_h*5, plot_box['y']+plot_box['h']-text_h*8, layer='TEXTOS')
 
-    # ── 5. Columna central: tablas ───────────────────────────────────────────
+    # ── 5. Columna central: tablas adaptativas (3 niveles + anexo lateral) ───
     table_unit = inner['h'] / 100.0
-    t_y = inner['y'] + inner['h'] - table_unit * 2.0
+    sat_parcel = [{
+        'nombre': project_name,
+        'geometryType': geometry_type,
+        'pts': parsed_pts,
+        'area_mensura': area_mensura,
+        'area_doc': area_doc,
+        'perim': perim,
+    }]
+    pa_override = payload.get('puntoApoyo') or metadata.get('puntoApoyo')
+    table_meta = dict(metadata)
+    if pa_override is not None:
+        table_meta['puntoApoyo'] = pa_override
 
-    # Balance de superficie
-    bal_h = table_unit * 10.0
-    draw_rect(msp, middle_box['x']+margin, t_y-bal_h, middle_box['w']-2*margin, bal_h, thickness=frame_thickness*0.5)
-    draw_line(msp, middle_box['x']+margin, t_y-bal_h*0.3, middle_box['x']+middle_box['w']-margin, t_y-bal_h*0.3)
-    draw_line(msp, middle_box['x']+margin+middle_box['w']*0.6, t_y-bal_h*0.3,
-                   middle_box['x']+margin+middle_box['w']*0.6, t_y-bal_h)
-    draw_centered_text(msp, middle_box['x']+middle_box['w']/2, t_y-bal_h*0.15-text_h*0.35, text_h, 'BALANCE DE SUPERFICIE', style=text_style)
-    rcc = middle_box['x']+margin+middle_box['w']*0.6+(middle_box['w']*0.4-2*margin)/2
-    bal_lbl_h_sat = max(print_scale * 0.0018, min(text_h * 0.55, table_unit * 1.35))  # etiquetas pequeñas
-    draw_left_text(msp, middle_box['x']+margin*1.5, t_y-bal_h*0.5-text_h*0.35, bal_lbl_h_sat, 'AREA SEGUN DOCUMENTO', style=text_style)
-    draw_left_text(msp, middle_box['x']+margin*1.5, t_y-bal_h*0.85-text_h*0.35, bal_lbl_h_sat, 'AREA SEGUN MENSURA', style=text_style)
-    draw_centered_text(msp, rcc, t_y-bal_h*0.5-text_h*0.35, text_h*0.9, f"{format_number(area_doc,2)} m2", style=text_style)
-    draw_centered_text(msp, rcc, t_y-bal_h*0.85-text_h*0.35, text_h*0.9, f"{format_number(area_mensura,2)} m2", style=text_style)
-    t_y -= bal_h + table_unit*4
-
-    # Punto de apoyo
-    pa_h = table_unit * 15.0
-    draw_rect(msp, middle_box['x']+margin, t_y-pa_h, middle_box['w']-2*margin, pa_h, thickness=frame_thickness*0.5)
-    draw_line(msp, middle_box['x']+margin, t_y-pa_h*0.2, middle_box['x']+middle_box['w']-margin, t_y-pa_h*0.2)
-    draw_line(msp, middle_box['x']+margin, t_y-pa_h*0.4, middle_box['x']+middle_box['w']-margin, t_y-pa_h*0.4)
-    draw_line(msp, middle_box['x']+margin, t_y-pa_h*0.6, middle_box['x']+middle_box['w']-margin, t_y-pa_h*0.6)
-    pa_c1=middle_box['w']*0.2; pa_c2=middle_box['w']*0.4; pa_c3=middle_box['w']*0.4-2*margin
-    draw_line(msp, middle_box['x']+margin+pa_c1, t_y-pa_h*0.6, middle_box['x']+margin+pa_c1, t_y-pa_h)
-    draw_line(msp, middle_box['x']+margin+pa_c1+pa_c2, t_y-pa_h*0.6, middle_box['x']+margin+pa_c1+pa_c2, t_y-pa_h)
-    draw_centered_text(msp, middle_box['x']+middle_box['w']/2, t_y-pa_h*0.1-text_h*0.35, text_h, 'PUNTO DE APOYO (RED GEODESICA)', style=text_style)
-    draw_centered_text(msp, middle_box['x']+middle_box['w']/2, t_y-pa_h*0.3-text_h*0.35, text_h*0.9, 'COORDENADAS REGVEN (UTM)', style=text_style)
-    draw_centered_text(msp, middle_box['x']+margin+pa_c1*0.5, t_y-pa_h*0.7-text_h*0.35, text_h*0.9, 'PUNTO', style=text_style)
-    draw_centered_text(msp, middle_box['x']+margin+pa_c1+pa_c2*0.5, t_y-pa_h*0.7-text_h*0.35, text_h*0.9, 'NORTE', style=text_style)
-    draw_centered_text(msp, middle_box['x']+margin+pa_c1+pa_c2+pa_c3*0.5, t_y-pa_h*0.7-text_h*0.35, text_h*0.9, 'ESTE', style=text_style)
-    draw_centered_text(msp, middle_box['x']+margin+pa_c1*0.5, t_y-pa_h*0.88-text_h*0.35, text_h*0.9, 'V.P.', style=text_style)
-    draw_centered_text(msp, middle_box['x']+margin+pa_c1+pa_c2*0.5, t_y-pa_h*0.88-text_h*0.35, text_h*0.9, format_number(cy-200,2), style=text_style)
-    draw_centered_text(msp, middle_box['x']+margin+pa_c1+pa_c2+pa_c3*0.5, t_y-pa_h*0.88-text_h*0.35, text_h*0.9, format_number(cx-200,2), style=text_style)
-    t_y -= pa_h + table_unit*4
-
-    avail = 54.0*table_unit; total_rows = len(parsed_pts)*2
-    dyn_row_h = max(table_unit*1.8, min(table_unit*2.8, avail/total_rows))
-
-    # Rumbos
-    rum_h = table_unit*5 + len(parsed_pts)*dyn_row_h
-    draw_rect(msp, middle_box['x']+margin, t_y-rum_h, middle_box['w']-2*margin, rum_h, thickness=frame_thickness*0.5)
-    r_c1=middle_box['w']*0.12; r_c2=middle_box['w']*0.12; r_c3=middle_box['w']*0.46; r_c4=middle_box['w']*0.30-2*margin
-    draw_line(msp, middle_box['x']+margin, t_y-table_unit*5, middle_box['x']+middle_box['w']-margin, t_y-table_unit*5)
-    draw_line(msp, middle_box['x']+margin, t_y-table_unit*2.5, middle_box['x']+margin+r_c1+r_c2, t_y-table_unit*2.5)
-    draw_line(msp, middle_box['x']+margin+r_c1, t_y-table_unit*2.5, middle_box['x']+margin+r_c1, t_y-rum_h)
-    draw_line(msp, middle_box['x']+margin+r_c1+r_c2, t_y, middle_box['x']+margin+r_c1+r_c2, t_y-rum_h)
-    draw_line(msp, middle_box['x']+margin+r_c1+r_c2+r_c3, t_y, middle_box['x']+margin+r_c1+r_c2+r_c3, t_y-rum_h)
-    draw_cell_text(msp, middle_box['x']+margin+(r_c1+r_c2)*0.5, t_y-table_unit*1.25, text_h*0.88, 'LADO', style=text_style)
-    draw_cell_text(msp, middle_box['x']+margin+r_c1*0.5, t_y-table_unit*3.75, text_h*0.78, 'EST', style=text_style)
-    draw_cell_text(msp, middle_box['x']+margin+r_c1+r_c2*0.5, t_y-table_unit*3.75, text_h*0.78, 'PV', style=text_style)
-    draw_cell_text(msp, middle_box['x']+margin+r_c1+r_c2+r_c3*0.5, t_y-table_unit*2.5, text_h*0.88, 'RUMBO', style=text_style)
-    draw_cell_text(msp, middle_box['x']+margin+r_c1+r_c2+r_c3+r_c4*0.5, t_y-table_unit*2.5, text_h*0.80, 'DISTANCIA', style=text_style)
-    for idx, p in enumerate(parsed_pts):
-        pn = parsed_pts[(idx+1)%len(parsed_pts)]
-        dist = math.hypot(pn['x']-p['x'], pn['y']-p['y'])
-        y_top = t_y - table_unit*5 - idx*dyn_row_h
-        ch = max(print_scale * 0.0035, min(text_h*0.92, dyn_row_h*0.68)); yc = y_top - dyn_row_h/2
-        if idx > 0: draw_line(msp, middle_box['x']+margin, y_top, middle_box['x']+middle_box['w']-margin, y_top)
-        draw_cell_text(msp, middle_box['x']+margin+r_c1*0.5, yc, ch, str(idx+1), style=text_style)
-        draw_cell_text(msp, middle_box['x']+margin+r_c1+r_c2*0.5, yc, ch, str((idx+1)%len(parsed_pts)+1), style=text_style)
-        draw_cell_text(msp, middle_box['x']+margin+r_c1+r_c2+r_c3*0.5, yc, ch, get_bearing(pn['x']-p['x'], pn['y']-p['y']), style=text_style)
-        draw_cell_text(msp, middle_box['x']+margin+r_c1+r_c2+r_c3+r_c4*0.5, yc, ch, format_number(dist,3), style=text_style)
-    t_y -= rum_h + table_unit*4
-
-    # Coordenadas
-    coo_h = table_unit*5 + len(parsed_pts)*dyn_row_h
-    draw_rect(msp, middle_box['x']+margin, t_y-coo_h, middle_box['w']-2*margin, coo_h, thickness=frame_thickness*0.5)
-    draw_line(msp, middle_box['x']+margin, t_y-table_unit*2.5, middle_box['x']+middle_box['w']-margin, t_y-table_unit*2.5)
-    draw_line(msp, middle_box['x']+margin, t_y-table_unit*5, middle_box['x']+middle_box['w']-margin, t_y-table_unit*5)
-    c_c1=middle_box['w']*0.15; c_c2=middle_box['w']*0.425; c_c3=middle_box['w']*0.425-2*margin
-    draw_line(msp, middle_box['x']+margin+c_c1, t_y-table_unit*2.5, middle_box['x']+margin+c_c1, t_y-coo_h)
-    draw_line(msp, middle_box['x']+margin+c_c1+c_c2, t_y-table_unit*2.5, middle_box['x']+margin+c_c1+c_c2, t_y-coo_h)
-    draw_cell_text(msp, middle_box['x']+middle_box['w']/2, t_y-table_unit*1.25, text_h*0.88, 'COORDENADAS (U.T.M)', style=text_style)
-    hy = t_y-3.75*table_unit
-    draw_cell_text(msp, middle_box['x']+margin+c_c1*0.5, hy, text_h*0.78, 'PUNTO', style=text_style)
-    draw_cell_text(msp, middle_box['x']+margin+c_c1+c_c2*0.5, hy, text_h*0.78, 'NORTE', style=text_style)
-    draw_cell_text(msp, middle_box['x']+margin+c_c1+c_c2+c_c3*0.5, hy, text_h*0.78, 'ESTE', style=text_style)
-    for idx, p in enumerate(parsed_pts):
-        y_top = t_y-table_unit*5-idx*dyn_row_h
-        ch = max(print_scale * 0.0038, min(text_h*0.95, dyn_row_h*0.72)); yc = y_top-dyn_row_h/2
-        if idx > 0: draw_line(msp, middle_box['x']+margin, y_top, middle_box['x']+middle_box['w']-margin, y_top)
-        draw_cell_text(msp, middle_box['x']+margin+c_c1*0.5, yc, ch, str(idx+1), style=text_style)
-        draw_cell_text(msp, middle_box['x']+margin+c_c1+c_c2*0.5, yc, ch, format_number(p['y'],3), style=text_style)
-        draw_cell_text(msp, middle_box['x']+margin+c_c1+c_c2+c_c3*0.5, yc, ch, format_number(p['x'],3), style=text_style)
+    extra_right_extent = render_adaptive_construction_tables(
+        msp=msp,
+        processed_parcels=sat_parcel,
+        middle_box=middle_box,
+        inner=inner,
+        outer=outer,
+        margin=margin,
+        print_scale=print_scale,
+        text_h=text_h,
+        frame_thickness=frame_thickness,
+        text_style=text_style,
+        get_bearing_fn=get_bearing,
+        format_number_fn=format_number,
+        clean_text_fn=clean_text,
+        extract_coords_fn=_extract_coords,
+        metadata=table_meta,
+        project_name=project_name,
+    )
 
     # ── 6. Carátula lateral ──────────────────────────────────────────────────
     s_unit = inner['h'] / 75.0
@@ -860,7 +807,7 @@ def main():
     # ── Extents del documento ────────────────────────────────────────────────
     doc.header['$INSUNITS'] = 6
     ext_min = (outer['x']-margin, outer['y']-margin, 0.0)
-    ext_max = (outer['x']+outer['w']+margin, outer['y']+outer['h']+margin, 0.0)
+    ext_max = (outer['x']+outer['w']+extra_right_extent+margin, outer['y']+outer['h']+margin, 0.0)
     doc.header['$EXTMIN'] = ext_min
     doc.header['$EXTMAX'] = ext_max
     doc.header['$LIMMIN'] = (ext_min[0], ext_min[1])
