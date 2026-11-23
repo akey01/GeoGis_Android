@@ -32,6 +32,16 @@ except Exception:
 import unicodedata
 import re
 
+_EXPORTERS_DIR = str(Path(__file__).parent)
+if _EXPORTERS_DIR not in sys.path:
+    sys.path.insert(0, _EXPORTERS_DIR)
+
+from cad_geometry import (
+    annotate_parcel_cad,
+    draw_segment_ticks,
+    draw_utm_grid_left_top,
+)
+
 ezdxf.options.support_dir = str(Path(__file__).parent / "fonts")
 
 
@@ -518,17 +528,18 @@ def main():
     area_doc      = float(metadata.get('areaDoc', area_mensura)) if metadata.get('areaDoc') else area_mensura
     raw_pname     = metadata.get('projectName', 'PARCELA')
     project_name  = clean_text(urllib.parse.unquote(raw_pname) if isinstance(raw_pname, str) else raw_pname, 'PARCELA')
-    estado        = clean_text(metadata.get('estado',       'MIRANDA')).upper()
-    municipio     = clean_text(metadata.get('municipio',    'CHACAO')).upper()
-    parroquia     = clean_text(metadata.get('parroquia',    'EL ROSAL')).upper()
-    propietario   = clean_text(metadata.get('propietario',  'S/D')).upper()
-    profesional   = clean_text(metadata.get('profesional',  'ING. CATASTRAL / GEODESTA')).upper()
-    civ           = clean_text(metadata.get('civ',          'C.I.V. 285.120')).upper()
-    zona          = clean_text(metadata.get('zona',         'U-1')).upper()
-    seccion       = clean_text(metadata.get('seccion',      'A-12')).upper()
-    cedula_cat    = clean_text(metadata.get('cedulaCat',    '15-02-01-U-123')).upper()
-    observaciones = clean_text(metadata.get('observaciones',
-        'NINGUNA. MEDIDAS TOPOGRAFICAS DE ALTA PRECISION UTM REFERIDAS AL DATUM REGVEN.')).upper()
+    estado        = clean_text(metadata.get('estado') or '').upper()
+    municipio     = clean_text(metadata.get('municipio') or '').upper()
+    parroquia     = clean_text(metadata.get('parroquia') or '').upper()
+    propietario   = clean_text(metadata.get('propietario') or '').upper()
+    rif           = clean_text(metadata.get('rif') or '').upper()
+    domicilio     = clean_text(metadata.get('domicilio') or '').upper()
+    profesional   = clean_text(metadata.get('profesional') or '').upper()
+    civ           = clean_text(metadata.get('civ') or '').upper()
+    zona          = clean_text(metadata.get('zona') or '').upper()
+    seccion       = clean_text(metadata.get('seccion') or '').upper()
+    cedula_cat    = clean_text(metadata.get('cedulaCat') or '').upper()
+    observaciones = clean_text(metadata.get('observaciones') or '').upper()
 
     # ── Escala de impresión ──────────────────────────────────────────────────
     padding  = 1.35
@@ -576,7 +587,7 @@ def main():
     draw_line(msp, middle_box['x'], inner['y'], middle_box['x'], inner['y'] + inner['h'])
     draw_line(msp, side_box['x'],   inner['y'], side_box['x'],   inner['y'] + inner['h'])
 
-    # ── 3. Grilla UTM ────────────────────────────────────────────────────────
+    # ── 3. Grilla UTM (Coordenadas SOLO lado izquierdo y superior) ───────────
     grid_step = nice_step(max(data_w, data_h))
     grid_dash = max(1.0, grid_step * 0.02)
     if 'GRILLA_PUNTEADA' not in doc.linetypes:
@@ -585,58 +596,19 @@ def main():
         try: doc.layers.get('GRILLA').dxf.linetype = 'GRILLA_PUNTEADA'
         except Exception: pass
 
-    gx = math.ceil(plot_box['x'] / grid_step) * grid_step
-    while gx <= plot_box['x'] + plot_box['w']:
-        draw_line(msp, gx, plot_box['y'], gx, plot_box['y'] + plot_box['h'], layer='GRILLA', linetype='GRILLA_PUNTEADA')
-        txt = f"E {int(round(gx))}"
-        draw_left_text(msp, gx - text_h*0.3, plot_box['y'] + len(txt)*text_h*0.65 + text_h, text_h, txt, rotation=90, layer='TEXTOS', style=text_style)
-        gx += grid_step
-    gy = math.ceil(plot_box['y'] / grid_step) * grid_step
-    while gy <= plot_box['y'] + plot_box['h']:
-        draw_line(msp, plot_box['x'], gy, plot_box['x'] + plot_box['w'], gy, layer='GRILLA', linetype='GRILLA_PUNTEADA')
-        draw_left_text(msp, plot_box['x'] + text_h*0.5, gy + text_h*0.3, text_h, f"N {int(round(gy))}", layer='TEXTOS', style=text_style)
-        gy += grid_step
-
-    # ── 4. Polígono y anotaciones ────────────────────────────────────────────
-    inner_radius = min(data_w, data_h, math.sqrt(area_mensura))
-    interior_text_h = max(min(text_h * 1.2, inner_radius * 0.08), print_scale * 0.001)
-    avg_edge = perim / len(parsed_pts)
-    min_edge = min(
-        (math.hypot(parsed_pts[(i+1)%len(parsed_pts)]['x']-parsed_pts[i]['x'],
-                    parsed_pts[(i+1)%len(parsed_pts)]['y']-parsed_pts[i]['y'])
-         for i in range(len(parsed_pts))),
-        default=avg_edge
+    draw_utm_grid_left_top(
+        msp, plot_box, grid_step, text_h, text_style=text_style,
+        min_left_y=plot_box['y'] + text_h * 1.6,
+        max_left_y=plot_box['y'] + plot_box['h'] - text_h * 8.8
     )
-    vertex_text_h = max(min(text_h, avg_edge*0.15, min_edge*0.35), print_scale*0.0008)
-    v_id_h = vertex_text_h * 1.3; v_dist_h = vertex_text_h * 0.95
-    marker_radius = vertex_text_h * 0.55
 
-    if geometry_type != 'puntos':
-        verts = [(p['x'], p['y']) for p in parsed_pts]
-        msp.add_lwpolyline(verts, close=(geometry_type == 'cerrada'),
-                           dxfattribs={'layer': 'POLIGONO', 'const_width': poly_thickness})
-
-    for i, p in enumerate(parsed_pts):
-        pn = parsed_pts[(i+1) % len(parsed_pts)]
-        dx = pn['x'] - p['x']; dy = pn['y'] - p['y']
-        length = math.hypot(dx, dy)
-        if length > 0:
-            nx = (dy/length if is_ccw else -dy/length)
-            ny = (-dx/length if is_ccw else dx/length)
-            dist_offset = vertex_text_h * 3.0
-            mid_x = (p['x'] + pn['x']) / 2; mid_y = (p['y'] + pn['y']) / 2
-            text_rot = math.degrees(math.atan2(dy, dx))
-            if text_rot > 90: text_rot -= 180
-            elif text_rot < -90: text_rot += 180
-            draw_centered_text(msp, mid_x + nx*dist_offset, mid_y + ny*dist_offset,
-                               v_dist_h, format_number(length, 2), rotation=text_rot, layer='COTAS', style=text_style)
-            lx = p['x'] + nx*marker_radius*8; ly = p['y'] + ny*marker_radius*8
-            draw_centered_text(msp, lx, ly + v_id_h*0.5, v_id_h*0.95, p['id'], layer='TEXTOS', style=text_style)
-        else:
-            draw_centered_text(msp, p['x'], p['y'] + marker_radius*2, v_id_h, p['id'], layer='TEXTOS', style=text_style)
-        draw_circle(msp, p['x'], p['y'], marker_radius, layer='TEXTOS')
-
-    draw_centered_text(msp, cx, cy + interior_text_h*1.8, interior_text_h*1.2, project_name, layer='TEXTOS', style=text_style)
+    # ── 4. Polígono y anotaciones (Normativa cartográfica + exclusión interior) ──
+    placed_boxes = []
+    annotate_parcel_cad(
+        msp, parsed_pts, geometry_type, project_name, cx, cy, perim, is_ccw,
+        data_w, data_h, print_scale, poly_thickness, text_style,
+        placed_boxes=placed_boxes, draw_ticks_fn=draw_segment_ticks
+    )
     draw_circle(msp, plot_box['x']+text_h*5, plot_box['y']+plot_box['h']-text_h*5, text_h*2.5, layer='TEXTOS')
     draw_line(msp, plot_box['x']+text_h*2, plot_box['y']+plot_box['h']-text_h*5,
                    plot_box['x']+text_h*8, plot_box['y']+plot_box['h']-text_h*5, layer='TEXTOS')
@@ -747,8 +719,15 @@ def main():
     s_y -= s_unit*8
     draw_line(msp, side_box['x'], s_y, side_box['x']+side_box['w'], s_y)
     draw_centered_text(msp, side_box['x']+side_box['w']/2, s_y+s_unit*6.5, text_h*0.8, 'AMPARADA POR EL DOCUMENTO', style=text_style)
-    reg_text = (f"OFICINA SUBALTERNA DE REGISTRO DE EL ESTADO {estado},"
-                " BAJO EL NRO. ____, FOLIOS ____ AL ___, PROTOCOLO: ________ TRIMESTRE ______, Ano: ________")
+    if estado and municipio:
+        reg_text = f"OFICINA SUBALTERNA DE REGISTRO DEL MUNICIPIO {municipio} DEL ESTADO {estado},"
+    elif estado:
+        reg_text = f"OFICINA SUBALTERNA DE REGISTRO DEL ESTADO {estado},"
+    elif municipio:
+        reg_text = f"OFICINA SUBALTERNA DE REGISTRO DEL MUNICIPIO {municipio},"
+    else:
+        reg_text = "OFICINA SUBALTERNA DE REGISTRO DEL MUNICIPIO ________ DEL ESTADO ________,"
+    reg_text += " BAJO EL NRO. ____, FOLIOS ____ AL ___, PROTOCOLO: ________ TRIMESTRE ______, Ano: ________"
     reg_words = reg_text.split(); reg_lines = []; curr = ""
     for w in reg_words:
         if len(curr)+len(w)+1 < 36: curr += (" " if curr else "")+w

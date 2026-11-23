@@ -49,7 +49,7 @@ export function processParcelForSummary(parcel: Parcel, index?: number): Process
   const id = parcel.nombre?.trim() || parcel.id || `PARC-${String((index ?? 0) + 1).padStart(2, '0')}`;
 
   // Titular o Propietario
-  const propietario = parcel.propietario?.trim() || 'S/D';
+  const propietario = parcel.propietario?.trim() || '';
 
   // Ubicación / Sector
   let ubicacion = parcel.ubicacionSector?.trim();
@@ -64,11 +64,11 @@ export function processParcelForSummary(parcel: Parcel, index?: number): Process
       if (parcel.parroquia && parcel.parroquia !== 'S/D') partes.push(parcel.parroquia);
       if (parcel.municipio && parcel.municipio !== 'S/D') partes.push(parcel.municipio);
     }
-    ubicacion = partes.length > 0 ? partes.join(' - ') : 'Sector General';
+    ubicacion = partes.length > 0 ? partes.join(' - ') : '';
   }
 
   // Observaciones / Acciones pendientes
-  const observaciones = parcel.observaciones?.trim() || 'Conforme. Levantamiento verificado en REGVEN.';
+  const observaciones = parcel.observaciones?.trim() || '';
 
   return {
     id,

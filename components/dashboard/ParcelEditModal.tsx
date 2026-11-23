@@ -16,38 +16,38 @@ export default function ParcelEditModal({ parcel, isOpen, onClose, onSave }: Par
   const updateParcelMetadata = useStore((state) => state.updateParcelMetadata);
   const [formData, setFormData] = useState<Partial<Parcel>>({
     nombre: parcel.nombre || '',
-    estado: parcel.estado || 'MIRANDA',
-    municipio: parcel.municipio || 'CHACAO',
-    parroquia: parcel.parroquia || 'EL ROSAL',
-    propietario: parcel.propietario || 'S/D',
-    rif: parcel.rif || 'S/D',
-    domicilio: parcel.domicilio || 'S/D',
+    estado: parcel.estado || '',
+    municipio: parcel.municipio || '',
+    parroquia: parcel.parroquia || '',
+    propietario: parcel.propietario || '',
+    rif: parcel.rif || '',
+    domicilio: parcel.domicilio || '',
     ubicacionSector: parcel.ubicacionSector || '',
-    profesional: parcel.profesional || 'ING. CATASTRAL / GEODESTA',
-    civ: parcel.civ || 'C.I.V. 285.120',
-    zona: parcel.zona || 'U-1',
-    seccion: parcel.seccion || 'A-12',
-    cedulaCat: parcel.cedulaCat || '15-02-01-U-123',
-    observaciones: parcel.observaciones || 'NINGUNA. MEDIDAS TOPOGRAFICAS DE ALTA PRECISION UTM REFERIDAS AL DATUM REGVEN.',
+    profesional: parcel.profesional || '',
+    civ: parcel.civ || '',
+    zona: parcel.zona || '',
+    seccion: parcel.seccion || '',
+    cedulaCat: parcel.cedulaCat || '',
+    observaciones: parcel.observaciones || '',
   });
 
   useEffect(() => {
     if (isOpen) {
       setFormData({
         nombre: parcel.nombre || '',
-        estado: parcel.estado || 'MIRANDA',
-        municipio: parcel.municipio || 'CHACAO',
-        parroquia: parcel.parroquia || 'EL ROSAL',
-        propietario: parcel.propietario || 'S/D',
-        rif: parcel.rif || 'S/D',
-        domicilio: parcel.domicilio || 'S/D',
+        estado: parcel.estado || '',
+        municipio: parcel.municipio || '',
+        parroquia: parcel.parroquia || '',
+        propietario: parcel.propietario || '',
+        rif: parcel.rif || '',
+        domicilio: parcel.domicilio || '',
         ubicacionSector: parcel.ubicacionSector || '',
-        profesional: parcel.profesional || 'ING. CATASTRAL / GEODESTA',
-        civ: parcel.civ || 'C.I.V. 285.120',
-        zona: parcel.zona || 'U-1',
-        seccion: parcel.seccion || 'A-12',
-        cedulaCat: parcel.cedulaCat || '15-02-01-U-123',
-        observaciones: parcel.observaciones || 'NINGUNA. MEDIDAS TOPOGRAFICAS DE ALTA PRECISION UTM REFERIDAS AL DATUM REGVEN.',
+        profesional: parcel.profesional || '',
+        civ: parcel.civ || '',
+        zona: parcel.zona || '',
+        seccion: parcel.seccion || '',
+        cedulaCat: parcel.cedulaCat || '',
+        observaciones: parcel.observaciones || '',
       });
     }
   }, [isOpen, parcel]);
@@ -78,41 +78,49 @@ export default function ParcelEditModal({ parcel, isOpen, onClose, onSave }: Par
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input 
               label="Nombre de la Parcela" 
+              placeholder="Ej: Parcela A-01"
               value={formData.nombre} 
               onChange={(e) => handleInputChange('nombre', e.target.value)} 
             />
             <Input 
               label="Fecha" 
+              placeholder="DD/MM/AAAA"
               value={formData.fecha || parcel.fecha} 
               onChange={(e) => handleInputChange('fecha', e.target.value)} 
             />
             <Input 
               label="Estado" 
+              placeholder="Sin especificar"
               value={formData.estado} 
               onChange={(e) => handleInputChange('estado', e.target.value)} 
             />
             <Input 
               label="Municipio" 
+              placeholder="Sin especificar"
               value={formData.municipio} 
               onChange={(e) => handleInputChange('municipio', e.target.value)} 
             />
             <Input 
               label="Parroquia" 
+              placeholder="Sin especificar"
               value={formData.parroquia} 
               onChange={(e) => handleInputChange('parroquia', e.target.value)} 
             />
             <Input 
               label="Cédula Catastral" 
+              placeholder="Ej: 15-02-01-U-123"
               value={formData.cedulaCat} 
               onChange={(e) => handleInputChange('cedulaCat', e.target.value)} 
             />
             <Input 
               label="Zona" 
+              placeholder="Sin especificar"
               value={formData.zona} 
               onChange={(e) => handleInputChange('zona', e.target.value)} 
             />
             <Input 
               label="Sección" 
+              placeholder="Sin especificar"
               value={formData.seccion} 
               onChange={(e) => handleInputChange('seccion', e.target.value)} 
             />
@@ -123,11 +131,13 @@ export default function ParcelEditModal({ parcel, isOpen, onClose, onSave }: Par
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Input 
                 label="Propietario" 
+                placeholder="Sin especificar"
                 value={formData.propietario} 
                 onChange={(e) => handleInputChange('propietario', e.target.value)} 
               />
               <Input 
                 label="RIF / C.I." 
+                placeholder="Sin especificar"
                 value={formData.rif} 
                 onChange={(e) => handleInputChange('rif', e.target.value)} 
               />
@@ -142,6 +152,7 @@ export default function ParcelEditModal({ parcel, isOpen, onClose, onSave }: Par
               <div className="md:col-span-2">
                 <Input 
                   label="Domicilio Fiscal / Legal" 
+                  placeholder="Sin especificar"
                   value={formData.domicilio} 
                   onChange={(e) => handleInputChange('domicilio', e.target.value)} 
                 />
@@ -154,11 +165,13 @@ export default function ParcelEditModal({ parcel, isOpen, onClose, onSave }: Par
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Input 
                 label="Profesional" 
+                placeholder="Sin especificar"
                 value={formData.profesional} 
                 onChange={(e) => handleInputChange('profesional', e.target.value)} 
               />
               <Input 
                 label="C.I.V." 
+                placeholder="Sin especificar"
                 value={formData.civ} 
                 onChange={(e) => handleInputChange('civ', e.target.value)} 
               />
@@ -170,6 +183,7 @@ export default function ParcelEditModal({ parcel, isOpen, onClose, onSave }: Par
             <div className="flex flex-col space-y-1.5">
               <label className="text-sm font-medium text-slate-200 ml-1">Notas adicionales</label>
               <textarea
+                placeholder="Notas u observaciones del levantamiento..."
                 className="flex h-24 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white ring-offset-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 transition-all duration-200 backdrop-blur-md"
                 value={formData.observaciones}
                 onChange={(e) => handleInputChange('observaciones', e.target.value)}

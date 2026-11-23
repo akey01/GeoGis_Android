@@ -23,6 +23,16 @@ import unicodedata
 import re
 import io as _io
 
+_EXPORTERS_DIR = str(Path(__file__).parent)
+if _EXPORTERS_DIR not in sys.path:
+    sys.path.insert(0, _EXPORTERS_DIR)
+
+from cad_geometry import (
+    annotate_parcel_cad,
+    draw_segment_ticks,
+    draw_utm_grid_left_top,
+)
+
 # ── Caché de template DXF (en memoria, por proceso Python) ──────────────────────
 # Guarda el template original serializado como bytes (antes de eliminar entidades).
 # Evita readfile() en cada request: ahorra ~0.5-1 s por generación de DXF.
@@ -285,23 +295,23 @@ def draw_membrete(msp, box_x, box_y, box_w, box_h, metadata, print_scale, fecha,
     Paso 8 — Dibuja cuadro de membrete profesional venezolano en la esquina inferior derecha.
     Celdas: Número de Plano, Escala, Fecha, Revisión, Profesional, CIV, Municipio, Estado.
     """
-    profesional = metadata.get('profesional', 'ING. CATASTRAL')
-    civ = metadata.get('civ', 'C.I.V.')
-    municipio = metadata.get('municipio', '')
-    estado = metadata.get('estado', '')
-    numero_plano = metadata.get('numeroplano', 'GT-001')
-    revision = metadata.get('revision', '0')
+    profesional = metadata.get('profesional') or ''
+    civ = metadata.get('civ') or ''
+    municipio = metadata.get('municipio') or ''
+    estado = metadata.get('estado') or ''
+    numero_plano = metadata.get('numeroplano') or ''
+    revision = metadata.get('revision') or '0'
 
     # Limpieza
     def ct(v, fb=''):
         return clean_text(str(v) if v else fb, fb).upper()
 
     rows = [
-        ('N DE PLANO', ct(numero_plano, 'GT-001')),
+        ('N DE PLANO', ct(numero_plano, '')),
         ('ESCALA',     f'1:{int(print_scale)}'),
         ('FECHA',      ct(fecha, datetime.date.today().strftime('%d/%m/%Y'))),
         ('REVISION',   ct(revision, '0')),
-        ('PROFESIONAL', ct(profesional, 'ING. CATASTRAL')),
+        ('PROFESIONAL', ct(profesional, '')),
         ('C.I.V.',     ct(civ, '')),
         ('MUNICIPIO',  ct(municipio, '')),
         ('ESTADO',     ct(estado, '')),
@@ -330,42 +340,6 @@ def draw_membrete(msp, box_x, box_y, box_w, box_h, metadata, print_scale, fecha,
                        value, layer=text_layer, style=style)
 
     print(f"[DXF] Membrete profesional dibujado: {n_rows} filas en ({box_x:.1f},{box_y:.1f})", file=sys.stderr)
-
-
-def draw_segment_ticks(msp, pts, geom_type, tick_size, layer='COTAS'):
-    """
-    Paso 9 — Dibuja ticks de 45° (estilo topográfico venezolano) en los extremos
-    de cada segmento del polígono. Simula el estilo de plancheta catastral SUNAC.
-    tick_size: tamaño del tick en unidades del plano.
-    """
-    n = len(pts)
-    for i in range(n):
-        is_last = (i == n - 1)
-        if geom_type == 'abierta' and is_last:
-            continue
-        p1 = pts[i]
-        p2 = pts[(i + 1) % n]
-        dx = p2['x'] - p1['x']
-        dy = p2['y'] - p1['y']
-        length = math.hypot(dx, dy)
-        if length < 1e-6:
-            continue
-        # Vector unitario del segmento
-        ux, uy = dx / length, dy / length
-        # Vector perpendicular (90° antihorario)
-        px, py = -uy, ux
-        # Tick de 45°: combinar dirección y perpendicular
-        half = tick_size / 2.0
-        for p_tick in (p1, p2):
-            tx, ty = p_tick['x'], p_tick['y']
-            # Marca de +45°: desde el punto, en dirección (ux+px, uy+py) normalizado
-            d45x = (ux + px) / math.sqrt(2)
-            d45y = (uy + py) / math.sqrt(2)
-            msp.add_line(
-                (tx - d45x * half, ty - d45y * half),
-                (tx + d45x * half, ty + d45y * half),
-                dxfattribs={'layer': layer}
-            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -604,18 +578,18 @@ def main():
     decoded_name = urllib.parse.unquote(raw_project_name) if isinstance(raw_project_name, str) else raw_project_name
     project_name = clean_text(decoded_name, 'PARCELA') or decoded_name
     
-    estado = clean_text(metadata.get('estado', 'S/D')).upper()
-    municipio = clean_text(metadata.get('municipio', 'S/D')).upper()
-    parroquia = clean_text(metadata.get('parroquia', 'S/D')).upper()
-    propietario = clean_text(metadata.get('propietario', 'S/D')).upper()
-    rif = clean_text(metadata.get('rif', 'S/D')).upper()
-    domicilio = clean_text(metadata.get('domicilio', 'S/D')).upper()
-    profesional = clean_text(metadata.get('profesional', 'ING. CATASTRAL / GEODESTA')).upper()
-    civ = clean_text(metadata.get('civ', 'S/D')).upper()
-    zona = clean_text(metadata.get('zona', 'S/D')).upper()
-    seccion = clean_text(metadata.get('seccion', 'S/D')).upper()
-    cedula_cat = clean_text(metadata.get('cedulaCat', 'S/D')).upper()
-    observaciones = clean_text(metadata.get('observaciones', 'NINGUNA. MEDIDAS TOPOGRAFICAS DE ALTA PRECISION UTM REFERIDAS AL DATUM REGVEN.')).upper()
+    estado = clean_text(metadata.get('estado') or '').upper()
+    municipio = clean_text(metadata.get('municipio') or '').upper()
+    parroquia = clean_text(metadata.get('parroquia') or '').upper()
+    propietario = clean_text(metadata.get('propietario') or '').upper()
+    rif = clean_text(metadata.get('rif') or '').upper()
+    domicilio = clean_text(metadata.get('domicilio') or '').upper()
+    profesional = clean_text(metadata.get('profesional') or '').upper()
+    civ = clean_text(metadata.get('civ') or '').upper()
+    zona = clean_text(metadata.get('zona') or '').upper()
+    seccion = clean_text(metadata.get('seccion') or '').upper()
+    cedula_cat = clean_text(metadata.get('cedulaCat') or '').upper()
+    observaciones = clean_text(metadata.get('observaciones') or '').upper()
     
     # 1. Scaling Snap logic matching exportDxf.ts exactly
     padding = 1.35
@@ -714,120 +688,33 @@ def main():
         except Exception as e:
             print(f"Error setting layer linetype: {e}", file=sys.stderr)
     
-    # Grid Labels
-    x_grid = grid_start_x
-    while x_grid <= plot_box['x'] + plot_box['w']:
-        draw_line(msp, x_grid, plot_box['y'], x_grid, plot_box['y'] + plot_box['h'], layer='GRILLA', linetype='GRILLA_PUNTEADA')
-        txt = f"E {int(round(x_grid))}"
-        txt_width = len(txt) * text_h * 0.65
-        draw_left_text(msp, x_grid - text_h * 0.3, plot_box['y'] + txt_width + text_h, text_h, txt, rotation=90, layer='TEXTOS', style=text_style)
-        x_grid += grid_step
-        
-    y_grid = grid_start_y
-    while y_grid <= plot_box['y'] + plot_box['h']:
-        draw_line(msp, plot_box['x'], y_grid, plot_box['x'] + plot_box['w'], y_grid, layer='GRILLA', linetype='GRILLA_PUNTEADA')
-        txt = f"N {int(round(y_grid))}"
-        draw_left_text(msp, plot_box['x'] + text_h * 0.5, y_grid + text_h * 0.3, text_h, txt, rotation=0, layer='TEXTOS', style=text_style)
-        y_grid += grid_step
-        
+    # Grid Labels (Coordenadas UTM únicamente en el lado SUPERIOR e IZQUIERDO)
+    draw_utm_grid_left_top(
+        msp, plot_box, grid_step, text_h, text_style=text_style,
+        min_left_y=plot_box['y'] + margin + text_h * 9.2,
+        max_left_y=plot_box['y'] + plot_box['h'] - text_h * 1.6
+    )
+
     # ================= 4. POLYGONS & ANNOTATIONS FOR ALL PARCELS ================= //
+    placed_boxes = []
     for p_item in processed_parcels:
-        p_pts = p_item['pts']
-        p_geom_type = p_item['geometryType']
-        p_name = p_item['nombre']
-        p_cx, p_cy = p_item['cx'], p_item['cy']
-        p_perim = p_item['perim']
-        p_is_ccw = p_item['is_ccw']
-        
-        avg_edge_len = p_perim / max(len(p_pts), 1)
-        min_edge_len = float('inf')
-        for i in range(len(p_pts)):
-            p_curr = p_pts[i]
-            p_next = p_pts[(i + 1) % len(p_pts)]
-            edge_len = math.hypot(p_next['x'] - p_curr['x'], p_next['y'] - p_curr['y'])
-            if edge_len < min_edge_len:
-                min_edge_len = edge_len
-        if min_edge_len == float('inf') or min_edge_len <= 0:
-            min_edge_len = avg_edge_len
-
-        # ─ Escalado de texto de vértices y cotas — Norma catastral VEN (Pisos de legibilidad) ─
-        # ID de vértice: mínimo 2.5 mm en papel para evitar micro-textos illegibles
-        v_id_h = max(
-            print_scale * 0.0025,  # Piso firme 2.5 mm en papel
-            min(min_edge_len * 0.20, avg_edge_len * 0.15, print_scale * 0.0035)
+        annotate_parcel_cad(
+            msp,
+            p_item['pts'],
+            p_item['geometryType'],
+            p_item['nombre'],
+            p_item['cx'],
+            p_item['cy'],
+            p_item['perim'],
+            p_item['is_ccw'],
+            p_item['data_w'],
+            p_item['data_h'],
+            print_scale,
+            poly_thickness,
+            text_style,
+            placed_boxes=placed_boxes,
+            draw_ticks_fn=draw_segment_ticks,
         )
-        # Cota (distancia de lado): mínimo 2.2 mm en papel
-        v_dist_h = max(
-            print_scale * 0.0022,  # Piso firme 2.2 mm en papel
-            min(avg_edge_len * 0.12, v_id_h * 0.90)
-        )
-        marker_radius = v_id_h * 0.25
-        cota_offset_factor = 1.8
-
-        if p_geom_type != 'puntos':
-            vertices = [(pt['x'], pt['y']) for pt in p_pts]
-            msp.add_lwpolyline(vertices, close=(p_geom_type == 'cerrada'), dxfattribs={'layer': 'POLIGONO', 'const_width': poly_thickness})
-            # Ticks de cota a 45° en extremos de cada segmento
-            tick_size = v_id_h * 1.2
-            draw_segment_ticks(msp, p_pts, p_geom_type, tick_size)
-
-        for i, pt in enumerate(p_pts):
-            is_last_edge = (i == len(p_pts) - 1)
-            is_valid_segment = (p_geom_type == 'cerrada') or (p_geom_type == 'abierta' and not is_last_edge)
-
-            p_next = p_pts[(i + 1) % len(p_pts)]
-            edge_len = math.hypot(p_next['x'] - pt['x'], p_next['y'] - pt['y'])
-
-            dx = p_next['x'] - pt['x']
-            dy = p_next['y'] - pt['y']
-            length = math.hypot(dx, dy)
-
-            if is_valid_segment and length > 0:
-                edge_cota_h = max(print_scale * 0.0020, min(edge_len * 0.12, v_dist_h))
-
-                if p_is_ccw:
-                    nx = dy / length
-                    ny = -dx / length
-                else:
-                    nx = -dy / length
-                    ny = dx / length
-
-                dist_offset = edge_cota_h * cota_offset_factor
-                mid_x = (pt['x'] + p_next['x']) / 2
-                mid_y = (pt['y'] + p_next['y']) / 2
-
-                txt_x = mid_x + nx * dist_offset
-                txt_y = mid_y + ny * dist_offset
-
-                cota_txt = f"{format_number(edge_len, 2)}"
-
-                text_rot = math.degrees(math.atan2(dy, dx))
-                if text_rot > 90: text_rot -= 180
-                elif text_rot < -90: text_rot += 180
-
-                draw_centered_text(msp, txt_x, txt_y, edge_cota_h, cota_txt,
-                                   rotation=text_rot, layer='COTAS', style=text_style)
-
-                # ID del vértice
-                id_offset = marker_radius * 4.5
-                lx = pt['x'] + nx * id_offset
-                ly = pt['y'] + ny * id_offset
-                draw_centered_text(msp, lx, ly + v_id_h * 0.3, v_id_h,
-                                   pt['id'], layer='TEXTOS', style=text_style)
-            else:
-                draw_centered_text(msp, pt['x'], pt['y'] + marker_radius * 2.0,
-                                   v_id_h, pt['id'], layer='TEXTOS', style=text_style)
-
-            draw_circle(msp, pt['x'], pt['y'], marker_radius, layer='TEXTOS')
-
-        # ─ Texto interior de parcela (Únicamente Nombre/Identificador de parcela) ─────
-        inner_dim = min(p_item['data_w'], p_item['data_h'])
-        interior_text_h = max(
-            print_scale * 0.0030,  # Piso de 3.0 mm en papel para visibilidad óptima
-            min(inner_dim * 0.045, print_scale * 0.0050)
-        )
-        draw_centered_text(msp, p_cx, p_cy, interior_text_h,
-                           p_name, layer='TEXTOS', style=text_style)
     
     # ================= 5. MIDDLE COLUMN (CATASTRAL TABLES: BALANCE, PUNTO DE APOYO, RUMBOS, COORDENADAS) ================= //
     table_unit = inner['h'] / 100.0
@@ -1058,8 +945,15 @@ def main():
     s_y -= s_unit * 8.0
     draw_line(msp, side_box['x'], s_y, side_box['x'] + side_box['w'], s_y, layer='MARCO')
     draw_centered_text(msp, side_box['x'] + side_box['w'] / 2.0, s_y + s_unit * 6.5, text_h * 0.8, 'AMPARADA POR EL DOCUMENTO', layer='TEXTOS', style=text_style)
-    reg_text = f"OFICINA SUBALTERNA DE REGISTRO DE LOS MUNICIPIOS {municipio.upper()} Y LOS TAQUES DEL ESTADO {estado.upper()}," if estado.upper() == 'FALCON' else f"OFICINA SUBALTERNA DE REGISTRO DE EL ESTADO {estado.upper()},"
-    reg_text += " BAJO EL NRO. ____, FOLIOS ____ AL ___, PROTOCOLO: ________ TRIMESTRE ______, Año: ________"
+    if estado and municipio:
+        reg_text = f"OFICINA SUBALTERNA DE REGISTRO DEL MUNICIPIO {municipio.upper()} DEL ESTADO {estado.upper()},"
+    elif estado:
+        reg_text = f"OFICINA SUBALTERNA DE REGISTRO DEL ESTADO {estado.upper()},"
+    elif municipio:
+        reg_text = f"OFICINA SUBALTERNA DE REGISTRO DEL MUNICIPIO {municipio.upper()},"
+    else:
+        reg_text = "OFICINA SUBALTERNA DE REGISTRO DEL MUNICIPIO ________ DEL ESTADO ________,"
+    reg_text += " BAJO EL NRO. ____, FOLIOS ____ AL ___, PROTOCOLO: ________ TRIMESTRE ______, Ano: ________"
     
     reg_words = reg_text.split()
     reg_lines = []
