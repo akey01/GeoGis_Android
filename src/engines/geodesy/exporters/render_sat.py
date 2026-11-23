@@ -557,9 +557,9 @@ def main():
 
     outer = {'x': 0.0, 'y': 0.0, 'w': sheet_w, 'h': sheet_h}
     inner = {'x': margin, 'y': margin, 'w': sheet_w - 2*margin, 'h': sheet_h - 2*margin}
-    map_box    = {'x': inner['x'], 'y': inner['y'], 'w': inner['w'] * 0.50, 'h': inner['h']}
-    middle_box = {'x': map_box['x'] + map_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.25, 'h': inner['h']}
-    side_box   = {'x': middle_box['x'] + middle_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.25, 'h': inner['h']}
+    map_box    = {'x': inner['x'], 'y': inner['y'], 'w': inner['w'] * 0.49, 'h': inner['h']}
+    middle_box = {'x': map_box['x'] + map_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.31, 'h': inner['h']}
+    side_box   = {'x': middle_box['x'] + middle_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.20, 'h': inner['h']}
 
     plot_box = {'x': cx - map_box['w']/2, 'y': cy - map_box['h']/2, 'w': map_box['w'], 'h': map_box['h']}
     sheet_offset = {'x': plot_box['x'] - map_box['x'], 'y': plot_box['y'] - map_box['y']}
@@ -677,7 +677,7 @@ def main():
     reg_text += " BAJO EL NRO. ____, FOLIOS ____ AL ___, PROTOCOLO: ________ TRIMESTRE ______, Ano: ________"
     reg_words = reg_text.split(); reg_lines = []; curr = ""
     for w in reg_words:
-        if len(curr)+len(w)+1 < 36: curr += (" " if curr else "")+w
+        if len(curr)+len(w)+1 < 30: curr += (" " if curr else "")+w
         else: reg_lines.append(curr); curr = w
     if curr: reg_lines.append(curr)
     for ri, rl in enumerate(reg_lines[:4]):
@@ -689,7 +689,7 @@ def main():
     draw_left_text(msp, side_box['x']+margin*0.5, s_y+s_unit*10.5, text_h*0.8, 'ANTECEDENTES Y OBSERVACIONES', style=text_style)
     obs_words = observaciones.split(); obs_lines = []; curr = ""
     for w in obs_words:
-        if len(curr)+len(w)+1 < 32: curr += (" " if curr else "")+w
+        if len(curr)+len(w)+1 < 27: curr += (" " if curr else "")+w
         else: obs_lines.append(curr); curr = w
     if curr: obs_lines.append(curr)
     for oi, ol in enumerate(obs_lines[:6]):

@@ -375,13 +375,13 @@ def draw_utm_grid_left_top(msp, plot_box, grid_step, text_h, text_style='GEO_ARI
     x_grid = grid_start_x
     while x_grid <= x_right:
         _draw_line(msp, x_grid, plot_box['y'], x_grid, y_top, layer='GRILLA', linetype='GRILLA_PUNTEADA')
-        if (plot_box['x'] + text_h * 1.5) <= x_grid <= (x_right - text_h * 1.5):
+        if (plot_box['x'] + text_h * 2.2) <= x_grid <= (x_right - text_h * 2.2):
             txt = f"E {int(round(x_grid))}"
-            txt_width = len(txt) * text_h * 0.65
+            txt_width = len(txt) * text_h * 0.85
             _draw_left_text(
                 msp,
                 x_grid - text_h * 0.3,
-                y_top - txt_width - text_h * 0.6,
+                y_top - txt_width - text_h * 2.2,
                 text_h,
                 txt,
                 rotation=90,
@@ -397,7 +397,7 @@ def draw_utm_grid_left_top(msp, plot_box, grid_step, text_h, text_style='GEO_ARI
             txt = f"N {int(round(y_grid))}"
             _draw_left_text(
                 msp,
-                plot_box['x'] + text_h * 0.5,
+                plot_box['x'] + text_h * 0.8,
                 y_grid + text_h * 0.3,
                 text_h,
                 txt,
@@ -635,11 +635,11 @@ def _draw_cell_text_fit(msp, x, y, text_height, col_w, text, layer='TEXTOS', sty
     if not txt_str:
         return None
     h = max(text_height, 1e-4)
-    est_w = max(len(txt_str), 1) * h * 0.62
-    avail_w = max(col_w * 0.88, 1e-4)
+    est_w = max(len(txt_str), 1) * h * 0.66
+    avail_w = max(col_w * 0.82, 1e-4)
     width_factor = 1.0
     if est_w > avail_w:
-        width_factor = max(0.60, min(0.98, avail_w / est_w))
+        width_factor = max(0.72, min(0.98, avail_w / est_w))
         if est_w * width_factor > avail_w:
             h = h * (avail_w / (est_w * width_factor))
     t = msp.add_text(
@@ -725,14 +725,14 @@ def _draw_compact_balance_and_pa(msp, box_x, top_y, box_w, hdr_h, row_h, title,
     y1 = top_y - hdr_h - row_h * 0.5
     c_mid = box_w * 0.5
     _draw_line(msp, box_x + c_mid, top_y - hdr_h, box_x + c_mid, top_y - hdr_h - row_h, layer='MARCO')
-    cell_h = min(text_h * 0.78, row_h * 0.62)
+    cell_h = min(text_h * 0.88, row_h * 0.66)
     _draw_cell_text_fit(msp, box_x + c_mid * 0.5, y1, cell_h, c_mid, f"A.DOC: {area_doc_txt}", layer='TEXTOS', style=text_style)
     _draw_cell_text_fit(msp, box_x + c_mid * 1.5, y1, cell_h, c_mid, f"A.MENS: {area_mens_txt}", layer='TEXTOS', style=text_style)
 
     # Fila 2: Punto de Apoyo | N | E
     y2 = top_y - hdr_h - row_h * 1.5
-    c_pa1 = box_w * 0.24
-    c_pa2 = box_w * 0.38
+    c_pa1 = box_w * 0.20
+    c_pa2 = box_w * 0.40
     c_pa3 = box_w - c_pa1 - c_pa2
     _draw_line(msp, box_x + c_pa1, top_y - hdr_h - row_h, box_x + c_pa1, top_y - total_h, layer='MARCO')
     _draw_line(msp, box_x + c_pa1 + c_pa2, top_y - hdr_h - row_h, box_x + c_pa1 + c_pa2, top_y - total_h, layer='MARCO')
@@ -758,7 +758,7 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
         min(text_h * 0.85, hdr_h * 0.50), box_w, title, layer='TEXTOS', style=text_style
     )
 
-    col_fracs = [0.14, 0.25, 0.13, 0.10, 0.19, 0.19]
+    col_fracs = [0.105, 0.225, 0.115, 0.075, 0.24, 0.24]
     col_widths = [box_w * f for f in col_fracs]
     col_labels = ['EST-PV', 'RUMBO', 'DIST(m)', 'VERT', 'NORTE(m)', 'ESTE(m)']
     data_bottom_y = top_y - hdr_h - colhdr_h - len(rows) * row_h
@@ -772,11 +772,12 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
         acc_x += cw
 
     col_y = top_y - hdr_h - colhdr_h * 0.5
-    col_lbl_h = min(text_h * 0.72, colhdr_h * 0.48)
+    col_lbl_h = min(text_h * 0.82, colhdr_h * 0.52)
     for c_idx, lbl in enumerate(col_labels):
         _draw_cell_text_fit(msp, col_centers[c_idx], col_y, col_lbl_h, col_widths[c_idx], lbl, layer='TEXTOS', style=text_style)
 
-    val_h = min(text_h * 0.78, row_h * 0.64)
+    val_h_base = min(text_h * 0.92, row_h * 0.68)
+    val_h_coord = min(text_h * 1.02, row_h * 0.74)
     for r_idx, row in enumerate(rows):
         y_top = top_y - hdr_h - colhdr_h - r_idx * row_h
         y_mid = y_top - row_h * 0.5
@@ -784,7 +785,8 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
             _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
         vals = [row['lado'], row['rumbo'], row['dist'], row['vert'], row['norte'], row['este']]
         for c_idx, val in enumerate(vals):
-            _draw_cell_text_fit(msp, col_centers[c_idx], y_mid, val_h, col_widths[c_idx], val, layer='TEXTOS', style=text_style)
+            cell_txt_h = val_h_coord if c_idx >= 3 else val_h_base
+            _draw_cell_text_fit(msp, col_centers[c_idx], y_mid, cell_txt_h, col_widths[c_idx], val, layer='TEXTOS', style=text_style)
 
     if has_footer:
         _draw_line(msp, box_x, data_bottom_y, box_x + box_w, data_bottom_y, layer='MARCO')
@@ -815,8 +817,8 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
     total_gaps = 3.0 * gap_h
     usable_h = max(avail_h - total_gaps, 1e-4)
 
-    hdr_h = min(table_unit * 2.8, usable_h / (total_hdr_mult + total_rows * 0.85))
-    row_h = min(table_unit * 2.6, max(usable_h - total_hdr_mult * hdr_h, 1e-4) / max(total_rows, 1))
+    hdr_h = min(table_unit * 3.2, usable_h / (total_hdr_mult + total_rows * 0.85))
+    row_h = min(table_unit * 3.1, max(usable_h - total_hdr_mult * hdr_h, 1e-4) / max(total_rows, 1))
 
     t_y = top_y
     area_doc_txt = f"{format_number_fn(p_area_doc, 2)} m2"
@@ -855,9 +857,9 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
     _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - hdr_h * 0.5, min(text_h * 0.86, hdr_h * 0.48), box_w, 'PUNTO DE APOYO (RED GEODESICA)', layer='TEXTOS', style=text_style)
     _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - hdr_h - pa_subhdr_h * 0.5, min(text_h * 0.78, pa_subhdr_h * 0.48), box_w, 'COORDENADAS REGVEN (UTM)', layer='TEXTOS', style=text_style)
 
-    pa_c1 = box_w * 0.20
-    pa_c2 = box_w * 0.40
-    pa_c3 = box_w * 0.40
+    pa_c1 = box_w * 0.16
+    pa_c2 = box_w * 0.42
+    pa_c3 = box_w * 0.42
     _draw_line(msp, box_x + pa_c1, t_y - hdr_h - pa_subhdr_h, box_x + pa_c1, t_y - pa_h, layer='MARCO')
     _draw_line(msp, box_x + pa_c1 + pa_c2, t_y - hdr_h - pa_subhdr_h, box_x + pa_c1 + pa_c2, t_y - pa_h, layer='MARCO')
 
@@ -902,7 +904,7 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
     _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo * 0.5, rb_sub_y, rb_sh_h * 0.92, r_c_rumbo, '(GEODESICO)', layer='TEXTOS', style=text_style)
     _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, rb_sub_y, rb_sh_h * 0.92, r_c_dist, '(m)', layer='TEXTOS', style=text_style)
 
-    rb_txt_h = min(text_h * 0.88, row_h * 0.65)
+    rb_txt_h = min(text_h * 0.94, row_h * 0.68)
     for s_idx in range(n_segments):
         p1 = p_pts[s_idx]
         p2 = p_pts[(s_idx + 1) % n_pts]
@@ -929,9 +931,9 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
     _draw_line(msp, box_x, t_y - coo_hdr_h - coo_colhdr_h, box_x + box_w, t_y - coo_hdr_h - coo_colhdr_h, layer='MARCO')
     _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - coo_hdr_h * 0.5, min(text_h * 0.85, coo_hdr_h * 0.50), box_w, 'COORDENADAS (U.T.M)', layer='TEXTOS', style=text_style)
 
-    c_c1 = box_w * 0.20
-    c_c2 = box_w * 0.40
-    c_c3 = box_w * 0.40
+    c_c1 = box_w * 0.16
+    c_c2 = box_w * 0.42
+    c_c3 = box_w * 0.42
     _draw_line(msp, box_x + c_c1, t_y - coo_hdr_h, box_x + c_c1, t_y - coo_h, layer='MARCO')
     _draw_line(msp, box_x + c_c1 + c_c2, t_y - coo_hdr_h, box_x + c_c1 + c_c2, t_y - coo_h, layer='MARCO')
 
@@ -941,7 +943,7 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
     _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, coo_col_y, coo_ch_h, c_c2, 'NORTE', layer='TEXTOS', style=text_style)
     _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, coo_col_y, coo_ch_h, c_c3, 'ESTE', layer='TEXTOS', style=text_style)
 
-    coord_txt_h = min(text_h * 0.90, row_h * 0.65)
+    coord_txt_h = min(text_h * 1.02, row_h * 0.74)
     for idx, pt in enumerate(p_pts):
         y_top = t_y - coo_hdr_h - coo_colhdr_h - idx * row_h
         y_center = y_top - row_h * 0.5
@@ -985,8 +987,9 @@ def render_adaptive_construction_tables(
     min_y_limit = inner['y'] + margin
     avail_h = max(t_y - min_y_limit, 1e-4)
 
-    box_x = middle_box['x'] + margin
-    box_w = middle_box['w'] - 2.0 * margin
+    pad_x = margin * 0.35
+    box_x = middle_box['x'] + pad_x
+    box_w = middle_box['w'] - 2.0 * pad_x
 
     n_parcels = len(processed_parcels)
     total_vertices = sum(len(p['pts']) for p in processed_parcels)
@@ -1002,15 +1005,15 @@ def render_adaptive_construction_tables(
 
     # ─ Evaluar si cabe completo en Nivel 2 (Cuadro Unificado) ────────────────
     gap_l2 = min(table_unit * 0.75, avail_h * 0.01)
-    hdr_l2 = min(table_unit * 2.5, avail_h * 0.03)
+    hdr_l2 = min(table_unit * 3.0, avail_h * 0.036)
     n_hdr_mult_l2 = n_parcels * (1.0 + 1.85)
     n_rows_l2 = n_parcels * 2 + total_vertices
     n_gaps_l2 = max(1, 2 * n_parcels - 1)
     avail_rows_l2 = avail_h - n_gaps_l2 * gap_l2 - n_hdr_mult_l2 * hdr_l2
     projected_row_h_l2 = avail_rows_l2 / max(n_rows_l2, 1)
 
-    if total_vertices <= 38 and projected_row_h_l2 >= table_unit * 1.55:
-        row_h = min(table_unit * 2.5, projected_row_h_l2)
+    if total_vertices <= 38 and projected_row_h_l2 >= table_unit * 1.50:
+        row_h = min(table_unit * 3.4, projected_row_h_l2)
         for p_item in processed_parcels:
             p_pts = p_item['pts']
             p_name = p_item['nombre']
@@ -1060,7 +1063,7 @@ def render_adaptive_construction_tables(
     hdr_l3 = table_unit * 2.4
     n_main_slots = 2 + len(main_rows) + (1 if annex_rows else 0)
     avail_rows_l3 = avail_h - gap_l3 - (1.0 + 1.85) * hdr_l3
-    row_h_l3 = min(table_unit * 2.4, max(avail_rows_l3 / max(n_main_slots, 1), table_unit * 1.45))
+    row_h_l3 = min(table_unit * 2.8, max(avail_rows_l3 / max(n_main_slots, 1), table_unit * 1.45))
 
     used_bal = _draw_compact_balance_and_pa(
         msp, box_x, t_y, box_w, hdr_l3, row_h_l3,
@@ -1126,7 +1129,7 @@ def render_adaptive_construction_tables(
     col_avail_h = col_top_y - (annex_inner_y + margin)
     hdr_annex = table_unit * 2.4
     row_h_annex = min(
-        table_unit * 2.4,
+        table_unit * 2.8,
         max((col_avail_h - 1.85 * hdr_annex) / MAX_ANNEX_ROWS, table_unit * 1.4),
     )
 

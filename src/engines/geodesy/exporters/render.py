@@ -619,9 +619,9 @@ def main():
     outer = {'x': 0.0, 'y': 0.0, 'w': sheet_w, 'h': sheet_h}
     inner = {'x': margin, 'y': margin, 'w': sheet_w - 2.0 * margin, 'h': sheet_h - 2.0 * margin}
     
-    map_box = {'x': inner['x'], 'y': inner['y'], 'w': inner['w'] * 0.50, 'h': inner['h']}
-    middle_box = {'x': map_box['x'] + map_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.25, 'h': inner['h']}
-    side_box = {'x': middle_box['x'] + middle_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.25, 'h': inner['h']}
+    map_box = {'x': inner['x'], 'y': inner['y'], 'w': inner['w'] * 0.49, 'h': inner['h']}
+    middle_box = {'x': map_box['x'] + map_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.31, 'h': inner['h']}
+    side_box = {'x': middle_box['x'] + middle_box['w'], 'y': inner['y'], 'w': inner['w'] * 0.20, 'h': inner['h']}
     
     plot_box = {
         'x': cx - (map_box['w'] / 2.0),
@@ -773,7 +773,7 @@ def main():
     reg_lines = []
     curr_line = ""
     for w in reg_words:
-        if len(curr_line) + len(w) + 1 < 36:
+        if len(curr_line) + len(w) + 1 < 30:
             curr_line += (" " if curr_line else "") + w
         else:
             reg_lines.append(curr_line)
@@ -793,7 +793,7 @@ def main():
     obs_lines = []
     curr_line = ""
     for w in obs_words:
-        if len(curr_line) + len(w) + 1 < 32:
+        if len(curr_line) + len(w) + 1 < 27:
             curr_line += (" " if curr_line else "") + w
         else:
             obs_lines.append(curr_line)
@@ -871,14 +871,14 @@ def main():
     draw_line(msp, side_box['x'] + side_box['w'] * 0.6, s_y + s_unit * 9.0, side_box['x'] + side_box['w'] * 0.6, s_y, layer='MARCO')
     
     draw_left_text(msp, side_box['x'] + margin * 0.5, s_y + s_unit * 7.5, text_h * 0.8, 'PROPIETARIO:', layer='TEXTOS', style=text_style)
-    draw_left_text(msp, side_box['x'] + margin * 0.5, s_y + s_unit * 5.0, text_h * 0.75, propietario[:30], layer='TEXTOS', style=text_style)
+    draw_left_text(msp, side_box['x'] + margin * 0.5, s_y + s_unit * 5.0, text_h * 0.75, propietario[:24], layer='TEXTOS', style=text_style)
     draw_left_text(msp, side_box['x'] + margin * 0.5, s_y + s_unit * 1.5, text_h * 0.7, f"C.I / RIF: {rif}", layer='TEXTOS', style=text_style)
     
     draw_left_text(msp, side_box['x'] + side_box['w'] * 0.62, s_y + s_unit * 7.5, text_h * 0.8, 'DOMICILIO:', layer='TEXTOS', style=text_style)
     dom_lines = []
     curr_dom = ""
     for w in domicilio.split():
-        if len(curr_dom) + len(w) + 1 < 16:
+        if len(curr_dom) + len(w) + 1 < 13:
             curr_dom += (" " if curr_dom else "") + w
         else:
             dom_lines.append(curr_dom)
@@ -904,7 +904,7 @@ def main():
     prof_lines = []
     curr_prof = ""
     for w in profesional.split():
-        if len(curr_prof) + len(w) + 1 < 16:
+        if len(curr_prof) + len(w) + 1 < 13:
             curr_prof += (" " if curr_prof else "") + w
         else:
             prof_lines.append(curr_prof)
