@@ -217,7 +217,7 @@ export function unifyPolygonsExterior(
   if (cleanPolys.length === 0) return [];
   if (cleanPolys.length === 1) {
     const cleaned = removeCollinear(cleanPolys[0], 0.01);
-    return cleaned.map((p, i) => ({ ...p, id: String(i + 1) }));
+    return cleaned.map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
   // 1. Soldadura (snapping) de vértices cercanos entre parcelas
@@ -385,7 +385,7 @@ export function unifyPolygonsExterior(
     // Fallback de seguridad: envolvente exterior de todos los puntos
     const allPts = cleanPolys.flat();
     const hull = removeCollinear(convexHullCCW(allPts), 0.01);
-    return hull.map((p, i) => ({ ...p, id: String(i + 1) }));
+    return hull.map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
   // 4. Encadenamiento de ciclos exteriores (Outer Ring Walk)
@@ -442,17 +442,17 @@ export function unifyPolygonsExterior(
 
   if (rings.length === 0) {
     const hull = removeCollinear(convexHullCCW(cleanPolys.flat()), 0.01);
-    return hull.map((p, i) => ({ ...p, id: String(i + 1) }));
+    return hull.map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
   // Si hay 1 solo ciclo exterior CCW (caso normal de parcelas colindantes), retornarlo directamente
   if (rings.length === 1) {
-    return rings[0].map((p, i) => ({ ...p, id: String(i + 1) }));
+    return rings[0].map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
   // Si existen múltiples componentes desconectadas (parcelas que no se tocan), devolver el contorno envolvente exterior único sin puntos interiores
   const hull = removeCollinear(convexHullCCW(rings.flat()), 0.01);
-  return hull.map((p, i) => ({ ...p, id: String(i + 1) }));
+  return hull.map((p, i) => ({ ...p, id: `P${i + 1}` }));
 }
 
 function approxLatLngFromNeighbors(
@@ -497,7 +497,7 @@ export function unifyParcelsToSingleParcel(parcels: Parcel[], customName?: strin
   const ha = area / 10000;
 
   const puntos: TransformationResult[] = exteriorPts.map((pt, idx) => {
-    const id = String(idx + 1);
+    const id = `P${idx + 1}`;
     const baseRaw = pt.raw;
     if (baseRaw && Math.hypot(
       Number(baseRaw.result?.este ?? baseRaw.input?.este ?? pt.x) - pt.x,

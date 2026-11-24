@@ -215,19 +215,34 @@ def compute_outward_vertex_bisector(idx, pts, is_ccw, probe_eps=0.05):
     return bx, by
 
 
-def text_bbox_corners(cx, cy, w, h, rot_deg=0.0):
-    """Retorna las 4 esquinas y el centro del bounding box rotado de un texto."""
+def normalize_vertex_id(raw_id, fallback_idx):
+    """Formatea el identificador de vértice según norma topográfica (P1, P2, ...)."""
+    s = str(raw_id or '').strip().upper()
+    if not s:
+        return f"P{fallback_idx}"
+    if s.isdigit():
+        return f"P{s}"
+    return s
+
+
+def obb_corners(cx, cy, w, h, rot_deg=0.0):
+    """Retorna las 4 esquinas del rectángulo orientado (OBB) de un texto."""
     hw = w * 0.5
     hh = h * 0.5
     rad = math.radians(rot_deg)
     ca, sa = math.cos(rad), math.sin(rad)
-    local_pts = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh), (0.0, 0.0)]
+    local_pts = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
     return [(cx + lx * ca - ly * sa, cy + lx * sa + ly * ca) for lx, ly in local_pts]
+
+
+def text_bbox_corners(cx, cy, w, h, rot_deg=0.0):
+    """Retorna las 4 esquinas y el centro del bounding box rotado de un texto."""
+    return obb_corners(cx, cy, w, h, rot_deg) + [(cx, cy)]
 
 
 def text_aabb(cx, cy, w, h, rot_deg=0.0):
     """Retorna (xmin, ymin, xmax, ymax) de un bounding box rotado."""
-    corners = text_bbox_corners(cx, cy, w, h, rot_deg)
+    corners = obb_corners(cx, cy, w, h, rot_deg)
     xs = [c[0] for c in corners]
     ys = [c[1] for c in corners]
     return (min(xs), min(ys), max(xs), max(ys))
@@ -243,10 +258,139 @@ def bboxes_overlap(box_a, box_b, pad=0.0):
     )
 
 
-def box_strictly_outside_polygon(cx, cy, w, h, rot_deg, pts, min_clearance=0.0):
+def _aabb_to_obb(aabb):
+    xmin, ymin, xmax, ymax = aabb
+    return [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+
+
+def obbs_overlap(corners_a, corners_b, pad=0.0):
+    """Test SAT 2D (Separating Axis Theorem) entre dos rectángulos orientados con margen pad."""
+    axes = []
+    for corners in (corners_a, corners_b):
+        for i in range(2):
+            p1 = corners[i]
+            p2 = corners[(i + 1) % 4]
+            ex, ey = p2[0] - p1[0], p2[1] - p1[1]
+            mag = math.hypot(ex, ey)
+            if mag > 1e-12:
+                axes.append((-ey / mag, ex / mag))
+    for ax, ay in axes:
+        pa = [p[0] * ax + p[1] * ay for p in corners_a]
+        pb = [p[0] * ax + p[1] * ay for p in corners_b]
+        if max(pa) + pad < min(pb) or max(pb) + pad < min(pa):
+            return False
+    return True
+
+
+def _seg_to_seg_dist(ax, ay, bx, by, cx, cy, dx, dy):
+    """Distancia euclidiana mínima entre dos segmentos 2D."""
+    return min(
+        point_to_segment_dist(ax, ay, cx, cy, dx, dy),
+        point_to_segment_dist(bx, by, cx, cy, dx, dy),
+        point_to_segment_dist(cx, cy, ax, ay, bx, by),
+        point_to_segment_dist(dx, dy, ax, ay, bx, by),
+    )
+
+
+def segments_intersect(ax, ay, bx, by, cx, cy, dx, dy, clearance=0.0, allow_shared_endpoint_tol=0.0):
+    """Retorna True si los segmentos AB y CD se cruzan o quedan más cerca que clearance."""
+    def _ccw(p1x, p1y, p2x, p2y, p3x, p3y):
+        return (p2x - p1x) * (p3y - p1y) - (p2y - p1y) * (p3x - p1x)
+
+    if max(ax, bx) + clearance < min(cx, dx) or max(cx, dx) + clearance < min(ax, bx):
+        return False
+    if max(ay, by) + clearance < min(cy, dy) or max(cy, dy) + clearance < min(ay, by):
+        return False
+
+    d1 = _ccw(cx, cy, dx, dy, ax, ay)
+    d2 = _ccw(cx, cy, dx, dy, bx, by)
+    d3 = _ccw(ax, ay, bx, by, cx, cy)
+    d4 = _ccw(ax, ay, bx, by, dx, dy)
+
+    proper = ((d1 > 1e-9 and d2 < -1e-9) or (d1 < -1e-9 and d2 > 1e-9)) and (
+        (d3 > 1e-9 and d4 < -1e-9) or (d3 < -1e-9 and d4 > 1e-9)
+    )
+    if proper:
+        return True
+
+    # Colinear / toque en extremo
+    if abs(d1) <= 1e-9 and point_to_segment_dist(ax, ay, cx, cy, dx, dy) <= 1e-6:
+        if allow_shared_endpoint_tol <= 0 or math.hypot(ax - cx, ay - cy) > allow_shared_endpoint_tol and math.hypot(ax - dx, ay - dy) > allow_shared_endpoint_tol:
+            return True
+    if abs(d2) <= 1e-9 and point_to_segment_dist(bx, by, cx, cy, dx, dy) <= 1e-6:
+        if allow_shared_endpoint_tol <= 0 or math.hypot(bx - cx, by - cy) > allow_shared_endpoint_tol and math.hypot(bx - dx, by - dy) > allow_shared_endpoint_tol:
+            return True
+
+    if clearance > 0.0:
+        return _seg_to_seg_dist(ax, ay, bx, by, cx, cy, dx, dy) < clearance
+    return False
+
+
+def _point_in_obb(px, py, corners, pad=0.0):
+    p0, p1, _, p3 = corners
+    ux, uy = p1[0] - p0[0], p1[1] - p0[1]
+    vx, vy = p3[0] - p0[0], p3[1] - p0[1]
+    u_len = math.hypot(ux, uy)
+    v_len = math.hypot(vx, vy)
+    if u_len <= 1e-9 or v_len <= 1e-9:
+        return False
+    ux, uy = ux / u_len, uy / u_len
+    vx, vy = vx / v_len, vy / v_len
+    du = (px - p0[0]) * ux + (py - p0[1]) * uy
+    dv = (px - p0[0]) * vx + (py - p0[1]) * vy
+    return (-pad <= du <= u_len + pad) and (-pad <= dv <= v_len + pad)
+
+
+def segment_intersects_obb(x1, y1, x2, y2, corners, pad=0.0):
+    """Retorna True si el segmento (x1,y1)-(x2,y2) atraviesa o toca el OBB (con margen pad)."""
+    if _point_in_obb(x1, y1, corners, pad=pad) or _point_in_obb(x2, y2, corners, pad=pad):
+        return True
+    for i in range(4):
+        c1 = corners[i]
+        c2 = corners[(i + 1) % 4]
+        if segments_intersect(x1, y1, x2, y2, c1[0], c1[1], c2[0], c2[1], clearance=pad):
+            return True
+    return False
+
+
+def segment_crosses_polygon_edges(x1, y1, x2, y2, pts, ignore_edge_idx=None, ignore_vertex_idx=None, poly_edge_aabbs=None):
+    """Retorna True si el segmento (x1,y1)-(x2,y2) cruza alguna arista del polígono cerrado."""
+    n = len(pts)
+    if n < 2:
+        return False
+    sminx = x1 if x1 < x2 else x2
+    smaxx = x2 if x1 < x2 else x1
+    sminy = y1 if y1 < y2 else y2
+    smaxy = y2 if y1 < y2 else y1
+    for j in range(n):
+        if ignore_edge_idx is not None and j == ignore_edge_idx:
+            continue
+        if ignore_vertex_idx is not None and (j == ignore_vertex_idx or (j + 1) % n == ignore_vertex_idx):
+            continue
+        if poly_edge_aabbs is not None:
+            ex0, ey0, ex1, ey1 = poly_edge_aabbs[j]
+            if smaxx < ex0 or sminx > ex1 or smaxy < ey0 or sminy > ey1:
+                continue
+        p1 = pts[j]
+        p2 = pts[(j + 1) % n]
+        if segments_intersect(x1, y1, x2, y2, p1['x'], p1['y'], p2['x'], p2['y'], clearance=0.0):
+            return True
+    return False
+
+
+def box_strictly_outside_polygon(cx, cy, w, h, rot_deg, pts, min_clearance=0.0, poly_aabb=None):
     """Verifica que ni el centro ni ninguna esquina del texto caiga dentro del polígono o demasiado pegada al borde."""
     if len(pts) < 3:
         return True
+    if poly_aabb is not None:
+        b_aabb = text_aabb(cx, cy, w, h, rot_deg)
+        if (
+            b_aabb[2] + min_clearance < poly_aabb[0]
+            or b_aabb[0] - min_clearance > poly_aabb[2]
+            or b_aabb[3] + min_clearance < poly_aabb[1]
+            or b_aabb[1] - min_clearance > poly_aabb[3]
+        ):
+            return True
     for px, py in text_bbox_corners(cx, cy, w, h, rot_deg):
         if is_point_in_polygon(px, py, pts):
             return False
@@ -259,60 +403,172 @@ def box_collides_any(aabb, placed_boxes, pad=0.0):
     return any(bboxes_overlap(aabb, b, pad=pad) for b in placed_boxes)
 
 
-def draw_leader_cota(msp, anchor_x, anchor_y, nx, ny, ux, uy, cota_txt, text_h,
-                     stagger_sign, poly_pts, placed_boxes, style='GEO_ARIAL', min_clearance=0.0):
+def obb_collides_any(obb, placed_obbs, pad=0.0, obb_aabb=None, placed_aabbs=None):
+    if placed_aabbs is not None and obb_aabb is not None:
+        for idx, b_obb in enumerate(placed_obbs):
+            if not bboxes_overlap(obb_aabb, placed_aabbs[idx], pad=pad):
+                continue
+            if obbs_overlap(obb, b_obb, pad=pad):
+                return True
+        return False
+    return any(obbs_overlap(obb, b, pad=pad) for b in placed_obbs)
+
+
+def draw_leader_cota(msp, p1, p2, nx, ny, ux, uy, poly_thickness, cota_txt, text_h,
+                     stagger_sign, poly_pts, placed_obbs, placed_leader_segments,
+                     edge_idx=None, placed_boxes=None, style='GEO_ARIAL', min_clearance=0.0,
+                     placed_aabbs=None, placed_leader_aabbs=None, poly_aabb=None, poly_edge_aabbs=None):
     """
     Dibuja una cota de distancia con línea de referencia y punta de flecha en capa COTAS
-    cuando los vértices están muy cercanos o la cota normal colisiona.
-    Garantiza que tanto el hombro como el texto queden 100% fuera del polígono y sin colisiones.
+    garantizando cero cruces entre flechas, cero cruces con el polígono y sin atravesar etiquetas.
     """
-    cota_w = max(len(cota_txt), 3) * text_h * 0.68
+    cota_w = max(len(cota_txt), 3) * text_h * 0.66
     cota_h = text_h * 1.15
-    shoulder_len = max(cota_w * 1.12, text_h * 2.5)
+    shoulder_len = max(cota_w * 1.04, text_h * 1.75)
     pad = text_h * 0.25
+    line_clear = text_h * 0.35
 
     candidate_dirs = []
-    for sgn in (stagger_sign, 0.0, -stagger_sign):
-        dx = nx + 0.38 * sgn * ux
-        dy = ny + 0.38 * sgn * uy
-        mag = math.hypot(dx, dy)
-        if mag > 1e-6:
-            candidate_dirs.append((dx / mag, dy / mag))
-    for ang_deg in (30, -30, 60, -60, 90, -90, 120, -120):
+    base_angles = (0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75)
+    if stagger_sign < 0:
+        base_angles = (0, -15, 15, -30, 30, -45, 45, -60, 60, -75, 75)
+    for ang_deg in base_angles:
         rad = math.radians(ang_deg)
         ca, sa = math.cos(rad), math.sin(rad)
         candidate_dirs.append((nx * ca - ny * sa, nx * sa + ny * ca))
 
     chosen = None
     best_fallback = None
-    for dir_x, dir_y in candidate_dirs:
-        if len(poly_pts) >= 3 and is_point_in_polygon(
-            anchor_x + dir_x * text_h * 0.6,
-            anchor_y + dir_y * text_h * 0.6,
-            poly_pts,
-        ):
-            continue
-        for step_mult in (3.6, 5.0, 6.6, 8.4):
-            stem_len = text_h * step_mult
-            elbow_x = anchor_x + dir_x * stem_len
-            elbow_y = anchor_y + dir_y * stem_len
-            if len(poly_pts) >= 3 and is_point_in_polygon(elbow_x, elbow_y, poly_pts):
-                continue
-            h_pref = 1.0 if dir_x >= 0 else -1.0
-            for h_sign in (h_pref, -h_pref):
-                end_x = elbow_x + h_sign * shoulder_len
-                end_y = elbow_y
-                txt_cx = (elbow_x + end_x) * 0.5
-                txt_cy = elbow_y + text_h * 0.72
-                aabb = text_aabb(txt_cx, txt_cy, cota_w, cota_h, 0.0)
-                if not box_strictly_outside_polygon(
-                    txt_cx, txt_cy, cota_w, cota_h, 0.0, poly_pts, min_clearance=min_clearance
+    best_penalty = float('inf')
+
+    dense_mode = len(poly_pts) > 45
+    step_mults = (1.8, 2.7, 3.8, 5.2) if dense_mode else (1.8, 2.5, 3.4, 4.5, 5.8, 7.2)
+    t_anchors = (0.5, 0.35) if dense_mode else (0.5, 0.35, 0.65)
+    if placed_aabbs is None:
+        placed_aabbs = [
+            (min(c[0] for c in b), min(c[1] for c in b), max(c[0] for c in b), max(c[1] for c in b))
+            for b in placed_obbs
+        ]
+    if placed_leader_aabbs is None:
+        placed_leader_aabbs = [
+            (min(s[0], s[2]), min(s[1], s[3]), max(s[0], s[2]), max(s[1], s[3]))
+            for s in placed_leader_segments
+        ]
+
+    for step_mult in step_mults:
+        stem_len = text_h * step_mult
+        for ang_idx, (dir_x, dir_y) in enumerate(candidate_dirs):
+            for t_anchor in t_anchors:
+                base_x = p1['x'] + (p2['x'] - p1['x']) * t_anchor
+                base_y = p1['y'] + (p2['y'] - p1['y']) * t_anchor
+                anchor_x = base_x + nx * (poly_thickness * 0.5)
+                anchor_y = base_y + ny * (poly_thickness * 0.5)
+
+                if len(poly_pts) >= 3 and is_point_in_polygon(
+                    anchor_x + dir_x * text_h * 0.6,
+                    anchor_y + dir_y * text_h * 0.6,
+                    poly_pts,
                 ):
                     continue
-                if best_fallback is None:
-                    best_fallback = (dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, aabb)
-                if not box_collides_any(aabb, placed_boxes, pad=pad):
-                    chosen = (dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, aabb)
+
+                elbow_x = anchor_x + dir_x * stem_len
+                elbow_y = anchor_y + dir_y * stem_len
+                if len(poly_pts) >= 3 and is_point_in_polygon(elbow_x, elbow_y, poly_pts):
+                    continue
+                if len(poly_pts) >= 3 and segment_crosses_polygon_edges(
+                    anchor_x + dir_x * text_h * 0.25,
+                    anchor_y + dir_y * text_h * 0.25,
+                    elbow_x,
+                    elbow_y,
+                    poly_pts,
+                    ignore_edge_idx=edge_idx,
+                    poly_edge_aabbs=poly_edge_aabbs,
+                ):
+                    continue
+
+                st_minx = min(anchor_x, elbow_x) - line_clear
+                st_maxx = max(anchor_x, elbow_x) + line_clear
+                st_miny = min(anchor_y, elbow_y) - line_clear
+                st_maxy = max(anchor_y, elbow_y) + line_clear
+
+                stem_leader_cross = 0
+                for idx_l, (lx1, ly1, lx2, ly2) in enumerate(placed_leader_segments):
+                    la = placed_leader_aabbs[idx_l]
+                    if st_maxx < la[0] or st_minx > la[2] or st_maxy < la[1] or st_miny > la[3]:
+                        continue
+                    if segments_intersect(anchor_x, anchor_y, elbow_x, elbow_y, lx1, ly1, lx2, ly2, clearance=line_clear):
+                        stem_leader_cross += 1
+                        break
+
+                stem_obb_pierce = 0
+                for idx_o, other_obb in enumerate(placed_obbs):
+                    oa = placed_aabbs[idx_o]
+                    if st_maxx < oa[0] or st_minx > oa[2] or st_maxy < oa[1] or st_miny > oa[3]:
+                        continue
+                    if segment_intersects_obb(anchor_x, anchor_y, elbow_x, elbow_y, other_obb, pad=pad * 0.5):
+                        stem_obb_pierce += 1
+                        break
+
+                h_pref = 1.0 if dir_x >= 0 else -1.0
+                for h_sign in (h_pref, -h_pref):
+                    end_x = elbow_x + h_sign * shoulder_len
+                    end_y = elbow_y
+                    if len(poly_pts) >= 3 and is_point_in_polygon(end_x, end_y, poly_pts):
+                        continue
+                    if len(poly_pts) >= 3 and segment_crosses_polygon_edges(
+                        elbow_x, elbow_y, end_x, end_y, poly_pts, poly_edge_aabbs=poly_edge_aabbs
+                    ):
+                        continue
+
+                    txt_cx = (elbow_x + end_x) * 0.5
+                    txt_cy = elbow_y + text_h * 0.72
+                    if not box_strictly_outside_polygon(
+                        txt_cx, txt_cy, cota_w, cota_h, 0.0, poly_pts, min_clearance=min_clearance, poly_aabb=poly_aabb
+                    ):
+                        continue
+
+                    obb = obb_corners(txt_cx, txt_cy, cota_w, cota_h, 0.0)
+                    obb_box = (txt_cx - cota_w * 0.5, txt_cy - cota_h * 0.5, txt_cx + cota_w * 0.5, txt_cy + cota_h * 0.5)
+                    sh_minx = min(elbow_x, end_x) - line_clear
+                    sh_maxx = max(elbow_x, end_x) + line_clear
+                    sh_miny = min(elbow_y, end_y) - line_clear
+                    sh_maxy = max(elbow_y, end_y) + line_clear
+
+                    leader_crosses = stem_leader_cross
+                    if leader_crosses == 0:
+                        for idx_l, (lx1, ly1, lx2, ly2) in enumerate(placed_leader_segments):
+                            la = placed_leader_aabbs[idx_l]
+                            if not (sh_maxx < la[0] or sh_minx > la[2] or sh_maxy < la[1] or sh_miny > la[3]):
+                                if segments_intersect(elbow_x, elbow_y, end_x, end_y, lx1, ly1, lx2, ly2, clearance=line_clear):
+                                    leader_crosses += 1
+                                    break
+                            if not (obb_box[2] + pad < la[0] or obb_box[0] - pad > la[2] or obb_box[3] + pad < la[1] or obb_box[1] - pad > la[3]):
+                                if segment_intersects_obb(lx1, ly1, lx2, ly2, obb, pad=pad * 0.5):
+                                    leader_crosses += 1
+                                    break
+
+                    obb_pierce = stem_obb_pierce
+                    if obb_pierce == 0:
+                        for idx_o, other_obb in enumerate(placed_obbs):
+                            oa = placed_aabbs[idx_o]
+                            if sh_maxx < oa[0] or sh_minx > oa[2] or sh_maxy < oa[1] or sh_miny > oa[3]:
+                                continue
+                            if segment_intersects_obb(elbow_x, elbow_y, end_x, end_y, other_obb, pad=pad * 0.5):
+                                obb_pierce += 1
+                                break
+
+                    box_hit = 1 if obb_collides_any(obb, placed_obbs, pad=pad, obb_aabb=obb_box, placed_aabbs=placed_aabbs) else 0
+                    penalty = leader_crosses * 100.0 + obb_pierce * 10.0 + box_hit * 5.0 + step_mult * 0.1 + ang_idx * 0.05
+
+                    cand = (anchor_x, anchor_y, dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, obb, obb_box)
+                    if penalty < best_penalty:
+                        best_penalty = penalty
+                        best_fallback = cand
+
+                    if leader_crosses == 0 and obb_pierce == 0 and box_hit == 0:
+                        chosen = cand
+                        break
+                if chosen is not None:
                     break
             if chosen is not None:
                 break
@@ -323,7 +579,9 @@ def draw_leader_cota(msp, anchor_x, anchor_y, nx, ny, ux, uy, cota_txt, text_h,
         if best_fallback is not None:
             chosen = best_fallback
         else:
-            stem_len = text_h * 4.2
+            anchor_x = (p1['x'] + p2['x']) * 0.5 + nx * (poly_thickness * 0.5)
+            anchor_y = (p1['y'] + p2['y']) * 0.5 + ny * (poly_thickness * 0.5)
+            stem_len = text_h * 3.2
             dir_x, dir_y = nx, ny
             elbow_x = anchor_x + dir_x * stem_len
             elbow_y = anchor_y + dir_y * stem_len
@@ -332,13 +590,14 @@ def draw_leader_cota(msp, anchor_x, anchor_y, nx, ny, ux, uy, cota_txt, text_h,
             end_y = elbow_y
             txt_cx = (elbow_x + end_x) * 0.5
             txt_cy = elbow_y + text_h * 0.72
-            aabb = text_aabb(txt_cx, txt_cy, cota_w, cota_h, 0.0)
-            chosen = (dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, aabb)
+            obb = obb_corners(txt_cx, txt_cy, cota_w, cota_h, 0.0)
+            obb_box = (txt_cx - cota_w * 0.5, txt_cy - cota_h * 0.5, txt_cx + cota_w * 0.5, txt_cy + cota_h * 0.5)
+            chosen = (anchor_x, anchor_y, dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, obb, obb_box)
 
-    dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, aabb = chosen
+    anchor_x, anchor_y, dir_x, dir_y, elbow_x, elbow_y, end_x, end_y, txt_cx, txt_cy, obb, obb_box = chosen
 
-    arrow_len = text_h * 0.90
-    arrow_hw = arrow_len * 0.32
+    arrow_len = text_h * 0.85
+    arrow_hw = arrow_len * 0.30
     w1x = anchor_x + dir_x * arrow_len - dir_y * arrow_hw
     w1y = anchor_y + dir_y * arrow_len + dir_x * arrow_hw
     w2x = anchor_x + dir_x * arrow_len + dir_y * arrow_hw
@@ -351,7 +610,14 @@ def draw_leader_cota(msp, anchor_x, anchor_y, nx, ny, ux, uy, cota_txt, text_h,
     _draw_line(msp, elbow_x, elbow_y, end_x, end_y, layer='COTAS')
 
     _draw_centered_text(msp, txt_cx, txt_cy, text_h, cota_txt, rotation=0, layer='COTAS', style=style)
-    placed_boxes.append(aabb)
+    placed_obbs.append(obb)
+    placed_aabbs.append(obb_box)
+    placed_leader_segments.append((anchor_x, anchor_y, elbow_x, elbow_y))
+    placed_leader_aabbs.append((min(anchor_x, elbow_x), min(anchor_y, elbow_y), max(anchor_x, elbow_x), max(anchor_y, elbow_y)))
+    placed_leader_segments.append((elbow_x, elbow_y, end_x, end_y))
+    placed_leader_aabbs.append((min(elbow_x, end_x), min(elbow_y, end_y), max(elbow_x, end_x), max(elbow_y, end_y)))
+    if placed_boxes is not None:
+        placed_boxes.append(obb_box)
 
 
 def draw_utm_grid_left_top(msp, plot_box, grid_step, text_h, text_style='GEO_ARIAL',
@@ -448,7 +714,23 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
     if placed_boxes is None:
         placed_boxes = []
 
+    placed_obbs = [_aabb_to_obb(b) for b in placed_boxes]
+    placed_aabbs = list(placed_boxes)
+    placed_leader_segments = []
+    placed_leader_aabbs = []
+
     n_verts = len(p_pts)
+    poly_aabb = None
+    poly_edge_aabbs = None
+    if n_verts >= 2:
+        pxs = [p['x'] for p in p_pts]
+        pys = [p['y'] for p in p_pts]
+        poly_aabb = (min(pxs), min(pys), max(pxs), max(pys))
+        poly_edge_aabbs = []
+        for k in range(n_verts):
+            pa = p_pts[k]
+            pb = p_pts[(k + 1) % n_verts]
+            poly_edge_aabbs.append((min(pa['x'], pb['x']), min(pa['y'], pb['y']), max(pa['x'], pb['x']), max(pa['y'], pb['y'])))
     avg_edge_len = p_perim / max(n_verts, 1)
     min_edge_len = float('inf')
     for i in range(n_verts):
@@ -461,14 +743,14 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
         min_edge_len = avg_edge_len
 
     v_id_h = max(
-        print_scale * 0.0025,
-        min(min_edge_len * 0.22, avg_edge_len * 0.15, print_scale * 0.0035),
+        print_scale * 0.0023,
+        min(min_edge_len * 0.22, avg_edge_len * 0.15, print_scale * 0.0033),
     )
     v_dist_h = max(
-        print_scale * 0.0022,
-        min(avg_edge_len * 0.12, v_id_h * 0.90),
+        print_scale * 0.0020,
+        min(avg_edge_len * 0.12, v_id_h * 0.88),
     )
-    marker_radius = v_id_h * 0.25
+    marker_radius = v_id_h * 0.24
 
     if p_geom_type != 'puntos':
         vertices = [(pt['x'], pt['y']) for pt in p_pts]
@@ -478,40 +760,45 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
             dxfattribs={'layer': 'POLIGONO', 'const_width': poly_thickness},
         )
         if draw_ticks_fn is not None:
-            draw_ticks_fn(msp, p_pts, p_geom_type, v_id_h * 1.2)
+            draw_ticks_fn(msp, p_pts, p_geom_type, v_id_h * 1.15)
 
-    # 1. Vértices y sus IDs estrictamente al exterior por bisectriz
+    # 1. Vértices y sus IDs normativos (P1, P2, ...) estrictamente al exterior por bisectriz
     for i, pt in enumerate(p_pts):
         _draw_circle(msp, pt['x'], pt['y'], marker_radius, layer='TEXTOS')
-        id_txt = str(pt['id'])
-        id_w = max(len(id_txt), 1) * v_id_h * 0.68
-        id_h = v_id_h * 1.15
+        id_txt = normalize_vertex_id(pt.get('id'), i + 1)
+        id_w = max(len(id_txt), 2) * v_id_h * 0.66
+        id_h = v_id_h * 1.12
         bx, by = compute_outward_vertex_bisector(
             i, p_pts, p_is_ccw, probe_eps=max(marker_radius * 2.0, 0.02)
         )
-        base_offset = marker_radius + v_id_h * 1.45
+        base_offset = marker_radius + v_id_h * 1.35
 
         placed_v = None
         best_v_fallback = None
-        for ang_deg in (0, 25, -25, 50, -50, 80, -80, 120, -120, 180):
+        for ang_deg in (0, 20, -20, 40, -40, 60, -60, 85, -85, 110, -110, 140, -140, 180):
             rad = math.radians(ang_deg)
             ca, sa = math.cos(rad), math.sin(rad)
             cx_dir = bx * ca - by * sa
             cy_dir = bx * sa + by * ca
-            for mult in (1.0, 1.35, 1.8):
+            for mult in (1.0, 1.35, 1.75, 2.2):
                 off = base_offset * mult
                 lx = pt['x'] + cx_dir * off
                 ly = pt['y'] + cy_dir * off
                 if p_geom_type == 'cerrada' and n_verts >= 3:
                     if not box_strictly_outside_polygon(
-                        lx, ly, id_w, id_h, 0.0, p_pts, min_clearance=marker_radius * 0.6
+                        lx, ly, id_w, id_h, 0.0, p_pts, min_clearance=marker_radius * 0.55, poly_aabb=poly_aabb
                     ):
                         continue
-                aabb = text_aabb(lx, ly, id_w, id_h, 0.0)
+                    if segment_crosses_polygon_edges(
+                        pt['x'], pt['y'], lx, ly, p_pts, ignore_vertex_idx=i, poly_edge_aabbs=poly_edge_aabbs
+                    ):
+                        continue
+                v_obb = obb_corners(lx, ly, id_w, id_h, 0.0)
+                v_aabb_cand = (lx - id_w * 0.5, ly - id_h * 0.5, lx + id_w * 0.5, ly + id_h * 0.5)
                 if best_v_fallback is None:
-                    best_v_fallback = (lx, ly, aabb)
-                if not box_collides_any(aabb, placed_boxes, pad=v_id_h * 0.25):
-                    placed_v = (lx, ly, aabb)
+                    best_v_fallback = (lx, ly, v_obb, v_aabb_cand)
+                if not obb_collides_any(v_obb, placed_obbs, pad=v_id_h * 0.22, obb_aabb=v_aabb_cand, placed_aabbs=placed_aabbs):
+                    placed_v = (lx, ly, v_obb, v_aabb_cand)
                     break
             if placed_v is not None:
                 break
@@ -522,13 +809,18 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
             else:
                 lx = pt['x'] + bx * (base_offset * 1.5)
                 ly = pt['y'] + by * (base_offset * 1.5)
-                placed_v = (lx, ly, text_aabb(lx, ly, id_w, id_h, 0.0))
+                placed_v = (lx, ly, obb_corners(lx, ly, id_w, id_h, 0.0), (lx - id_w * 0.5, ly - id_h * 0.5, lx + id_w * 0.5, ly + id_h * 0.5))
 
-        lx, ly, v_aabb = placed_v
+        lx, ly, v_obb, v_aabb = placed_v
         _draw_centered_text(msp, lx, ly, v_id_h, id_txt, layer='TEXTOS', style=text_style)
+        placed_obbs.append(v_obb)
+        placed_aabbs.append(v_aabb)
         placed_boxes.append(v_aabb)
 
-    # 2. Cotas de distancia estrictamente al exterior (inline o leader con flecha)
+    # 2. Cotas de distancia en 2 pasadas:
+    #    Pasada 2A: Todas las cotas paralelas inline primero (para no perder espacio ante flechas vecinas)
+    #    Pasada 2B: Flechas de referencia (leaders anti-cruce) solo para tramos cortos o sin espacio inline
+    pending_leaders = []
     for i, pt in enumerate(p_pts):
         is_last_edge = i == n_verts - 1
         is_valid_segment = (p_geom_type == 'cerrada') or (p_geom_type == 'abierta' and not is_last_edge)
@@ -543,17 +835,16 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
             continue
 
         ux, uy = dx / edge_len, dy / edge_len
-        edge_cota_h = max(print_scale * 0.0020, min(edge_len * 0.14, v_dist_h))
+        edge_cota_h = max(print_scale * 0.0015, min(edge_len * 0.18, v_dist_h))
         cota_txt = _format_number(edge_len, 2)
-        cota_w = max(len(cota_txt), 3) * edge_cota_h * 0.68
+        cota_w = max(len(cota_txt), 3) * edge_cota_h * 0.66
         cota_h = edge_cota_h * 1.15
 
         nx, ny = compute_outward_edge_normal(pt, p_next, p_pts, p_is_ccw, probe_eps=edge_cota_h)
         mid_x = (pt['x'] + p_next['x']) * 0.5
         mid_y = (pt['y'] + p_next['y']) * 0.5
 
-        free_edge_len = edge_len - 2.0 * (marker_radius + v_id_h * 0.85)
-        is_short = (free_edge_len < cota_w * 1.15) or (edge_len < print_scale * 0.014)
+        is_short = (edge_len < cota_w * 0.95) or (edge_len < print_scale * 0.0055)
 
         text_rot = math.degrees(math.atan2(dy, dx))
         if text_rot > 90:
@@ -563,46 +854,72 @@ def annotate_parcel_cad(msp, p_pts, p_geom_type, p_name, p_cx, p_cy, p_perim, p_
 
         placed_inline = None
         if not is_short:
-            base_cota_off = max(poly_thickness * 2.2 + edge_cota_h * 1.55, print_scale * 0.0036)
-            for off_step in (base_cota_off, base_cota_off + edge_cota_h * 1.15):
-                tx = mid_x + nx * off_step
-                ty = mid_y + ny * off_step
-                outside_ok = True
-                if p_geom_type == 'cerrada' and n_verts >= 3:
-                    outside_ok = box_strictly_outside_polygon(
-                        tx, ty, cota_w, cota_h, text_rot, p_pts, min_clearance=edge_cota_h * 0.35
-                    )
-                if not outside_ok:
-                    continue
-                aabb = text_aabb(tx, ty, cota_w, cota_h, text_rot)
-                if not box_collides_any(aabb, placed_boxes, pad=edge_cota_h * 0.2):
-                    placed_inline = (tx, ty, aabb)
+            base_cota_off = max(poly_thickness * 1.6 + edge_cota_h * 1.05, print_scale * 0.0024)
+            for off_mult in (0.90, 1.20, 1.55, 1.95):
+                off_step = base_cota_off * off_mult
+                for along_frac in (0.0, 0.14, -0.14, 0.26, -0.26):
+                    anchor_px = mid_x + ux * (edge_len * along_frac)
+                    anchor_py = mid_y + uy * (edge_len * along_frac)
+                    tx = anchor_px + nx * off_step
+                    ty = anchor_py + ny * off_step
+                    if p_geom_type == 'cerrada' and n_verts >= 3:
+                        if not box_strictly_outside_polygon(
+                            tx, ty, cota_w, cota_h, text_rot, p_pts, min_clearance=edge_cota_h * 0.25, poly_aabb=poly_aabb
+                        ):
+                            continue
+                        if segment_crosses_polygon_edges(
+                            anchor_px + nx * (poly_thickness * 0.5),
+                            anchor_py + ny * (poly_thickness * 0.5),
+                            tx,
+                            ty,
+                            p_pts,
+                            ignore_edge_idx=i,
+                            poly_edge_aabbs=poly_edge_aabbs,
+                        ):
+                            continue
+                    c_obb = obb_corners(tx, ty, cota_w, cota_h, text_rot)
+                    c_aabb = text_aabb(tx, ty, cota_w, cota_h, text_rot)
+                    if not obb_collides_any(c_obb, placed_obbs, pad=edge_cota_h * 0.18, obb_aabb=c_aabb, placed_aabbs=placed_aabbs):
+                        placed_inline = (tx, ty, c_obb, c_aabb)
+                        break
+                if placed_inline is not None:
                     break
 
         if placed_inline is not None:
-            tx, ty, c_aabb = placed_inline
+            tx, ty, c_obb, c_aabb = placed_inline
             _draw_centered_text(msp, tx, ty, edge_cota_h, cota_txt, rotation=text_rot, layer='COTAS', style=text_style)
+            placed_obbs.append(c_obb)
+            placed_aabbs.append(c_aabb)
             placed_boxes.append(c_aabb)
         else:
-            anchor_x = mid_x + nx * (poly_thickness * 0.5)
-            anchor_y = mid_y + ny * (poly_thickness * 0.5)
-            stagger = 1.0 if (i % 2 == 0) else -1.0
-            draw_leader_cota(
-                msp,
-                anchor_x,
-                anchor_y,
-                nx,
-                ny,
-                ux,
-                uy,
-                cota_txt,
-                edge_cota_h,
-                stagger,
-                p_pts,
-                placed_boxes,
-                style=text_style,
-                min_clearance=edge_cota_h * 0.35,
-            )
+            pending_leaders.append((i, pt, p_next, nx, ny, ux, uy, cota_txt, edge_cota_h))
+
+    for leader_idx, (i, pt, p_next, nx, ny, ux, uy, cota_txt, edge_cota_h) in enumerate(pending_leaders):
+        stagger = 1.0 if (leader_idx % 2 == 0) else -1.0
+        draw_leader_cota(
+            msp,
+            pt,
+            p_next,
+            nx,
+            ny,
+            ux,
+            uy,
+            poly_thickness,
+            cota_txt,
+            edge_cota_h,
+            stagger,
+            p_pts,
+            placed_obbs,
+            placed_leader_segments,
+            edge_idx=i,
+            placed_boxes=placed_boxes,
+            style=text_style,
+            min_clearance=edge_cota_h * 0.30,
+            placed_aabbs=placed_aabbs,
+            placed_leader_aabbs=placed_leader_aabbs,
+            poly_aabb=poly_aabb,
+            poly_edge_aabbs=poly_edge_aabbs,
+        )
 
     # 3. Única etiqueta interior: Nombre del terreno en punto interior garantizado
     (in_x, in_y), max_clearance = find_guaranteed_interior_point(p_pts, p_cx, p_cy)
@@ -681,17 +998,20 @@ def _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn):
     n_pts = len(p_pts)
     rows = []
     for idx, p1 in enumerate(p_pts):
+        p1_lbl = normalize_vertex_id(p1.get('id'), idx + 1)
         is_last = idx == n_pts - 1
         has_next = (p_geom == 'cerrada' and n_pts >= 2) or (p_geom == 'abierta' and not is_last)
         if has_next:
-            p2 = p_pts[(idx + 1) % n_pts]
+            next_idx = (idx + 1) % n_pts
+            p2 = p_pts[next_idx]
+            p2_lbl = normalize_vertex_id(p2.get('id'), next_idx + 1)
             dx = p2['x'] - p1['x']
             dy = p2['y'] - p1['y']
-            lado_str = f"{p1['id']}-{p2['id']}"
+            lado_str = f"{p1_lbl}-{p2_lbl}"
             rumbo_str = get_bearing_fn(dx, dy)
             dist_str = format_number_fn(math.hypot(dx, dy), 2)
         else:
-            lado_str = str(p1['id'])
+            lado_str = p1_lbl
             rumbo_str = '-'
             dist_str = '-'
         rows.append(
@@ -699,7 +1019,7 @@ def _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn):
                 'lado': lado_str,
                 'rumbo': rumbo_str,
                 'dist': dist_str,
-                'vert': str(p1['id']),
+                'vert': p1_lbl,
                 'norte': format_number_fn(p1['y'], 3),
                 'este': format_number_fn(p1['x'], 3),
             }
@@ -758,7 +1078,7 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
         min(text_h * 0.85, hdr_h * 0.50), box_w, title, layer='TEXTOS', style=text_style
     )
 
-    col_fracs = [0.105, 0.225, 0.115, 0.075, 0.24, 0.24]
+    col_fracs = [0.12, 0.22, 0.11, 0.08, 0.235, 0.235]
     col_widths = [box_w * f for f in col_fracs]
     col_labels = ['EST-PV', 'RUMBO', 'DIST(m)', 'VERT', 'NORTE(m)', 'ESTE(m)']
     data_bottom_y = top_y - hdr_h - colhdr_h - len(rows) * row_h
@@ -916,8 +1236,8 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
         y_mid = y_top - row_h * 0.5
         if s_idx > 0:
             _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
-        _draw_cell_text_fit(msp, box_x + r_c_est * 0.5, y_mid, rb_txt_h, r_c_est, str(p1['id']), layer='TEXTOS', style=text_style)
-        _draw_cell_text_fit(msp, box_x + r_c_est + r_c_pv * 0.5, y_mid, rb_txt_h, r_c_pv, str(p2['id']), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + r_c_est * 0.5, y_mid, rb_txt_h, r_c_est, normalize_vertex_id(p1.get('id'), s_idx + 1), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + r_c_est + r_c_pv * 0.5, y_mid, rb_txt_h, r_c_pv, normalize_vertex_id(p2.get('id'), ((s_idx + 1) % n_pts) + 1), layer='TEXTOS', style=text_style)
         _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo * 0.5, y_mid, rb_txt_h, r_c_rumbo, bearing_str, layer='TEXTOS', style=text_style)
         _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, y_mid, rb_txt_h, r_c_dist, format_number_fn(edge_dist, 2), layer='TEXTOS', style=text_style)
     t_y -= rb_h + gap_h
@@ -949,7 +1269,7 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
         y_center = y_top - row_h * 0.5
         if idx > 0:
             _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
-        _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, y_center, coord_txt_h, c_c1, str(pt['id']), layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, y_center, coord_txt_h, c_c1, normalize_vertex_id(pt.get('id'), idx + 1), layer='TEXTOS', style=text_style)
         _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, y_center, coord_txt_h, c_c2, format_number_fn(pt['y'], 3), layer='TEXTOS', style=text_style)
         _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, y_center, coord_txt_h, c_c3, format_number_fn(pt['x'], 3), layer='TEXTOS', style=text_style)
 
@@ -1257,7 +1577,7 @@ def unify_parcels_exterior(processed_parcels, snap_tol=0.05, project_name='PARCE
         raise ValueError("La unificación produjo menos de 3 vértices externos válidos.")
 
     for idx, pt in enumerate(final_pts):
-        pt['id'] = str(idx + 1)
+        pt['id'] = f"P{idx + 1}"
 
     # Recalcular área, perímetro y orientación (Shoelace)
     n = len(final_pts)
