@@ -1,9 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getPool } from '@/lib/db';
+import { requireSession } from '@/lib/rbac';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  const auth = await requireSession();
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
   try {
     const pool = getPool();
     if (!pool) {
@@ -28,7 +34,9 @@ export async function GET() {
     return NextResponse.json({ data: result.rows, total: result.rowCount });
   } catch (err) {
     console.error('[API /api/parcelas-gis] Error:', err);
-    const message = err instanceof Error ? err.message : 'Error interno de base de datos';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Error interno al consultar parcelas catastrales' },
+      { status: 500 },
+    );
   }
 }

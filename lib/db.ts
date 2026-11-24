@@ -15,11 +15,8 @@ declare global {
   var __geotransSchemaVerified: boolean | undefined;
 }
 
-const DEFAULT_DATABASE_URL =
-  'postgresql://postgres.rmkgectnfcetzrrvdaxg:delCZlftITN8xiBc@3.131.201.192:6543/postgres?pgbouncer=true&connection_limit=20';
-
 function getDatabaseUrl(): string {
-  return process.env.DATABASE_URL || DEFAULT_DATABASE_URL;
+  return (process.env.DATABASE_URL || '').trim();
 }
 
 const isPostgres = true;
@@ -31,8 +28,12 @@ function parseEnvInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function createPool(): Pool {
+function createPool(): Pool | null {
   const poolUrl = getDatabaseUrl();
+  if (!poolUrl) {
+    console.error('[DB] DATABASE_URL no está configurada en las variables de entorno.');
+    return null;
+  }
   const isPgBouncer = poolUrl.includes('pgbouncer=true');
   const isRenderCloud = Boolean(process.env.RENDER || process.env.NODE_ENV === 'production');
 
@@ -57,12 +58,14 @@ function createPool(): Pool {
 
 /** Singleton pool – survives Next.js dev HMR and serverless warm starts. */
 export function getPool(): Pool | null {
-  if (!isPostgres) {
+  if (!isPostgres || !getDatabaseUrl()) {
     return null;
   }
 
   if (!global.__geotransPgPool) {
-    global.__geotransPgPool = createPool();
+    const created = createPool();
+    if (!created) return null;
+    global.__geotransPgPool = created;
     console.log(
       `[DB] Pool created (max=${parseEnvInt('PG_POOL_MAX', 20)}, idle=${parseEnvInt('PG_IDLE_TIMEOUT_MS', 30_000)}ms)`,
     );
@@ -139,6 +142,29 @@ function ensureInit(force = false): Promise<void> {
         CREATE UNIQUE INDEX IF NOT EXISTS usuario_email_unique_idx
         ON usuario(email)
         WHERE email IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_proyecto_usuario_id
+        ON public.proyecto(usuario_id);
+
+        ALTER TABLE public.usuario ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.proyecto ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.actividad ENABLE ROW LEVEL SECURITY;
+
+        DO $$
+        DECLARE
+          t TEXT;
+          pol TEXT;
+        BEGIN
+          FOREACH t IN ARRAY ARRAY['usuario', 'proyecto', 'actividad'] LOOP
+            EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC, anon, authenticated', t);
+            EXECUTE format('GRANT ALL ON TABLE public.%I TO service_role', t);
+            pol := 'service_role_full_access_' || t;
+            EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', pol, t);
+            EXECUTE format('CREATE POLICY %I ON public.%I FOR ALL TO service_role USING (true) WITH CHECK (true)', pol, t);
+          END LOOP;
+        EXCEPTION WHEN undefined_object THEN
+          NULL;
+        END $$;
       `);
 
       global.__geotransSchemaVerified = true;

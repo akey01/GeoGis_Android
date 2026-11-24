@@ -167,6 +167,26 @@ export async function ensureDeviceBindingTables(): Promise<void> {
         capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      ALTER TABLE public.user_authorized_devices ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE public.user_access_logs ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE public.role_permissions_config ENABLE ROW LEVEL SECURITY;
+
+      DO $$
+      DECLARE
+        t TEXT;
+        pol TEXT;
+      BEGIN
+        FOREACH t IN ARRAY ARRAY['user_authorized_devices', 'user_access_logs', 'role_permissions_config'] LOOP
+          EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC, anon, authenticated', t);
+          EXECUTE format('GRANT ALL ON TABLE public.%I TO service_role', t);
+          pol := 'service_role_full_access_' || t;
+          EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', pol, t);
+          EXECUTE format('CREATE POLICY %I ON public.%I FOR ALL TO service_role USING (true) WITH CHECK (true)', pol, t);
+        END LOOP;
+      EXCEPTION WHEN undefined_object THEN
+        NULL;
+      END $$;
     `);
 
     const rolesToSeed: CanonicalUserRole[] = ['demo', 'operador_campo', 'revisor_catastral', 'admin'];
@@ -606,7 +626,7 @@ export async function validateUserSessionAccess(params: {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[authGuard] Error validating device session access:', err);
-    return { allowed: true, role: normalizeUserRole(userRole) };
+    return { allowed: false, reason: 'SERVICE_UNAVAILABLE' };
   } finally {
     client.release();
   }
@@ -622,6 +642,8 @@ function getDenyMessage(reason?: SessionAccessDenyReason, maxDevices?: number): 
       return 'Este dispositivo ha sido revocado por el administrador del sistema.';
     case 'ACCOUNT_SUSPENDED':
       return 'Su cuenta se encuentra suspendida por el administrador.';
+    case 'SERVICE_UNAVAILABLE':
+      return 'No se pudo verificar la seguridad de la sesión en base de datos. Intenta nuevamente.';
     default:
       return 'Acceso denegado por política de seguridad de dispositivos.';
   }

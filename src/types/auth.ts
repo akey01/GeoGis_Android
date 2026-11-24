@@ -58,7 +58,8 @@ export type SessionAccessDenyReason =
   | 'CONCURRENT_IP_ABUSE'
   | 'DEVICE_REVOKED'
   | 'ACCOUNT_SUSPENDED'
-  | 'INVALID_DEVICE_ID';
+  | 'INVALID_DEVICE_ID'
+  | 'SERVICE_UNAVAILABLE';
 
 export interface ValidateSessionAccessResult {
   allowed: boolean;
