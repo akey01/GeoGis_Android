@@ -33,6 +33,7 @@ import { Style, Fill, Stroke, Text, Circle as CircleStyle } from 'ol/style';
 import type { Coordinate } from 'ol/coordinate';
 import type { DrawEvent } from 'ol/interaction/Draw';
 import type { TranslateEvent } from 'ol/interaction/Translate';
+import { normalizeRingClockwiseFromNorth } from '@/lib/polygon-union';
 import type RenderEvent from 'ol/render/Event';
 import type { FeatureLike } from 'ol/Feature';
 import { toast } from 'react-hot-toast';
@@ -1029,10 +1030,17 @@ export default function MapViewer({ className }: MapViewerProps) {
       const coords3857 = geom.getCoordinates()[0];
       const currentHuso = [18, 19, 20, 21].includes(Number(husoRef.current)) ? Number(husoRef.current) : 19;
       const targetEpsg = `EPSG:220${currentHuso - 17}`;
-      const coordsUTM: [number, number][] = coords3857.map((coord) => {
+      const rawRingUTM = coords3857.map((coord) => {
         const utm = transform(coord, 'EPSG:3857', targetEpsg);
-        return [utm[0], utm[1]];
+        return { x: utm[0], y: utm[1] };
       });
+      const ringNoRepeat =
+        rawRingUTM.length > 1 &&
+        Math.hypot(rawRingUTM[0].x - rawRingUTM[rawRingUTM.length - 1].x, rawRingUTM[0].y - rawRingUTM[rawRingUTM.length - 1].y) < 1e-3
+          ? rawRingUTM.slice(0, -1)
+          : rawRingUTM;
+      const normalizedRing = ringNoRepeat.length >= 3 ? normalizeRingClockwiseFromNorth(ringNoRepeat) : ringNoRepeat;
+      const coordsUTM: [number, number][] = normalizedRing.map((pt) => [pt.x, pt.y]);
       setLastDrawnUTM(coordsUTM);
     });
 

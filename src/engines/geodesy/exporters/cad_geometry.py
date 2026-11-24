@@ -1511,6 +1511,30 @@ def _ring_remove_collinear(pts, dist_tol=0.01):
     return cleaned
 
 
+def _normalize_ring_clockwise_from_north(pts):
+    """
+    Normaliza un polígono cerrado según norma catastral venezolana:
+      - Sentido de giro HORARIO (área con signo < 0).
+      - Punto de inicio P1 en el vértice más al Norte (mayor Y; desempate <= 1 cm al más Oeste/menor X).
+    """
+    if len(pts) < 3:
+        return list(pts)
+    n = len(pts)
+    signed_a = 0.0
+    for i in range(n):
+        p1 = pts[i]
+        p2 = pts[(i + 1) % n]
+        signed_a += p1['x'] * p2['y'] - p2['x'] * p1['y']
+    ring = list(reversed(pts)) if signed_a > 0 else list(pts)
+
+    north_idx = 0
+    for i in range(1, len(ring)):
+        dy = ring[i]['y'] - ring[north_idx]['y']
+        if dy > 0.01 or (abs(dy) <= 0.01 and ring[i]['x'] < ring[north_idx]['x']):
+            north_idx = i
+    return ring[north_idx:] + ring[:north_idx]
+
+
 def unify_parcels_exterior(processed_parcels, snap_tol=0.05, project_name='PARCELA_UNIFICADA'):
     """
     Fusiona múltiples parcelas procesadas en un único polígono exterior cerrado,
@@ -1576,6 +1600,7 @@ def unify_parcels_exterior(processed_parcels, snap_tol=0.05, project_name='PARCE
     if len(final_pts) < 3:
         raise ValueError("La unificación produjo menos de 3 vértices externos válidos.")
 
+    final_pts = _normalize_ring_clockwise_from_north(final_pts)
     for idx, pt in enumerate(final_pts):
         pt['id'] = f"P{idx + 1}"
 

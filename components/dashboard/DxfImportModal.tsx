@@ -5,6 +5,7 @@ import { X, Upload, MapPin, Layers, ChevronDown, ChevronRight, AlertCircle, Chec
 import { FileService, type DXFPolygon } from '@/lib/file-service';
 import { useAppStore } from '@/lib/store';
 import { GeoEngine, HAYFORD, GRS80 } from '@/lib/geo-engine';
+import { normalizeRingClockwiseFromNorth } from '@/lib/polygon-union';
 
 interface DxfImportModalProps {
   onClose: () => void;
@@ -175,7 +176,19 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
 
       for (const poly of selected) {
         const transformedPoly = transformPolygon(poly);
-        const pts = transformedPoly.vertices.map((v, i) => ({
+        const rawVerts = transformedPoly.vertices;
+        const orderedVerts =
+          poly.closed && rawVerts.length >= 3
+            ? normalizeRingClockwiseFromNorth(
+                rawVerts.map((v) => ({
+                  ...v,
+                  x: v.result?.este ?? v.e,
+                  y: v.result?.norte ?? v.n,
+                }))
+              )
+            : rawVerts;
+
+        const pts = orderedVerts.map((v, i) => ({
           id: `P${i + 1}`,
           input: { este: v.e, norte: v.n, huso: importHuso },
           result: v.result || { este: v.e, norte: v.n, lat: 0, lng: 0, dLineal: 0 },

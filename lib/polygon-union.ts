@@ -108,6 +108,31 @@ function dedupeConsecutive<T extends { x: number; y: number }>(pts: T[], tol = 1
   return out;
 }
 
+/**
+ * Normaliza un anillo cerrado según la normativa catastral venezolana:
+ *  - Sentido de giro HORARIO (agujas del reloj: área con signo < 0).
+ *  - Vértice inicial (P1) ubicado más al Norte (mayor Norte/Y; desempate <= 1 cm al Oeste/menor Este).
+ */
+export function normalizeRingClockwiseFromNorth<T extends { x: number; y: number }>(pts: T[]): T[] {
+  let ring = dedupeConsecutive(pts, 1e-4);
+  if (ring.length < 3) return [...ring];
+
+  // En coordenadas UTM (x=Este, y=Norte), área > 0 es antihorario -> invertir para sentido horario
+  if (signedArea2D(ring) > 0) {
+    ring = [...ring].reverse();
+  }
+
+  let northIdx = 0;
+  for (let i = 1; i < ring.length; i++) {
+    const dy = ring[i].y - ring[northIdx].y;
+    if (dy > 0.01 || (Math.abs(dy) <= 0.01 && ring[i].x < ring[northIdx].x)) {
+      northIdx = i;
+    }
+  }
+
+  return [...ring.slice(northIdx), ...ring.slice(0, northIdx)];
+}
+
 function removeCollinear<T extends { x: number; y: number }>(pts: T[], distTol = 0.01): T[] {
   let curr = dedupeConsecutive(pts, 1e-4);
   if (curr.length <= 3) return curr;
@@ -216,7 +241,7 @@ export function unifyPolygonsExterior(
 
   if (cleanPolys.length === 0) return [];
   if (cleanPolys.length === 1) {
-    const cleaned = removeCollinear(cleanPolys[0], 0.01);
+    const cleaned = normalizeRingClockwiseFromNorth(removeCollinear(cleanPolys[0], 0.01));
     return cleaned.map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
@@ -384,7 +409,7 @@ export function unifyPolygonsExterior(
   if (outerEdges.length < 3) {
     // Fallback de seguridad: envolvente exterior de todos los puntos
     const allPts = cleanPolys.flat();
-    const hull = removeCollinear(convexHullCCW(allPts), 0.01);
+    const hull = normalizeRingClockwiseFromNorth(removeCollinear(convexHullCCW(allPts), 0.01));
     return hull.map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
@@ -441,17 +466,17 @@ export function unifyPolygonsExterior(
   }
 
   if (rings.length === 0) {
-    const hull = removeCollinear(convexHullCCW(cleanPolys.flat()), 0.01);
+    const hull = normalizeRingClockwiseFromNorth(removeCollinear(convexHullCCW(cleanPolys.flat()), 0.01));
     return hull.map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
-  // Si hay 1 solo ciclo exterior CCW (caso normal de parcelas colindantes), retornarlo directamente
+  // Si hay 1 solo ciclo exterior (caso normal de parcelas colindantes), normalizar Norte -> sentido horario
   if (rings.length === 1) {
-    return rings[0].map((p, i) => ({ ...p, id: `P${i + 1}` }));
+    return normalizeRingClockwiseFromNorth(rings[0]).map((p, i) => ({ ...p, id: `P${i + 1}` }));
   }
 
   // Si existen múltiples componentes desconectadas (parcelas que no se tocan), devolver el contorno envolvente exterior único sin puntos interiores
-  const hull = removeCollinear(convexHullCCW(rings.flat()), 0.01);
+  const hull = normalizeRingClockwiseFromNorth(removeCollinear(convexHullCCW(rings.flat()), 0.01));
   return hull.map((p, i) => ({ ...p, id: `P${i + 1}` }));
 }
 
