@@ -11,6 +11,7 @@ import type { Parcel } from '@/lib/store';
 import {
   fetchParcelDEMAndContours,
   rebuildParcelContoursWithInterval,
+  rebuildParcelGridWithSpacing,
   type ParcelContourData,
 } from './contourEngine';
 
@@ -20,7 +21,7 @@ function computeParcelFingerprint(parcel: Parcel): string {
   const e0 = p0?.result?.este ?? p0?.input?.este ?? '';
   const n0 = p0?.result?.norte ?? p0?.input?.norte ?? '';
   const d0 = p0?.direction ?? '';
-  return `v6.3-hydro|${pts.length}|${e0}|${n0}|${d0}`;
+  return `v6.4-igvsb|${pts.length}|${e0}|${n0}|${d0}`;
 }
 
 interface ContourState {
@@ -33,10 +34,14 @@ interface ContourState {
   satOffset: { dE: number; dN: number };
   showMapGrid: boolean;
   showMapGridNodes: boolean;
+  gridSpacing: number;
+  showIntermediateLabels: boolean;
 
   setSatOffset: (offset: { dE: number; dN: number }) => void;
   toggleShowMapGrid: () => void;
   toggleShowMapGridNodes: () => void;
+  toggleIntermediateLabels: () => void;
+  setGridSpacing: (spacing: number, parcelId?: string) => void;
   setFocusedParcelId: (parcelId: string | null) => void;
   toggleParcelContours: (
     parcel: Parcel,
@@ -72,12 +77,37 @@ export const useContourStore = create<ContourState>((set, get) => ({
   satOffset: { dE: 0, dN: 0 },
   showMapGrid: true,
   showMapGridNodes: true,
+  gridSpacing: 0,
+  showIntermediateLabels: true,
 
   setSatOffset: (offset) => set({ satOffset: offset }),
 
   toggleShowMapGrid: () => set((s) => ({ showMapGrid: !s.showMapGrid })),
 
   toggleShowMapGridNodes: () => set((s) => ({ showMapGridNodes: !s.showMapGridNodes })),
+
+  toggleIntermediateLabels: () =>
+    set((s) => ({ showIntermediateLabels: !s.showIntermediateLabels })),
+
+  setGridSpacing: (spacing, parcelId) => {
+    const state = get();
+    const targetPid =
+      parcelId ??
+      state.printModalParcelId ??
+      state.focusedParcelId ??
+      state.visibleParcelIds[state.visibleParcelIds.length - 1] ??
+      null;
+
+    if (targetPid && state.contoursByParcelId[targetPid]?.rawGrid) {
+      const updated = rebuildParcelGridWithSpacing(state.contoursByParcelId[targetPid], spacing);
+      set((s) => ({
+        gridSpacing: spacing,
+        contoursByParcelId: { ...s.contoursByParcelId, [targetPid]: updated },
+      }));
+    } else {
+      set({ gridSpacing: spacing });
+    }
+  },
 
   setFocusedParcelId: (parcelId) => set({ focusedParcelId: parcelId }),
 
@@ -94,7 +124,8 @@ export const useContourStore = create<ContourState>((set, get) => ({
         parcel,
         defaultHuso,
         customInterval,
-        defaultDirection
+        defaultDirection,
+        get().gridSpacing
       );
 
       set((s) => ({
@@ -148,6 +179,7 @@ export const useContourStore = create<ContourState>((set, get) => ({
       !existing ||
       !existing.sourceType ||
       !existing.denseGridCols ||
+      !existing.gridSpacingMeters ||
       !(existing.areaM2 > 0);
 
     if (!isStaleFlatCache && cachedFp === currentFp) {
@@ -169,7 +201,7 @@ export const useContourStore = create<ContourState>((set, get) => ({
     const updated = rebuildParcelContoursWithInterval(existing, interval);
     if (updated.wasIntervalClamped) {
       toast.error(
-        `${updated.uncertaintyWarning ?? 'Altimetría satelital (30m/px): equidistancia mínima 0.2 m.'} Ajustado a ΔZ = ${updated.interval} m.`,
+        `${updated.uncertaintyWarning ?? 'Altimetría satelital: equidistancia mínima 0.10 m.'} Ajustado a ΔZ = ${updated.interval} m.`,
         { id: `sat-clamp-${parcelId}`, duration: 5000 }
       );
     } else if (updated.sourceType === 'SATELLITE_DEM' && updated.interval < 1) {
@@ -235,6 +267,7 @@ export const useContourStore = create<ContourState>((set, get) => ({
       !existing ||
       !existing.sourceType ||
       !existing.denseGridCols ||
+      !existing.gridSpacingMeters ||
       !(existing.areaM2 > 0);
 
     if (isStaleFlatCache || cachedFp !== currentFp) {

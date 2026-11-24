@@ -42,10 +42,20 @@ export interface UTMVertex {
   z: number;
 }
 
+export interface ContourLabelPlacement {
+  pointUTM: [number, number];
+  pointLonLat: [number, number];
+  angleDeg: number;
+  isMaster: boolean;
+  elevation: number;
+  formattedText: string;
+}
+
 export interface ContourLine {
   elevation: number;
   isMaster: boolean;
   coordsUTM: [number, number][];
+  labels?: ContourLabelPlacement[];
   labelPointUTM?: [number, number];
   labelAngleRad?: number;
 }
@@ -93,6 +103,8 @@ export interface ParcelContourData {
   denseGridRows: number;
   gridSpacingE: number;
   gridSpacingN: number;
+  gridSpacingMeters: number;
+  requestedGridSpacing: number;
   clippedGridLinesUTM: ClippedGridLine[];
   interiorGridNodes: InteriorGridNode[];
   bboxUTM: [number, number, number, number];
@@ -363,9 +375,172 @@ export function calculatePolygonSurface(
 }
 
 /**
+ * Formatea una cota altimétrica con precisión decimal normativa acorde a la equidistancia ΔZ.
+ */
+export function formatContourElevation(
+  elevation: number,
+  interval: number,
+  includeUnit = false
+): string {
+  const safeZ = Number.isFinite(elevation) ? elevation : 0;
+  const safeIv = Number.isFinite(interval) && interval > 0 ? interval : 1;
+  let numStr: string;
+  if (safeIv < 0.2 || Math.round(safeIv * 100) % 10 !== 0) {
+    numStr = safeZ.toFixed(2);
+  } else if (safeIv < 1) {
+    numStr = safeZ.toFixed(1);
+  } else {
+    numStr = Math.abs(safeZ - Math.round(safeZ)) < 0.05 ? Math.round(safeZ).toString() : safeZ.toFixed(1);
+  }
+  return includeUnit ? `${numStr} m` : numStr;
+}
+
+/**
+ * Calcula automáticamente el paso métrico normativo de cuadrícula (IGVSB) según la extensión del predio.
+ */
+export function computeAutoNormativeGridSpacing(polygonUTM: [number, number][]): number {
+  if (!polygonUTM || polygonUTM.length === 0) return 10;
+  let minE = Infinity;
+  let maxE = -Infinity;
+  let minN = Infinity;
+  let maxN = -Infinity;
+  for (const [e, n] of polygonUTM) {
+    if (e < minE) minE = e;
+    if (e > maxE) maxE = e;
+    if (n < minN) minN = n;
+    if (n > maxN) maxN = n;
+  }
+  const maxSpan = Math.max(1, maxE - minE, maxN - minN);
+  if (maxSpan <= 160) return 5;
+  if (maxSpan <= 420) return 10;
+  if (maxSpan <= 650) return 15;
+  if (maxSpan <= 950) return 20;
+  if (maxSpan <= 1500) return 25;
+  return 50;
+}
+
+/**
+ * Construye una cuadrícula métrica entera alineada a múltiplos exactos UTM dentro del polígono
+ * a partir de la superficie densa interpolada (sin repetir descargas de red).
+ */
+export function buildNormativeVisualGridFromRaw(
+  rawGrid: RawDEMGrid,
+  polygonUTM: [number, number][],
+  _huso: number,
+  _direction: string,
+  requestedSpacingMeters = 0
+): {
+  gridCols: number;
+  gridRows: number;
+  gridSpacingE: number;
+  gridSpacingN: number;
+  gridSpacingMeters: number;
+  requestedGridSpacing: number;
+  clippedGridLinesUTM: ClippedGridLine[];
+  interiorGridNodes: InteriorGridNode[];
+} {
+  let minE = Infinity;
+  let maxE = -Infinity;
+  let minN = Infinity;
+  let maxN = -Infinity;
+  for (const [e, n] of polygonUTM) {
+    if (e < minE) minE = e;
+    if (e > maxE) maxE = e;
+    if (n < minN) minN = n;
+    if (n > maxN) maxN = n;
+  }
+
+  let step =
+    requestedSpacingMeters > 0
+      ? requestedSpacingMeters
+      : computeAutoNormativeGridSpacing(polygonUTM);
+
+  const spanE = Math.max(1, maxE - minE);
+  const spanN = Math.max(1, maxN - minN);
+  const normSteps = [5, 10, 15, 20, 25, 50, 100];
+  if ((spanE / step) * (spanN / step) > 3600) {
+    const safeCandidate = normSteps.find((s) => s >= step && (spanE / s) * (spanN / s) <= 3600);
+    step = safeCandidate ?? 100;
+  }
+
+  const startE = Math.floor(minE / step) * step;
+  const endE = Math.ceil(maxE / step) * step;
+  const startN = Math.floor(minN / step) * step;
+  const endN = Math.ceil(maxN / step) * step;
+
+  const es: number[] = [];
+  for (let e = startE; e <= endE + 1e-6; e += step) {
+    es.push(Number(e.toFixed(3)));
+  }
+  const ns: number[] = [];
+  for (let n = startN; n <= endN + 1e-6; n += step) {
+    ns.push(Number(n.toFixed(3)));
+  }
+
+  const interiorGridNodes: InteriorGridNode[] = [];
+  for (let r = 0; r < ns.length; r++) {
+    const norte = ns[r];
+    for (let c = 0; c < es.length; c++) {
+      const este = es[c];
+      if (!pointInPolygonUTM(este, norte, polygonUTM)) continue;
+      const z = interpolateGridBicubic(rawGrid, este, norte);
+      interiorGridNodes.push({
+        este,
+        norte,
+        z: Number(z.toFixed(2)),
+        col: c,
+        row: r,
+      });
+    }
+  }
+
+  const clippedGridLinesUTM: ClippedGridLine[] = [];
+  const sampleStep = Math.max(2, step * 0.5);
+
+  for (const este of es) {
+    const polyPts: [number, number][] = [];
+    for (let n = startN; n <= endN; n += sampleStep) {
+      polyPts.push([este, n]);
+    }
+    if (polyPts.length === 0 || polyPts[polyPts.length - 1][1] < endN - 1e-3) {
+      polyPts.push([este, endN]);
+    }
+    const segs = clipPolylineToPolygon(polyPts, polygonUTM);
+    for (const coordsUTM of segs) {
+      clippedGridLinesUTM.push({ axis: 'E', coord: este, coordsUTM });
+    }
+  }
+
+  for (const norte of ns) {
+    const polyPts: [number, number][] = [];
+    for (let e = startE; e <= endE; e += sampleStep) {
+      polyPts.push([e, norte]);
+    }
+    if (polyPts.length === 0 || polyPts[polyPts.length - 1][0] < endE - 1e-3) {
+      polyPts.push([endE, norte]);
+    }
+    const segs = clipPolylineToPolygon(polyPts, polygonUTM);
+    for (const coordsUTM of segs) {
+      clippedGridLinesUTM.push({ axis: 'N', coord: norte, coordsUTM });
+    }
+  }
+
+  return {
+    gridCols: Math.max(2, es.length),
+    gridRows: Math.max(2, ns.length),
+    gridSpacingE: step,
+    gridSpacingN: step,
+    gridSpacingMeters: step,
+    requestedGridSpacing: requestedSpacingMeters,
+    clippedGridLinesUTM,
+    interiorGridNodes,
+  };
+}
+
+/**
  * Calcula la equidistancia óptima con control físico de incertidumbre según la fuente altimétrica.
- * Para DEM satelital anteproyecto: selecciona 0.25–0.5 m en desniveles bajos/medios (~20–35 curvas),
- * 1.0 m hasta 30 m y >= 2.0 m en relieves mayores, permitiendo ajuste manual >= 0.2 m con advertencia.
+ * Para DEM satelital anteproyecto: selecciona 0.25–0.5 m en desniveles bajos/medios,
+ * permitiendo ajuste manual fino desde 0.10 m.
  */
 export function calculateOptimalEquidistance(
   zMin: number,
@@ -376,7 +551,7 @@ export function calculateOptimalEquidistance(
   const deltaH = Math.max(0, Number(zMax) - Number(zMin));
 
   if (sourceType === 'SATELLITE_DEM') {
-    const MIN_MINOR = 0.2;
+    const MIN_MINOR = 0.1;
 
     if (userStep !== undefined && Number.isFinite(userStep) && userStep > 0) {
       if (userStep < MIN_MINOR) {
@@ -1222,6 +1397,268 @@ function extractContoursForLevel(
 }
 
 /**
+ * Distancia mínima de un punto (px, py) al borde del polígono.
+ */
+function distanceToPolygonBorder(px: number, py: number, polygon: [number, number][]): number {
+  let minDistSq = Infinity;
+  for (let i = 0; i < polygon.length; i++) {
+    const [ax, ay] = polygon[i];
+    const [bx, by] = polygon[(i + 1) % polygon.length];
+    const vx = bx - ax;
+    const vy = by - ay;
+    const lenSq = vx * vx + vy * vy || 1;
+    const t = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / lenSq));
+    const dx = px - (ax + t * vx);
+    const dy = py - (ay + t * vy);
+    const d2 = dx * dx + dy * dy;
+    if (d2 < minDistSq) minDistSq = d2;
+  }
+  return Math.sqrt(minDistSq);
+}
+
+/**
+ * Emplazamiento cartográfico profesional (Norma IGVSB):
+ * - Prioriza curvas maestras sobre intermedias.
+ * - Busca tramos rectos alejados del lindero perimetral.
+ * - Desfasa etiquetas lateralmente (staggering) para evitar apilamiento en laderas.
+ * - Verifica distancia mínima anti-colisión (OBB) entre etiquetas vecinas.
+ * - Repite cotas periódicamente en curvas largas y alinea legibilidad con gradiente ascendente.
+ */
+export function placeCartographicContourLabels(
+  contours: ContourLine[],
+  grid: RawDEMGrid,
+  polygonUTM: [number, number][],
+  interval: number,
+  huso = 19,
+  direction = 'REGVEN'
+): void {
+  if (contours.length === 0 || polygonUTM.length < 3) return;
+
+  let pMinE = Infinity;
+  let pMaxE = -Infinity;
+  let pMinN = Infinity;
+  let pMaxN = -Infinity;
+  for (const [e, n] of polygonUTM) {
+    if (e < pMinE) pMinE = e;
+    if (e > pMaxE) pMaxE = e;
+    if (n < pMinN) pMinN = n;
+    if (n > pMaxN) pMaxN = n;
+  }
+  const polySpan = Math.max(10, pMaxE - pMinE, pMaxN - pMinN);
+
+  const crossCurveMinDist = Math.max(7, Math.min(30, polySpan * 0.036));
+  const sameCurveMinDist = Math.max(45, polySpan * 0.22);
+  const repeatDist = Math.max(85, polySpan * 0.40);
+  const borderMargin = Math.max(3.5, polySpan * 0.018);
+
+  const placed: Array<{ e: number; n: number; minDist: number }> = [];
+
+  // Procesar primero maestras, luego intermedias
+  const orderedIndices = contours
+    .map((_, idx) => idx)
+    .sort((a, b) => {
+      if (contours[a].isMaster !== contours[b].isMaster) {
+        return contours[a].isMaster ? -1 : 1;
+      }
+      return contours[b].coordsUTM.length - contours[a].coordsUTM.length;
+    });
+
+  const minCurveLenMaster = Math.max(6, polySpan * 0.02);
+  const minCurveLenInter = Math.max(12, polySpan * 0.038);
+
+  for (let orderPos = 0; orderPos < orderedIndices.length; orderPos++) {
+    const idx = orderedIndices[orderPos];
+    const curve = contours[idx];
+    const pts = curve.coordsUTM;
+    if (pts.length < 2) {
+      curve.labels = [];
+      continue;
+    }
+
+    const cumLen: number[] = [0];
+    let totalLen = 0;
+    for (let k = 0; k < pts.length - 1; k++) {
+      totalLen += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]);
+      cumLen.push(totalLen);
+    }
+
+    const formattedText = formatContourElevation(curve.elevation, interval, false);
+
+    if (curve.isMaster && totalLen < minCurveLenMaster) {
+      curve.labels = [];
+      continue;
+    }
+    if (!curve.isMaster && totalLen < minCurveLenInter) {
+      curve.labels = [];
+      continue;
+    }
+
+    const numSlots = curve.isMaster
+      ? Math.max(1, Math.min(4, Math.floor(totalLen / repeatDist) + 1))
+      : Math.max(1, Math.min(3, Math.floor(totalLen / (repeatDist * 1.2)) + 1));
+
+    const curveLabels: ContourLabelPlacement[] = [];
+    const staggerPhase = ((orderPos * 0.37) % 1) - 0.5;
+
+    for (let slot = 0; slot < numSlots; slot++) {
+      const baseT = (slot + 0.5) / numSlots;
+      const slotSpan = 0.72 / numSlots;
+      const tCandidates: number[] = [];
+      const steps = 11;
+      for (let s = 0; s < steps; s++) {
+        const offsetFrac = (s / (steps - 1) - 0.5) * slotSpan + staggerPhase * (slotSpan * 0.35);
+        const t = Math.max(0.08, Math.min(0.92, baseT + offsetFrac));
+        tCandidates.push(t);
+      }
+
+      let bestScore = -Infinity;
+      let bestCandidate: {
+        e: number;
+        n: number;
+        angleDeg: number;
+        angleRad: number;
+      } | null = null;
+
+      for (const t of tCandidates) {
+        const targetDist = totalLen * t;
+        let segIdx = 0;
+        for (let k = 0; k < cumLen.length - 1; k++) {
+          if (cumLen[k + 1] >= targetDist) {
+            segIdx = k;
+            break;
+          }
+        }
+        const p0 = pts[segIdx];
+        const p1 = pts[segIdx + 1];
+        const segLen = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) || 1;
+        const frac = (targetDist - cumLen[segIdx]) / segLen;
+        const e = p0[0] + frac * (p1[0] - p0[0]);
+        const n = p0[1] + frac * (p1[1] - p0[1]);
+
+        // Verificar colisión contra etiquetas ya colocadas en otras curvas y en esta misma curva
+        const minCrossDist = curve.isMaster ? crossCurveMinDist * 0.88 : crossCurveMinDist;
+        let blocked = false;
+        let nearestNeighborDist = Infinity;
+        for (const p of placed) {
+          const d = Math.hypot(e - p.e, n - p.n);
+          if (d < Math.max(minCrossDist, p.minDist)) {
+            blocked = true;
+            break;
+          }
+          if (d < nearestNeighborDist) nearestNeighborDist = d;
+        }
+        if (blocked) continue;
+
+        for (const own of curveLabels) {
+          if (Math.hypot(e - own.pointUTM[0], n - own.pointUTM[1]) < sameCurveMinDist) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+
+        const dBorder = distanceToPolygonBorder(e, n, polygonUTM);
+
+        // Tangente suavizada ±2 vértices para evitar saltos por micro-vértices
+        const prevPt = pts[Math.max(0, segIdx - 2)];
+        const nextPt = pts[Math.min(pts.length - 1, segIdx + 3)];
+        const dx = nextPt[0] - prevPt[0];
+        const dy = nextPt[1] - prevPt[1];
+        const tanLen = Math.hypot(dx, dy);
+        if (tanLen < 1e-4) continue;
+
+        // Medir curvatura local
+        const a1 = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+        const prevSegP0 = pts[Math.max(0, segIdx - 1)];
+        const prevSegP1 = pts[Math.max(1, Math.min(pts.length - 1, segIdx))];
+        const a0 = Math.atan2(prevSegP1[1] - prevSegP0[1], prevSegP1[0] - prevSegP0[0]);
+        let dAng = Math.abs(a1 - a0);
+        if (dAng > Math.PI) dAng = 2 * Math.PI - dAng;
+
+        // Orientación cartográfica IGVSB:
+        // Mantener texto legible derecha sin invertir cabeza; en tramos casi verticales usar gradiente ascendente ∇Z.
+        let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+        if (Math.abs(Math.abs(deg) - 90) <= 15) {
+          const hStep = Math.max(2, polySpan * 0.005);
+          const dzde =
+            (interpolateGridBicubic(grid, e + hStep, n) -
+              interpolateGridBicubic(grid, e - hStep, n)) /
+            (2 * hStep);
+          const dzdn =
+            (interpolateGridBicubic(grid, e, n + hStep) -
+              interpolateGridBicubic(grid, e, n - hStep)) /
+            (2 * hStep);
+          const rad = (deg * Math.PI) / 180;
+          const upDot = -Math.sin(rad) * dzde + Math.cos(rad) * dzdn;
+          if (upDot < 0) {
+            deg += deg > 0 ? -180 : 180;
+          }
+        }
+        if (deg > 90) deg -= 180;
+        if (deg < -90) deg += 180;
+
+        const straightnessScore = 1 - Math.min(1, dAng / 0.8);
+        const borderScore = dBorder >= borderMargin ? 1 : dBorder / borderMargin;
+        const centerPref = 1 - Math.abs(t - baseT) * 1.4;
+        const spreadBonus = Number.isFinite(nearestNeighborDist)
+          ? Math.min(1.5, nearestNeighborDist / crossCurveMinDist) * 0.4
+          : 0.6;
+        const score = straightnessScore * 2.2 + borderScore * 1.8 + centerPref + spreadBonus;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = {
+            e,
+            n,
+            angleDeg: Number(deg.toFixed(2)),
+            angleRad: (deg * Math.PI) / 180,
+          };
+        }
+      }
+
+      if (bestCandidate) {
+        const geo = utmToWgs84(bestCandidate.e, bestCandidate.n, huso, direction);
+        const placement: ContourLabelPlacement = {
+          pointUTM: [bestCandidate.e, bestCandidate.n],
+          pointLonLat: [geo.lng, geo.lat],
+          angleDeg: bestCandidate.angleDeg,
+          isMaster: curve.isMaster,
+          elevation: curve.elevation,
+          formattedText,
+        };
+        curveLabels.push(placement);
+        placed.push({
+          e: bestCandidate.e,
+          n: bestCandidate.n,
+          minDist: curve.isMaster ? crossCurveMinDist * 0.88 : crossCurveMinDist,
+        });
+      }
+    }
+
+    curve.labels = curveLabels;
+    if (curveLabels.length > 0) {
+      curve.labelPointUTM = curveLabels[0].pointUTM;
+      curve.labelAngleRad = (curveLabels[0].angleDeg * Math.PI) / 180;
+    } else if (curve.isMaster && curve.labelPointUTM) {
+      const geo = utmToWgs84(curve.labelPointUTM[0], curve.labelPointUTM[1], huso, direction);
+      let deg = ((curve.labelAngleRad ?? 0) * 180) / Math.PI;
+      if (deg > 90) deg -= 180;
+      if (deg < -90) deg += 180;
+      curve.labels = [
+        {
+          pointUTM: curve.labelPointUTM,
+          pointLonLat: [geo.lng, geo.lat],
+          angleDeg: Number(deg.toFixed(2)),
+          isMaster: true,
+          elevation: curve.elevation,
+          formattedText,
+        },
+      ];
+    }
+  }
+}
+
+/**
  * Construye todas las curvas de nivel para una equidistancia desde la malla DEM ya calculada.
  */
 export function generateContoursFromRawGrid(
@@ -1230,9 +1667,11 @@ export function generateContoursFromRawGrid(
   minZ: number,
   maxZ: number,
   interval: number,
-  sourceType: ElevationSourceType = 'SATELLITE_DEM'
+  sourceType: ElevationSourceType = 'SATELLITE_DEM',
+  huso = 19,
+  direction = 'REGVEN'
 ): { contours: ContourLine[]; masterInterval: number; effectiveInterval: number } {
-  const minFloor = sourceType === 'SATELLITE_DEM' ? 0.2 : 0.05;
+  const minFloor = sourceType === 'SATELLITE_DEM' ? 0.1 : 0.05;
   const safeInterval = Math.max(minFloor, interval > 0 ? interval : 0.5);
 
   // Considerar tanto los nodos internos como la cota interpolada sobre todo el perímetro del polígono
@@ -1255,10 +1694,10 @@ export function generateContoursFromRawGrid(
 
   const allowedChoices =
     sourceType === 'SATELLITE_DEM'
-      ? [0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+      ? [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
       : [0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0];
 
-  // Si la equidistancia solicitada supera el salto entre cotas, ajustar respetando el piso físico de la fuente
+  // Respetar el intervalo elegido por el usuario hasta 450 niveles (sin recortes silenciosos)
   let effectiveInterval = safeInterval;
   if (endLevel < startLevel && spanZ >= minFloor) {
     const targetStep = Math.max(minFloor, spanZ / 6);
@@ -1266,8 +1705,8 @@ export function generateContoursFromRawGrid(
     effectiveInterval = candidate ?? minFloor;
   } else {
     const stepCount = endLevel >= startLevel ? Math.floor((endLevel - startLevel) / safeInterval) + 1 : 0;
-    if (stepCount > 120) {
-      effectiveInterval = Math.ceil((gridMaxZ - gridMinZ) / 60 / safeInterval) * safeInterval;
+    if (stepCount > 450) {
+      effectiveInterval = Math.ceil((gridMaxZ - gridMinZ) / 250 / safeInterval) * safeInterval;
     }
   }
 
@@ -1284,12 +1723,12 @@ export function generateContoursFromRawGrid(
       const lines = extractContoursForLevel(grid, polygonUTM, cleanLv, isMaster);
       extracted.push(...lines);
     }
+    placeCartographicContourLabels(extracted, grid, polygonUTM, clampedStep, huso, direction);
     return { contours: extracted, masterInterval: effMaster, effectiveInterval: clampedStep };
   };
 
   let res = extractAtStep(effectiveInterval);
 
-  // Segundo respaldo solo si el piso técnico de la fuente admite un paso menor sin violar el límite físico
   if (res.contours.length === 0 && spanZ >= minFloor) {
     const finer = allowedChoices.find((c) => c >= Math.max(minFloor, spanZ / 7) && c < effectiveInterval);
     if (finer !== undefined && finer >= minFloor && finer < effectiveInterval) {
@@ -1513,7 +1952,8 @@ export async function fetchParcelDEMAndContours(
   parcel: Parcel,
   defaultHuso: number,
   customInterval?: number,
-  defaultDirection?: string
+  defaultDirection?: string,
+  requestedGridSpacing = 0
 ): Promise<ParcelContourData> {
   const { vertices, huso, direction } = extractParcelVertices(parcel, defaultHuso, defaultDirection);
 
@@ -1543,21 +1983,13 @@ export async function fetchParcelDEMAndContours(
   const minN = polyMinN - padN;
   const maxN = polyMaxN + padN;
 
-  // Malla visual adaptativa proporcional (máx. ~144 nodos para rotulación legible en plano y HUD)
-  const ratio = width / height;
-  let cols = 12;
-  let rows = 12;
-  if (ratio > 1.35) {
-    cols = Math.min(15, Math.round(12 * Math.sqrt(ratio)));
-    rows = Math.max(9, Math.floor(144 / cols));
-  } else if (ratio < 0.74) {
-    rows = Math.min(15, Math.round(12 / Math.sqrt(ratio)));
-    cols = Math.max(9, Math.floor(144 / rows));
-  }
+  // Malla de respaldo HTTP para API JSON
+  const cols = 12;
+  const rows = 12;
 
-  // Malla fina de cálculo (24x28 o 28x24) sobre el bounding box expandido (+60 m buffer)
-  const calcCols = ratio > 1.35 ? 28 : 24;
-  const calcRows = ratio < 0.74 ? 28 : ratio > 1.35 ? 24 : 28;
+  // Malla fina de cálculo 32×32 sobre el bounding box expandido (+60 m buffer)
+  const calcCols = 32;
+  const calcRows = 32;
 
   const calcCoordsGeo: Array<{ lat: number; lng: number }> = [];
   for (let r = 0; r < calcRows; r++) {
@@ -1842,86 +2274,56 @@ export async function fetchParcelDEMAndContours(
     countInside++;
   }
 
-  const cellDE = (maxE - minE) / (cols - 1);
-  const cellDN = (maxN - minN) / (rows - 1);
   const calcStepE = (maxE - minE) / (calcCols - 1);
   const calcStepN = (maxN - minN) / (calcRows - 1);
-  const gridSpacingE = Number(cellDE.toFixed(2));
-  const gridSpacingN = Number(cellDN.toFixed(2));
-  const interiorGridNodes: InteriorGridNode[] = [];
+
+  // Construir cuadrícula métrica normativa IGVSB (5×5, 10×10, 15×15, 20×20, 25×25, 50×50) alineada a UTM
+  const normGrid = buildNormativeVisualGridFromRaw(
+    denseGrid,
+    polygonUTM,
+    huso,
+    direction,
+    requestedGridSpacing
+  );
+  const {
+    gridCols: normCols,
+    gridRows: normRows,
+    gridSpacingE,
+    gridSpacingN,
+    gridSpacingMeters,
+    requestedGridSpacing: effectiveRequestedGridSpacing,
+    clippedGridLinesUTM,
+    interiorGridNodes,
+  } = normGrid;
+
   let slopeSum = 0;
   let slopeCount = 0;
 
-  // Muestrear nodos de la cuadrícula visual (~12x12) y pendiente local desde calcGrid mediante bicúbica C¹
-  for (let r = 0; r < rows; r++) {
-    const norte = minN + r * cellDN;
-    for (let c = 0; c < cols; c++) {
-      const este = minE + c * cellDE;
-      if (!pointInPolygonUTM(este, norte, polygonUTM)) continue;
-
-      const z = interpolateGridBicubic(calcGrid, este, norte);
-      interiorGridNodes.push({
-        este,
-        norte,
-        z: Number(z.toFixed(2)),
-        col: c,
-        row: r,
-      });
-
-      if (z < minZ) {
-        minZ = z;
-        minPointUTM = { este, norte, z: Number(z.toFixed(2)) };
-      }
-      if (z > maxZ) {
-        maxZ = z;
-        maxPointUTM = { este, norte, z: Number(z.toFixed(2)) };
-      }
-      sumZ += z;
-      countInside++;
-
-      const eL = Math.max(minE, este - calcStepE);
-      const eR = Math.min(maxE, este + calcStepE);
-      const nB = Math.max(minN, norte - calcStepN);
-      const nT = Math.min(maxN, norte + calcStepN);
-      const dzde =
-        (interpolateGridBicubic(calcGrid, eR, norte) - interpolateGridBicubic(calcGrid, eL, norte)) /
-        (eR - eL || 1);
-      const dzdn =
-        (interpolateGridBicubic(calcGrid, este, nT) - interpolateGridBicubic(calcGrid, este, nB)) /
-        (nT - nB || 1);
-      const slopePct = Math.hypot(dzde, dzdn) * 100;
-      slopeSum += slopePct;
-      slopeCount++;
+  for (const gn of interiorGridNodes) {
+    if (gn.z < minZ) {
+      minZ = gn.z;
+      minPointUTM = { este: gn.este, norte: gn.norte, z: gn.z };
     }
-  }
+    if (gn.z > maxZ) {
+      maxZ = gn.z;
+      maxPointUTM = { este: gn.este, norte: gn.norte, z: gn.z };
+    }
+    sumZ += gn.z;
+    countInside++;
 
-  // Líneas de cuadrícula de muestreo recortadas estrictamente al polígono del predio
-  const clippedGridLinesUTM: ClippedGridLine[] = [];
-  for (let c = 0; c < cols; c++) {
-    const este = minE + c * cellDE;
-    const segs = clipPolylineToPolygon(
-      [
-        [este, minN],
-        [este, maxN],
-      ],
-      polygonUTM
-    );
-    for (const coordsUTM of segs) {
-      clippedGridLinesUTM.push({ axis: 'E', coord: este, coordsUTM });
-    }
-  }
-  for (let r = 0; r < rows; r++) {
-    const norte = minN + r * cellDN;
-    const segs = clipPolylineToPolygon(
-      [
-        [minE, norte],
-        [maxE, norte],
-      ],
-      polygonUTM
-    );
-    for (const coordsUTM of segs) {
-      clippedGridLinesUTM.push({ axis: 'N', coord: norte, coordsUTM });
-    }
+    const eL = Math.max(minE, gn.este - calcStepE);
+    const eR = Math.min(maxE, gn.este + calcStepE);
+    const nB = Math.max(minN, gn.norte - calcStepN);
+    const nT = Math.min(maxN, gn.norte + calcStepN);
+    const dzde =
+      (interpolateGridBicubic(calcGrid, eR, gn.norte) - interpolateGridBicubic(calcGrid, eL, gn.norte)) /
+      (eR - eL || 1);
+    const dzdn =
+      (interpolateGridBicubic(calcGrid, gn.este, nT) - interpolateGridBicubic(calcGrid, gn.este, nB)) /
+      (nT - nB || 1);
+    const slopePct = Math.hypot(dzde, dzdn) * 100;
+    slopeSum += slopePct;
+    slopeCount++;
   }
 
   // Fallback de pendiente entre vértices extremos si el predio es muy pequeño respecto a la malla
@@ -1966,7 +2368,9 @@ export async function fetchParcelDEMAndContours(
     minZ,
     maxZ,
     eqConfig.minorInterval,
-    sourceType
+    sourceType,
+    huso,
+    direction
   );
   const interval = effectiveInterval;
   const finalMasterInterval =
@@ -1985,12 +2389,14 @@ export async function fetchParcelDEMAndContours(
     perimeterM: surface.perimeterM,
     polygonUTM,
     vertices: enrichedVertices,
-    gridCols: cols,
-    gridRows: rows,
+    gridCols: normCols,
+    gridRows: normRows,
     denseGridCols: denseGrid.cols,
     denseGridRows: denseGrid.rows,
     gridSpacingE,
     gridSpacingN,
+    gridSpacingMeters,
+    requestedGridSpacing: effectiveRequestedGridSpacing,
     clippedGridLinesUTM,
     interiorGridNodes,
     bboxUTM: [polyMinE, polyMinN, polyMaxE, polyMaxN],
@@ -2028,7 +2434,9 @@ export function rebuildParcelContoursWithInterval(
     existing.minZ,
     existing.maxZ,
     eqConfig.minorInterval,
-    sourceType
+    sourceType,
+    existing.huso,
+    existing.direction
   );
   const computedSurface =
     existing.areaM2 > 0
@@ -2052,6 +2460,34 @@ export function rebuildParcelContoursWithInterval(
       effectiveInterval === eqConfig.minorInterval ? eqConfig.majorInterval : masterInterval,
     contours,
     computedAt: Date.now(),
+  };
+}
+
+/**
+ * Reconstruye instantáneamente la cuadrícula métrica normativa (5×5, 10×10, 15×15, 20×20, 25×25, 50×50)
+ * sobre el DEM en caché sin realizar descargas de red.
+ */
+export function rebuildParcelGridWithSpacing(
+  existing: ParcelContourData,
+  requestedGridSpacing: number
+): ParcelContourData {
+  const normGrid = buildNormativeVisualGridFromRaw(
+    existing.rawGrid,
+    existing.polygonUTM,
+    existing.huso,
+    existing.direction,
+    requestedGridSpacing
+  );
+  return {
+    ...existing,
+    gridCols: normGrid.gridCols,
+    gridRows: normGrid.gridRows,
+    gridSpacingE: normGrid.gridSpacingE,
+    gridSpacingN: normGrid.gridSpacingN,
+    gridSpacingMeters: normGrid.gridSpacingMeters,
+    requestedGridSpacing: normGrid.requestedGridSpacing,
+    clippedGridLinesUTM: normGrid.clippedGridLinesUTM,
+    interiorGridNodes: normGrid.interiorGridNodes,
   };
 }
 
@@ -2139,13 +2575,14 @@ export function exportParcelContoursDXF(data: ParcelContourData): void {
   const cajStartN = baseMaxN;
   const lineGap = textHeight * 1.65;
   const datumText = isCanoaOutputDirection(data.direction) ? 'LA CANOA PSAD56' : 'REGVEN SIRGAS';
+  const gridStepM = data.gridSpacingMeters ?? data.gridSpacingE ?? 10;
   const cajLines = [
     `CAJETIN ALTIMETRICO - ${(data.parcelName || 'PARCELA').toUpperCase()}`,
     `SISTEMA: UTM HUSO ${data.huso}N | DATUM: ${datumText}`,
     `AREA: ${safeAreaM2.toFixed(2)} m2 (${safeAreaHa.toFixed(4)} ha) | PERIMETRO: ${safePerimeterM.toFixed(2)} m`,
     `COTAS Z: MIN ${safeMinZ.toFixed(2)} m | MAX ${safeMaxZ.toFixed(2)} m | MEDIA ${safeMeanZ.toFixed(2)} m | dH ${safeDeltaH.toFixed(2)} m`,
     `PENDIENTE MEDIA: ${safeSlopePct.toFixed(2)}% | RELIEVE: ${data.reliefClass}`,
-    `EQUIDISTANCIA: ${data.interval} m (MAESTRAS ${data.masterInterval} m)`,
+    `EQUIDISTANCIA: ${data.interval} m (MAESTRAS ${data.masterInterval} m) | CUADRICULA IGVSB: ${gridStepM}x${gridStepM} m`,
     `FUENTE: ${data.demSource}`,
     ...(data.uncertaintyWarning ? [`ADVERTENCIA: ${data.uncertaintyWarning}`] : []),
   ]
@@ -2207,6 +2644,8 @@ export function exportParcelContoursDXF(data: ParcelContourData): void {
     { name: 'POLIGONO_LINDERO', color: '3' },
     { name: 'CURVAS_MAESTRAS', color: '30' },
     { name: 'CURVAS_INTERMEDIAS', color: '8' },
+    { name: 'TOPO_COTAS_CURVAS', color: '30' },
+    { name: 'TOPO_COTAS_CURVAS_INT', color: '32' },
     { name: 'COTAS_TEXTO', color: '2' },
     { name: 'VERTICES', color: '4' },
     { name: 'CUADRICULA_MALLA', color: '9' },
@@ -2477,17 +2916,34 @@ export function exportParcelContoursDXF(data: ParcelContourData): void {
       writeLWPolyline(layer, seg, c.elevation, false);
     }
 
-    if (c.isMaster && c.labelPointUTM && segmentsToWrite.length > 0) {
+    if (segmentsToWrite.length === 0) continue;
+
+    if (c.labels && c.labels.length > 0) {
+      const labelLayer = c.isMaster ? 'TOPO_COTAS_CURVAS' : 'TOPO_COTAS_CURVAS_INT';
+      const lblHeight = c.isMaster ? textHeight : textHeight * 0.78;
+      for (const lbl of c.labels) {
+        writeText(
+          labelLayer,
+          lbl.pointUTM[0],
+          lbl.pointUTM[1],
+          c.elevation,
+          lblHeight,
+          lbl.formattedText,
+          lbl.angleDeg,
+          true
+        );
+      }
+    } else if (c.isMaster && c.labelPointUTM) {
       let deg = ((c.labelAngleRad ?? 0) * 180) / Math.PI;
       if (deg > 90) deg -= 180;
       if (deg < -90) deg += 180;
       writeText(
-        'COTAS_TEXTO',
+        'TOPO_COTAS_CURVAS',
         c.labelPointUTM[0],
         c.labelPointUTM[1],
         c.elevation,
         textHeight,
-        `${c.elevation % 1 === 0 ? c.elevation.toFixed(0) : c.elevation.toFixed(1)}`,
+        formatContourElevation(c.elevation, data.interval, false),
         deg,
         true
       );

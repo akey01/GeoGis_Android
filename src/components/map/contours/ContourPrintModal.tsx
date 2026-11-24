@@ -35,6 +35,7 @@ import { useContourStore } from './useContourStore';
 import {
   calculatePolygonSurface,
   exportParcelContoursDXF,
+  formatContourElevation,
   isCanoaOutputDirection,
   SATELLITE_DEM_WARNING,
   utmToWebMercator,
@@ -46,9 +47,18 @@ type GridStepChoice = 'auto' | 10 | 20 | 25 | 50 | 100 | 200 | 500;
 const GRID_STEP_OPTIONS: readonly (10 | 20 | 25 | 50 | 100 | 200 | 500)[] = [
   10, 20, 25, 50, 100, 200, 500,
 ];
+const DEM_GRID_OPTIONS = [
+  { value: 0, label: 'Auto' },
+  { value: 5, label: '5×5m' },
+  { value: 10, label: '10×10m' },
+  { value: 15, label: '15×15m' },
+  { value: 20, label: '20×20m' },
+  { value: 25, label: '25×25m' },
+  { value: 50, label: '50×50m' },
+] as const;
 type SatProvider = 'esri' | 'google';
 
-const INTERVAL_CHOICES = [0.25, 0.5, 1, 2, 5, 10] as const;
+const INTERVAL_CHOICES = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10] as const;
 
 const SVG_W = 940;
 const SVG_H = 660;
@@ -200,6 +210,9 @@ export default function ContourPrintModal() {
   const printModalParcelId = useContourStore((s) => s.printModalParcelId);
   const contoursByParcelId = useContourStore((s) => s.contoursByParcelId);
   const setParcelInterval = useContourStore((s) => s.setParcelInterval);
+  const setGridSpacing = useContourStore((s) => s.setGridSpacing);
+  const showIntermediateLabels = useContourStore((s) => s.showIntermediateLabels);
+  const toggleIntermediateLabels = useContourStore((s) => s.toggleIntermediateLabels);
   const closePrintModal = useContourStore((s) => s.closePrintModal);
   const satOffset = useContourStore((s) => s.satOffset);
 
@@ -214,7 +227,6 @@ export default function ContourPrintModal() {
   const [mounted, setMounted] = useState(false);
   const [theme, setTheme] = useState<SheetTheme>(isDemo ? 'cad' : 'satellite');
   const [satProvider, setSatProvider] = useState<SatProvider>('google');
-  const [showIntermediateLabels, setShowIntermediateLabels] = useState(false);
   const [showVertexZ, setShowVertexZ] = useState(true);
   const [showDemGrid, setShowDemGrid] = useState(true);
   const [gridStepOverride, setGridStepOverride] = useState<GridStepChoice>('auto');
@@ -440,8 +452,12 @@ export default function ContourPrintModal() {
   const activeGridNs = utmGrid?.gridNs ?? viewport.gridNs;
   const clippedGridLines = data.clippedGridLinesUTM ?? [];
   const interiorNodes = data.interiorGridNodes ?? [];
+  const demGridStepMeters = data.gridSpacingMeters ?? demSpacingE;
   const minCellSvgPx = Math.min(demSpacingE * viewport.scale, demSpacingN * viewport.scale);
-  const labelAllNodes = minCellSvgPx >= 24;
+  const nodeLabelStride =
+    interiorNodes.length > 130 || minCellSvgPx < 24
+      ? Math.max(2, Math.ceil(Math.sqrt(Math.max(1, interiorNodes.length) / 95)))
+      : 1;
 
   const modalContent = (
     <div
@@ -590,7 +606,7 @@ export default function ContourPrintModal() {
 
           {/* Etiquetas */}
           <button
-            onClick={() => setShowIntermediateLabels((v) => !v)}
+            onClick={toggleIntermediateLabels}
             className={cn(
               'flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border transition-colors',
               showIntermediateLabels
@@ -616,7 +632,7 @@ export default function ContourPrintModal() {
             Vértices
           </button>
 
-          {/* Cuadrícula DEM interna */}
+          {/* Cuadrícula DEM interna + selector de paso normativo IGVSB */}
           <button
             onClick={() => setShowDemGrid((v) => !v)}
             className={cn(
@@ -625,11 +641,27 @@ export default function ContourPrintModal() {
                 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
                 : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
             )}
-            title="Mostrar/ocultar cuadrícula de muestreo DEM (ΔE × ΔN) y cotas internas"
+            title="Mostrar/ocultar cuadrícula de muestreo DEM (IGVSB) y cotas internas"
           >
             <Grid3x3 className="w-3 h-3" />
             Malla DEM
           </button>
+
+          <div className="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+            <span className="text-[9px] font-bold text-slate-400 uppercase">Malla IGVSB:</span>
+            <select
+              value={String(data.requestedGridSpacing ?? 0)}
+              onChange={(e) => setGridSpacing(Number(e.target.value), data.parcelId)}
+              className="bg-transparent text-[10px] font-mono font-bold text-emerald-300 outline-none cursor-pointer"
+              title="Paso de cuadrícula altimétrica normativa IGVSB (5x5m, 10x10m, 15x15m, 20x20m, 25x25m, 50x50m)"
+            >
+              {DEM_GRID_OPTIONS.map((opt) => (
+                <option key={opt.value} value={String(opt.value)} className="bg-slate-900 text-slate-200">
+                  {opt.value === 0 ? `Auto (${demGridStepMeters}m)` : opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
           {/* Paso de cuadrícula UTM */}
           <div className="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
@@ -837,35 +869,37 @@ export default function ContourPrintModal() {
                 {showDemGrid &&
                   interiorNodes.map((gn, idx) => {
                     const [sx, sy] = viewport.toSvg(gn.este, gn.norte);
-                    const showLabel = labelAllNodes || (gn.row + gn.col) % 2 === 0;
+                    const showLabel =
+                      gn.col % nodeLabelStride === 0 && gn.row % nodeLabelStride === 0;
+                    const crossSize = interiorNodes.length > 350 ? 1.4 : 2.2;
                     return (
                       <g key={`dgn-${idx}`}>
                         <line
-                          x1={sx - 2.2}
+                          x1={sx - crossSize}
                           y1={sy}
-                          x2={sx + 2.2}
+                          x2={sx + crossSize}
                           y2={sy}
                           stroke={isSat ? '#a7f3d0' : '#047857'}
-                          strokeWidth={0.85}
+                          strokeWidth={0.75}
                         />
                         <line
                           x1={sx}
-                          y1={sy - 2.2}
+                          y1={sy - crossSize}
                           x2={sx}
-                          y2={sy + 2.2}
+                          y2={sy + crossSize}
                           stroke={isSat ? '#a7f3d0' : '#047857'}
-                          strokeWidth={0.85}
+                          strokeWidth={0.75}
                         />
                         {showLabel && (
                           <text
-                            x={sx + 3}
-                            y={sy - 2.5}
+                            x={sx + 2.5}
+                            y={sy - 2.2}
                             fontFamily="ui-monospace, monospace"
-                            fontSize={6.5}
+                            fontSize={6.2}
                             fontWeight="bold"
                             fill={isSat ? '#d1fae5' : '#065f46'}
                             stroke={isSat ? 'rgba(15,23,42,0.9)' : 'rgba(255,255,255,0.92)'}
-                            strokeWidth={2}
+                            strokeWidth={1.8}
                             paintOrder="stroke"
                             strokeLinejoin="round"
                           >
@@ -936,36 +970,72 @@ export default function ContourPrintModal() {
                     );
                   })}
 
-                {/* Etiquetas sobre Curvas (Maestras y opcionalmente Intermedias) */}
-                {data.contours.map((c, idx) => {
-                  if (!c.labelPointUTM) return null;
-                  if (!c.isMaster && !showIntermediateLabels) return null;
-                  const [lx, ly] = viewport.toSvg(c.labelPointUTM[0], c.labelPointUTM[1]);
-                  // Convertir ángulo UTM (+E derecha, +N arriba) a rotación SVG (+X derecha, +Y abajo)
-                  let deg = -((c.labelAngleRad ?? 0) * 180) / Math.PI;
-                  if (deg > 90) deg -= 180;
-                  if (deg < -90) deg += 180;
-                  const textStr = c.elevation % 1 === 0 ? c.elevation.toFixed(0) : c.elevation.toFixed(1);
+                {/* Etiquetas Cartográficas sobre Curvas con Máscara/Interrupción de Trazo (IGVSB) */}
+                {data.contours.flatMap((c, cIdx) => {
+                  if (!c.isMaster && !showIntermediateLabels) return [];
+                  const placements =
+                    c.labels && c.labels.length > 0
+                      ? c.labels
+                      : c.labelPointUTM
+                        ? [
+                            {
+                              pointUTM: c.labelPointUTM,
+                              angleDeg: ((c.labelAngleRad ?? 0) * 180) / Math.PI,
+                              formattedText: formatContourElevation(c.elevation, data.interval, false),
+                            },
+                          ]
+                        : [];
 
-                  return (
-                    <text
-                      key={`lbl-${idx}`}
-                      x={lx}
-                      y={ly}
-                      transform={`rotate(${deg.toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)})`}
-                      textAnchor="middle"
-                      dominantBaseline="central"
-                      fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
-                      fontSize={c.isMaster ? 9.5 : 8}
-                      fontWeight={c.isMaster ? 'bold' : 'normal'}
-                      fill={isSat ? (c.isMaster ? '#fef3c7' : '#e0f2fe') : c.isMaster ? '#7c2d12' : '#b45309'}
-                      stroke={isSat ? '#0f172a' : '#ffffff'}
-                      strokeWidth={c.isMaster ? 3.2 : 2.5}
-                      paintOrder="stroke"
-                    >
-                      {textStr}
-                    </text>
-                  );
+                  return placements.map((lbl, lIdx) => {
+                    const [lx, ly] = viewport.toSvg(lbl.pointUTM[0], lbl.pointUTM[1]);
+                    let svgDeg = -lbl.angleDeg;
+                    if (svgDeg > 90) svgDeg -= 180;
+                    if (svgDeg < -90) svgDeg += 180;
+                    const textStr = c.isMaster ? `${lbl.formattedText} m` : lbl.formattedText;
+                    const fontSize = c.isMaster ? 9 : 7.5;
+                    const pillW = textStr.length * (c.isMaster ? 5.6 : 4.7) + 5;
+                    const pillH = c.isMaster ? 12 : 9.5;
+                    const pillFill = isSat ? '#0f172a' : '#ffffff';
+                    const accentColor = isSat
+                      ? c.isMaster
+                        ? '#f59e0b'
+                        : '#38bdf8'
+                      : c.isMaster
+                        ? '#9a3412'
+                        : '#d97706';
+
+                    return (
+                      <g
+                        key={`lbl-${cIdx}-${lIdx}`}
+                        transform={`rotate(${svgDeg.toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)})`}
+                      >
+                        <rect
+                          x={lx - pillW * 0.5}
+                          y={ly - pillH * 0.5}
+                          width={pillW}
+                          height={pillH}
+                          rx={2}
+                          fill={pillFill}
+                          fillOpacity={isSat ? 0.92 : 0.96}
+                          stroke={accentColor}
+                          strokeWidth={0.45}
+                          strokeOpacity={0.65}
+                        />
+                        <text
+                          x={lx}
+                          y={ly}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                          fontSize={fontSize}
+                          fontWeight={c.isMaster ? 'bold' : '600'}
+                          fill={isSat ? (c.isMaster ? '#fef3c7' : '#e0f2fe') : c.isMaster ? '#7c2d12' : '#b45309'}
+                        >
+                          {textStr}
+                        </text>
+                      </g>
+                    );
+                  });
                 })}
 
                 {/* Poligonal / Lindero de la Parcela */}
@@ -1175,7 +1245,7 @@ export default function ContourPrintModal() {
                     fontWeight="bold"
                     fill="#047857"
                   >
-                    {`MALLA DEM (${data.gridCols}×${data.gridRows}): ΔE ${demSpacingE.toFixed(1)}m × ΔN ${demSpacingN.toFixed(1)}m`}
+                    {`MALLA DEM (IGVSB): ${demGridStepMeters}m × ${demGridStepMeters}m (${interiorNodes.length} nodos)`}
                   </text>
                 )}
               </g>
@@ -1316,8 +1386,8 @@ export default function ContourPrintModal() {
                 </div>
               </div>
               <div className="text-[9px] font-mono bg-emerald-50 border border-emerald-200 rounded px-2 py-1 text-emerald-950 flex items-center justify-between">
-                <span className="font-sans font-semibold">Malla DEM ({data.gridCols}×{data.gridRows}):</span>
-                <span className="font-bold">{demSpacingE.toFixed(1)}×{demSpacingN.toFixed(1)} m</span>
+                <span className="font-sans font-semibold">Malla IGVSB ({data.gridCols}×{data.gridRows}):</span>
+                <span className="font-bold">{demGridStepMeters}m × {demGridStepMeters} m</span>
               </div>
               <div className="text-[9px] font-semibold bg-amber-50 border border-amber-200 rounded px-2 py-1 text-amber-950">
                 Relieve: <span className="font-bold">{data.reliefClass}</span>
@@ -1351,7 +1421,7 @@ export default function ContourPrintModal() {
                     className="w-5 h-[1.5px] inline-block border-t border-dashed"
                     style={{ borderColor: isSat ? '#6ee7b7' : '#059669' }}
                   />
-                  <span>Malla DEM ({demSpacingE.toFixed(1)}×{demSpacingN.toFixed(1)}m)</span>
+                  <span>Malla DEM ({demGridStepMeters}×{demGridStepMeters}m)</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="w-5 h-[1.5px] inline-block border-t border-dashed border-slate-500" />

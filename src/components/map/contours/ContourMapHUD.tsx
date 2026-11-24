@@ -6,7 +6,7 @@
 'use client';
 
 import React from 'react';
-import { Mountain, Printer, Download, X, Layers, Grid3x3, Crosshair, AlertTriangle } from 'lucide-react';
+import { Mountain, Printer, Download, X, Layers, Grid3x3, Crosshair, AlertTriangle, Tag } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/lib/store';
 import { hasPermission, isDemoRole } from '@/src/types/auth';
@@ -14,7 +14,17 @@ import { toast } from 'react-hot-toast';
 import { useContourStore } from './useContourStore';
 import { exportParcelContoursDXF, SATELLITE_DEM_WARNING } from './contourEngine';
 
-const INTERVAL_OPTIONS = [0.25, 0.5, 1, 2, 5, 10] as const;
+const INTERVAL_OPTIONS = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10] as const;
+
+const GRID_SPACING_OPTIONS = [
+  { value: 0, label: 'Auto' },
+  { value: 5, label: '5×5m' },
+  { value: 10, label: '10×10m' },
+  { value: 15, label: '15×15m' },
+  { value: 20, label: '20×20m' },
+  { value: 25, label: '25×25m' },
+  { value: 50, label: '50×50m' },
+] as const;
 
 export default function ContourMapHUD() {
   const contoursByParcelId = useContourStore((s) => s.contoursByParcelId);
@@ -22,8 +32,12 @@ export default function ContourMapHUD() {
   const focusedParcelId = useContourStore((s) => s.focusedParcelId);
   const showMapGrid = useContourStore((s) => s.showMapGrid);
   const showMapGridNodes = useContourStore((s) => s.showMapGridNodes);
+  const gridSpacing = useContourStore((s) => s.gridSpacing);
+  const showIntermediateLabels = useContourStore((s) => s.showIntermediateLabels);
   const toggleShowMapGrid = useContourStore((s) => s.toggleShowMapGrid);
   const toggleShowMapGridNodes = useContourStore((s) => s.toggleShowMapGridNodes);
+  const toggleIntermediateLabels = useContourStore((s) => s.toggleIntermediateLabels);
+  const setGridSpacing = useContourStore((s) => s.setGridSpacing);
   const setFocusedParcelId = useContourStore((s) => s.setFocusedParcelId);
   const setParcelInterval = useContourStore((s) => s.setParcelInterval);
   const hideParcelContours = useContourStore((s) => s.hideParcelContours);
@@ -71,8 +85,11 @@ export default function ContourMapHUD() {
     toast.success(`DXF 3D con curvas exportado (${data.contours.length} polilíneas)`);
   };
 
+  const activeGridMeters = data.gridSpacingMeters ?? spacingE;
+  const activeRequestedGrid = data.requestedGridSpacing ?? gridSpacing;
+
   return (
-    <div className="absolute bottom-14 sm:bottom-4 left-1/2 -translate-x-1/2 z-20 w-[calc(100%-2rem)] max-w-lg pointer-events-auto">
+    <div className="absolute bottom-14 sm:bottom-4 left-1/2 -translate-x-1/2 z-20 w-[calc(100%-2rem)] max-w-xl pointer-events-auto">
       <div className="bg-slate-900/95 backdrop-blur-xl border border-amber-500/40 rounded-2xl p-2.5 shadow-2xl shadow-black/80 space-y-2">
         {/* Cabecera + selector si hay varias parcelas con curvas activas */}
         <div className="flex items-center justify-between gap-2">
@@ -88,6 +105,9 @@ export default function ContourMapHUD() {
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-bold">
                   ΔZ {data.interval}m
                 </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
+                  Malla {activeGridMeters}×{activeGridMeters}m
+                </span>
               </div>
               <div className="text-[10px] font-mono text-slate-300 flex items-center gap-2 flex-wrap">
                 <span className="text-sky-300">Z: {data.minZ.toFixed(1)}–{data.maxZ.toFixed(1)} m</span>
@@ -98,9 +118,9 @@ export default function ContourMapHUD() {
                 <span className="text-slate-500">·</span>
                 <span
                   className="text-emerald-200 font-semibold"
-                  title="Separación real de la cuadrícula de muestreo DEM (ΔE × ΔN)"
+                  title="Nodos altimétricos interiores en la malla normativa IGVSB"
                 >
-                  Malla {spacingE.toFixed(1)}×{spacingN.toFixed(1)}m
+                  {data.interiorGridNodes.length} nodos · {data.contours.length} curvas
                 </span>
               </div>
             </div>
@@ -184,6 +204,19 @@ export default function ContourMapHUD() {
 
           <div className="flex items-center gap-1">
             <button
+              onClick={toggleIntermediateLabels}
+              title="Mostrar/ocultar etiquetas de cotas en curvas intermedias además de maestras"
+              className={cn(
+                'flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border transition-colors',
+                showIntermediateLabels
+                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300'
+                  : 'bg-slate-800/80 border-white/10 text-slate-400 hover:text-white'
+              )}
+            >
+              <Tag className="w-2.5 h-2.5" />
+              <span>Cotas Int.</span>
+            </button>
+            <button
               onClick={toggleShowMapGrid}
               title="Mostrar/ocultar cuadrícula de muestreo DEM sobre el satélite"
               className={cn(
@@ -209,6 +242,37 @@ export default function ContourMapHUD() {
               <Crosshair className="w-2.5 h-2.5" />
               <span>Cotas Z</span>
             </button>
+          </div>
+        </div>
+
+        {/* Selector interactivo de Paso de Cuadrícula Normativa IGVSB */}
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10 flex-wrap">
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mr-1">
+              Malla IGVSB:
+            </span>
+            {GRID_SPACING_OPTIONS.map((opt) => {
+              const isActive = activeRequestedGrid === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => setGridSpacing(opt.value, activePid)}
+                  title={
+                    opt.value === 0
+                      ? `Paso automático normativo IGVSB (actual: ${activeGridMeters}×${activeGridMeters}m)`
+                      : `Fijar cuadrícula de nivelación a ${opt.label}`
+                  }
+                  className={cn(
+                    'px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold transition-colors border',
+                    isActive
+                      ? 'bg-emerald-500 border-emerald-400 text-slate-950'
+                      : 'bg-slate-800/80 border-white/10 text-slate-300 hover:text-white hover:border-emerald-400/50'
+                  )}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
 
           {visibleParcelIds.length > 1 && (
