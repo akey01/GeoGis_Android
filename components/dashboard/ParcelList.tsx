@@ -150,7 +150,7 @@ export default function ParcelList() {
   const visibleContourIds = useContourStore((s) => s.visibleParcelIds);
   const loadingContourIds = useContourStore((s) => s.loadingParcelIds);
   const toggleParcelContours = useContourStore((s) => s.toggleParcelContours);
-  const openPrintModalForParcel = useContourStore((s) => s.openPrintModalForParcel);
+  const openOfficialPlanModal = useContourStore((s) => s.openOfficialPlanModal);
   const removeParcelContours = useContourStore((s) => s.removeParcelContours);
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -229,7 +229,7 @@ export default function ParcelList() {
     }
   }, []);
 
-  // ── Export DXF ────────────────────────────────────────────────────────────
+  // ── Export DXF (Unificado: incluye curvas activas en el mismo plano oficial) ──
   const handleExportDxf = useCallback(async (parcel: Parcel) => {
     useAppStore.getState().setExportingState(true, 'DXF', 0);
     setExportingDxf(parcel.id);
@@ -237,7 +237,21 @@ export default function ParcelList() {
       const progressInterval = setInterval(() => {
         useAppStore.getState().setExportingState(true, 'DXF', useAppStore.getState().pdfProgress + 5);
       }, 200);
-      await exportParcelToDXF(parcel);
+      const contourState = useContourStore.getState();
+      const activeContourData = contourState.visibleParcelIds.includes(parcel.id)
+        ? contourState.contoursByParcelId[parcel.id]
+        : null;
+      await exportParcelToDXF(
+        parcel,
+        activeContourData,
+        activeContourData
+          ? {
+              includeContours: true,
+              showDemGrid: contourState.showMapGrid,
+              showIntermediateLabels: contourState.showIntermediateLabels,
+            }
+          : undefined
+      );
       clearInterval(progressInterval);
       useAppStore.getState().setExportingState(true, 'DXF', 100);
     } catch (err: any) {
@@ -848,18 +862,18 @@ export default function ParcelList() {
                           </div>
                         </button>
 
-                        {/* Imprimir Plano de Curvas de Nivel */}
+                        {/* Plano Único Oficial A3 (PDF / DXF Unificado IGVSB) */}
                         <button
                           onClick={() => {
                             setOpenActionsId(null);
-                            openPrintModalForParcel(parcel, huso, effectiveDirection);
+                            openOfficialPlanModal(parcel, huso, effectiveDirection, hasContoursVisible);
                           }}
                           disabled={isLoadingContours || !canComputeContours}
                           className="flex items-center gap-2.5 w-full px-3 py-2.5 hover:bg-slate-800/80 transition-colors group disabled:opacity-45 disabled:cursor-not-allowed"
                           title={
                             !canComputeContours
                               ? 'Requiere poligonal cerrada (mínimo 3 vértices)'
-                              : 'Abrir vista previa para imprimir plano de curvas de nivel satelitales'
+                              : 'Abrir Plano Único Oficial Venezolano A3 para descargar PDF o DXF (con o sin curvas)'
                           }
                         >
                           <div className="flex items-center justify-center w-6 h-6 rounded-md bg-orange-500/15 border border-orange-500/30 shrink-0">
@@ -867,9 +881,9 @@ export default function ParcelList() {
                           </div>
                           <div className="flex flex-col text-left">
                             <span className="text-[10px] font-extrabold uppercase tracking-wider text-orange-400 group-hover:text-orange-300 leading-tight">
-                              {isLoadingContours ? 'Calculando DEM...' : 'Plano de Curvas'}
+                              {isLoadingContours ? 'Calculando DEM...' : 'Plano Oficial (PDF / DXF)'}
                             </span>
-                            <span className="text-[8px] text-slate-500 font-mono">Imprimir Satélite/CAD + PDF</span>
+                            <span className="text-[8px] text-slate-500 font-mono">Formato IGVSB A3 · Mensura + Curvas</span>
                           </div>
                         </button>
                       </div>

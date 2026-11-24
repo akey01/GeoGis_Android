@@ -64,6 +64,12 @@ interface ContourState {
     defaultHuso: number,
     defaultDirection?: string
   ) => Promise<void>;
+  openOfficialPlanModal: (
+    parcel: Parcel,
+    defaultHuso: number,
+    defaultDirection?: string,
+    autoComputeContours?: boolean
+  ) => Promise<void>;
   closePrintModal: () => void;
 }
 
@@ -257,7 +263,12 @@ export const useContourStore = create<ContourState>((set, get) => ({
     });
   },
 
-  openPrintModalForParcel: async (parcel, defaultHuso, defaultDirection) => {
+  openOfficialPlanModal: async (
+    parcel,
+    defaultHuso,
+    defaultDirection,
+    autoComputeContours = false
+  ) => {
     const pid = parcel.id;
     const state = get();
     const existing = state.contoursByParcelId[pid];
@@ -270,17 +281,21 @@ export const useContourStore = create<ContourState>((set, get) => ({
       !existing.gridSpacingMeters ||
       !(existing.areaM2 > 0);
 
-    if (isStaleFlatCache || cachedFp !== currentFp) {
-      const data = await get().recalculateParcelContours(parcel, defaultHuso, defaultDirection);
-      if (!data) return;
-    } else if (!state.visibleParcelIds.includes(pid)) {
+    // Abrir inmediatamente el modal único oficial (con o sin curvas)
+    set({ printModalParcelId: pid, focusedParcelId: pid });
+
+    if (autoComputeContours && (isStaleFlatCache || cachedFp !== currentFp)) {
+      await get().recalculateParcelContours(parcel, defaultHuso, defaultDirection);
+    } else if (!isStaleFlatCache && cachedFp === currentFp && autoComputeContours && !state.visibleParcelIds.includes(pid)) {
       set((s) => ({
         visibleParcelIds: [...s.visibleParcelIds, pid],
         focusedParcelId: pid,
       }));
     }
+  },
 
-    set({ printModalParcelId: pid, focusedParcelId: pid });
+  openPrintModalForParcel: async (parcel, defaultHuso, defaultDirection) => {
+    await get().openOfficialPlanModal(parcel, defaultHuso, defaultDirection, true);
   },
 
   closePrintModal: () => set({ printModalParcelId: null }),

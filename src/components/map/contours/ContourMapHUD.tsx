@@ -8,11 +8,12 @@
 import React from 'react';
 import { Mountain, Printer, Download, X, Layers, Grid3x3, Crosshair, AlertTriangle, Tag } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useAppStore } from '@/lib/store';
+import { useAppStore, type Parcel } from '@/lib/store';
 import { hasPermission, isDemoRole } from '@/src/types/auth';
 import { toast } from 'react-hot-toast';
 import { useContourStore } from './useContourStore';
-import { exportParcelContoursDXF, SATELLITE_DEM_WARNING } from './contourEngine';
+import { SATELLITE_DEM_WARNING } from './contourEngine';
+import { exportParcelToDXF } from '@/lib/exportDxf';
 
 const INTERVAL_OPTIONS = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10] as const;
 
@@ -71,18 +72,39 @@ export default function ContourMapHUD() {
     if (parcel) {
       openPrintModalForParcel(parcel, huso);
     } else {
-      // Ya está en contoursByParcelId: basta asignar printModalParcelId directamente
       useContourStore.setState({ printModalParcelId: activePid });
     }
   };
 
-  const handleDxfClick = () => {
+  const handleDxfClick = async () => {
     if (!canExportDxf || isDemo) {
-      toast.error('Exportación DXF 3D de curvas bloqueada para su rol.');
+      toast.error('Exportación DXF oficial bloqueada para su rol.');
       return;
     }
-    exportParcelContoursDXF(data);
-    toast.success(`DXF 3D con curvas exportado (${data.contours.length} polilíneas)`);
+    const existingParcel = savedParcels.find((p) => p.id === activePid);
+    const parcelForExport: Parcel =
+      existingParcel ?? {
+        id: data.parcelId,
+        nombre: data.parcelName,
+        fecha: new Date(data.computedAt).toLocaleDateString('es-VE'),
+        area: data.areaM2,
+        perim: data.perimeterM,
+        ha: data.areaHa,
+        geometryType: 'cerrada',
+        puntos: data.vertices.map((v) => ({
+          id: v.id,
+          ok: true,
+          direction: data.direction as any,
+          input: { este: v.este, norte: v.norte, alt: v.z },
+          result: { este: v.este, norte: v.norte, lat: v.lat, lng: v.lng, cota_regven: v.z, huso: data.huso },
+        })),
+      };
+
+    await exportParcelToDXF(parcelForExport, data, {
+      includeContours: true,
+      showDemGrid: showMapGrid,
+      showIntermediateLabels,
+    });
   };
 
   const activeGridMeters = data.gridSpacingMeters ?? spacingE;
@@ -129,19 +151,19 @@ export default function ContourMapHUD() {
           <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={handlePrintClick}
-              title="Abrir vista previa e imprimir Plano de Curvas de Nivel"
+              title="Abrir Plano Único Oficial Venezolano A3 (PDF / Impresión / DXF)"
               className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-extrabold uppercase tracking-wider transition-colors shadow-md shadow-amber-500/20"
             >
               <Printer className="w-3 h-3" />
-              <span className="hidden sm:inline">Plano</span>
+              <span className="hidden sm:inline">Plano Oficial</span>
             </button>
             <button
               onClick={handleDxfClick}
-              title="Descargar curvas de nivel 3D en formato DXF"
+              title="Descargar Plano Oficial DXF unificado (Mensura + Curvas de Nivel)"
               className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-white/10 text-[10px] font-bold uppercase transition-colors"
             >
               <Download className="w-3 h-3" />
-              <span className="hidden sm:inline">DXF</span>
+              <span className="hidden sm:inline">DXF Oficial</span>
             </button>
             <button
               onClick={() => hideParcelContours(activePid)}

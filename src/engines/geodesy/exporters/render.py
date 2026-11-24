@@ -32,6 +32,7 @@ from cad_geometry import (
     draw_segment_ticks,
     draw_utm_grid_left_top,
     render_adaptive_construction_tables,
+    render_contours_in_map_box,
     unify_parcels_exterior,
 )
 
@@ -243,34 +244,31 @@ def draw_hatch_polygon(msp, doc, pts, layer='HATCH', color=253):
 
 def draw_scale_bar(msp, x, y, print_scale, width, text_h, layer='COTAS', style='GEO_ARIAL'):
     """
-    Paso 7 — Dibuja una barra de escala gráfica como entidades DXF.
-    La barra representa distancias reales en papel en la escala del plano.
+    Dibuja una barra de escala gráfica proporcional en unidades del modelo (1 unidad DXF = 1 m).
     x, y: posición inferior izquierda de la barra.
-    print_scale: escala del plano (e.g. 500 para 1:500).
-    width: ancho total disponible para la barra en unidades del plano.
+    width: ancho máximo disponible para la barra en metros reales del terreno.
     """
-    # Determinar el valor representativo: ~25% del ancho disponible en metros reales
-    bar_real_m = width / print_scale * 0.25  # metros reales
-    # Redondear a valor "bonito"
-    magnitude = 10.0 ** math.floor(math.log10(max(bar_real_m, 1.0)))
-    nice = bar_real_m / magnitude
-    if nice <= 1.0: nice_val = 1.0 * magnitude
-    elif nice <= 2.0: nice_val = 2.0 * magnitude
-    elif nice <= 5.0: nice_val = 5.0 * magnitude
-    else: nice_val = 10.0 * magnitude
+    if width <= 0:
+        return
+    target_m = width * 0.68
+    magnitude = 10.0 ** math.floor(math.log10(max(target_m, 0.1)))
+    norm = target_m / magnitude
+    if norm >= 5.0:
+        nice_val = 5.0 * magnitude
+    elif norm >= 2.0:
+        nice_val = 2.0 * magnitude
+    else:
+        nice_val = 1.0 * magnitude
 
-    bar_len = nice_val * print_scale  # longitud en unidades del plano
-    seg_len = bar_len / 5.0            # 5 segmentos
-    tick_h = text_h * 0.8
+    bar_len = nice_val
+    seg_len = bar_len / 4.0
+    tick_h = text_h * 0.75
 
-    # Dibujar la línea base de la barra
     msp.add_line((x, y), (x + bar_len, y), dxfattribs={'layer': layer})
-    # Dibujar ticks verticales en cada segmento
-    for i in range(6):
+    for i in range(5):
         tx = x + i * seg_len
         msp.add_line((tx, y), (tx, y + tick_h), dxfattribs={'layer': layer})
-    # Alternar relleno oscuro/claro (bloques alternados)
-    for i in range(5):
+    for i in range(4):
         if i % 2 == 0:
             rect_pts = [
                 (x + i * seg_len, y),
@@ -278,17 +276,15 @@ def draw_scale_bar(msp, x, y, print_scale, width, text_h, layer='COTAS', style='
                 (x + (i + 1) * seg_len, y + tick_h),
                 (x + i * seg_len, y + tick_h),
             ]
-            msp.add_lwpolyline(rect_pts, close=True, dxfattribs={'layer': layer, 'const_width': 0})
-    # Etiquetas
-    draw_left_text(msp, x, y + tick_h * 1.3, text_h * 0.75, '0', layer=layer, style=style)
-    draw_centered_text(msp, x + bar_len / 2.0, y + tick_h * 1.3, text_h * 0.75,
-                       f"{int(nice_val / 2)} m", layer=layer, style=style)
-    draw_left_text(msp, x + bar_len - text_h * 0.5, y + tick_h * 1.3, text_h * 0.75,
-                   f"{int(nice_val)} m", layer=layer, style=style)
-    # Etiqueta de escala debajo
-    draw_centered_text(msp, x + bar_len / 2.0, y - text_h * 1.5, text_h,
-                       f"ESCALA 1:{int(print_scale)}", layer=layer, style=style)
-    print(f"[DXF] Barra de escala 1:{int(print_scale)} dibujada (len={bar_len:.1f}, rep={int(nice_val)}m)", file=sys.stderr)
+            msp.add_lwpolyline(rect_pts, close=True, dxfattribs={'layer': layer, 'const_width': text_h * 0.08})
+
+    mid_txt = f"{nice_val * 0.5:.1f}m" if (nice_val * 0.5) % 1 else f"{int(nice_val * 0.5)}m"
+    end_txt = f"{nice_val:.1f}m" if nice_val % 1 else f"{int(nice_val)}m"
+    draw_left_text(msp, x, y + tick_h * 1.35, text_h * 0.65, '0', layer=layer, style=style)
+    draw_centered_text(msp, x + bar_len * 0.5, y + tick_h * 1.7, text_h * 0.65, mid_txt, layer=layer, style=style)
+    draw_centered_text(msp, x + bar_len, y + tick_h * 1.7, text_h * 0.65, end_txt, layer=layer, style=style)
+    draw_centered_text(msp, x + bar_len * 0.5, y - text_h * 1.15, text_h * 0.72,
+                       f"ESCALA GRAFICA 1:{int(print_scale)}", layer=layer, style=style)
 
 
 def draw_membrete(msp, box_x, box_y, box_w, box_h, metadata, print_scale, fecha,
@@ -490,6 +486,29 @@ def main():
             'geometryType': payload.get('geometryType') or metadata.get('geometryType', 'cerrada')
         }]
 
+    contours_data = payload.get('contoursData')
+    has_contours = isinstance(contours_data, dict) and bool(contours_data.get('contours'))
+
+    vertices_z_by_idx = []
+    vertices_z_by_id = {}
+    if has_contours and isinstance(contours_data.get('verticesZ'), list):
+        for vz_item in contours_data.get('verticesZ'):
+            if isinstance(vz_item, dict):
+                z_v = vz_item.get('z')
+                vid = clean_text(vz_item.get('id') or '', '')
+                try:
+                    zf = float(z_v) if z_v is not None else None
+                except Exception:
+                    zf = None
+                vertices_z_by_idx.append(zf)
+                if vid and zf is not None:
+                    vertices_z_by_id[vid] = zf
+            else:
+                try:
+                    vertices_z_by_idx.append(float(vz_item))
+                except Exception:
+                    vertices_z_by_idx.append(None)
+
     processed_parcels = []
     all_raw_xs, all_raw_ys = [], []
 
@@ -504,11 +523,40 @@ def main():
             pt_id = pt.get('id', str(index + 1))
             if not pt_id:
                 pt_id = str(index + 1)
+            clean_id = clean_text(pt_id, str(index + 1))
+            z_val = None
+            for kz in ('cota_regven', 'z', 'h', 'alt'):
+                if pt.get(kz) is not None:
+                    try:
+                        zv = float(pt.get(kz))
+                        if math.isfinite(zv):
+                            z_val = zv
+                            break
+                    except Exception:
+                        pass
+            if z_val is None and isinstance(pt.get('result'), dict):
+                res_d = pt['result']
+                for kz in ('cota_regven', 'h', 'alt', 'z'):
+                    if res_d.get(kz) is not None:
+                        try:
+                            zv = float(res_d.get(kz))
+                            if math.isfinite(zv):
+                                z_val = zv
+                                break
+                        except Exception:
+                            pass
+            if z_val is None and has_contours and p_idx == 0:
+                if clean_id in vertices_z_by_id:
+                    z_val = vertices_z_by_id[clean_id]
+                elif index < len(vertices_z_by_idx):
+                    z_val = vertices_z_by_idx[index]
+
             if x_val is not None and y_val is not None:
                 parsed_pts.append({
                     'x': x_val,
                     'y': y_val,
-                    'id': clean_text(pt_id, str(index + 1))
+                    'z': z_val,
+                    'id': clean_id
                 })
         
         if not parsed_pts:
@@ -523,6 +571,7 @@ def main():
             {
                 'x': (p['x'] + dxf_offset_x) * dxf_scale_factor,
                 'y': (p['y'] + dxf_offset_y) * dxf_scale_factor,
+                'z': p.get('z'),
                 'id': p['id']
             } for p in parsed_pts
         ]
@@ -701,9 +750,18 @@ def main():
     # Grid Labels (Coordenadas UTM únicamente en el lado SUPERIOR e IZQUIERDO)
     draw_utm_grid_left_top(
         msp, plot_box, grid_step, text_h, text_style=text_style,
-        min_left_y=plot_box['y'] + margin + text_h * 9.2,
+        min_left_y=plot_box['y'] + margin + text_h * (12.2 if has_contours else 9.2),
         max_left_y=plot_box['y'] + plot_box['h'] - text_h * 1.6
     )
+
+    if has_contours:
+        render_contours_in_map_box(
+            msp, doc, contours_data, plot_box, print_scale, text_h,
+            text_style=text_style,
+            dxf_scale_factor=dxf_scale_factor,
+            dxf_offset_x=dxf_offset_x,
+            dxf_offset_y=dxf_offset_y,
+        )
 
     # ================= 4. POLYGONS & ANNOTATIONS FOR ALL PARCELS ================= //
     placed_boxes = []
@@ -750,16 +808,21 @@ def main():
         extract_coords_fn=_extract_coords,
         metadata=table_meta,
         project_name=project_name,
+        contours_data=contours_data if has_contours else None,
     )
 
     # ================= 6. TITLE BLOCK COLUMN (SIDE) ================= //
     s_unit = inner['h'] / 75.0
     s_y = inner['y'] + inner['h']
 
-    # 6.1 Mensura Header (6 units)
+    # 6.1 Mensura / Planialtimetric Header (6 units)
     s_y -= s_unit * 6.0
     draw_line(msp, side_box['x'], s_y, side_box['x'] + side_box['w'], s_y, layer='MARCO')
-    draw_centered_text(msp, side_box['x'] + side_box['w'] / 2.0, s_y + s_unit * 4.5, text_h * 1.0, 'MENSURA DE TERRENO', layer='TEXTOS', style=text_style)
+    header_title = 'PLANO TOPOGRAFICO Y DE MENSURA' if has_contours else 'MENSURA DE TERRENO'
+    draw_centered_text(
+        msp, side_box['x'] + side_box['w'] / 2.0, s_y + s_unit * 4.5,
+        text_h * (0.78 if has_contours else 1.0), header_title, layer='TEXTOS', style=text_style
+    )
     draw_left_text(msp, side_box['x'] + side_box['w'] * 0.1, s_y + s_unit * 3.0, text_h * 0.8, f"ESTADO: {estado}", layer='TEXTOS', style=text_style)
     draw_left_text(msp, side_box['x'] + side_box['w'] * 0.1, s_y + s_unit * 1.8, text_h * 0.8, f"MUNICIPIO: {municipio}", layer='TEXTOS', style=text_style)
     draw_left_text(msp, side_box['x'] + side_box['w'] * 0.1, s_y + s_unit * 0.6, text_h * 0.8, f"PARROQUIA: {parroquia}", layer='TEXTOS', style=text_style)
@@ -798,7 +861,10 @@ def main():
     draw_line(msp, side_box['x'], s_y, side_box['x'] + side_box['w'], s_y, layer='MARCO')
     draw_left_text(msp, side_box['x'] + margin * 0.5, s_y + s_unit * 10.5, text_h * 0.8, 'ANTECEDENTES Y OBSERVACIONES', layer='TEXTOS', style=text_style)
     
-    obs_words = observaciones.split()
+    obs_text_src = observaciones
+    if not obs_text_src and has_contours:
+        obs_text_src = 'LEVANTAMIENTO PLANIALTIMETRICO REGVEN-SIRGAS UTM. DATUM VERTICAL: MAREOGRAFO DE LA GUAIRA. LEY DE GEOGRAFIA, CARTOGRAFIA Y CATASTRO NACIONAL (G.O. 37.002).'
+    obs_words = obs_text_src.split()
     obs_lines = []
     curr_line = ""
     for w in obs_words:
@@ -963,8 +1029,8 @@ def main():
 
     # ================= 7. PROJECT INFO BOX (CUADRO DE DATOS Y ESCALA) ================= //
     # Ubicado estrictamente en la esquina inferior izquierda del viewport del mapa (map_box)
-    box_w = min(map_box['w'] * 0.52, text_h * 25.0)
-    box_h = text_h * 8.5
+    box_w = min(map_box['w'] * 0.56, text_h * 27.0)
+    box_h = text_h * (11.2 if has_contours else 8.5)
     
     box_x = map_box['x'] + margin
     box_y = map_box['y'] + margin
@@ -984,7 +1050,7 @@ def main():
     else:
         area_total_str = f"AREA TOTAL: {format_number(total_area_mensura, 2)} m2"
 
-    line_h = text_h * 1.5
+    line_h = text_h * 1.45
     start_y = box_y + box_h - line_h
     
     draw_left_text(msp, box_x + text_h * 0.6, start_y, text_h * 0.85, f"PROYECTO: {project_name[:28]}", layer='TEXTOS', style=text_style)
@@ -992,6 +1058,21 @@ def main():
     draw_left_text(msp, box_x + text_h * 0.6, start_y - line_h * 2, text_h * 0.80, f"PERIMETRO TOTAL: {format_number(total_perim, 2)} m", layer='TEXTOS', style=text_style)
     draw_left_text(msp, box_x + text_h * 0.6, start_y - line_h * 3, text_h * 0.85, f"ESCALA DE DIBUJO: 1:{int(print_scale)}", layer='TEXTOS', style=text_style)
     draw_left_text(msp, box_x + text_h * 0.6, start_y - line_h * 4, text_h * 0.70, f"DATUM: {datum_str}", layer='TEXTOS', style=text_style)
+    if has_contours:
+        c_iv = contours_data.get('interval', 1)
+        c_miv = contours_data.get('masterInterval', 5)
+        c_gm = contours_data.get('gridSpacingMeters', 10)
+        draw_left_text(msp, box_x + text_h * 0.6, start_y - line_h * 5, text_h * 0.68, f"CURVAS: dZ={c_iv}m (MAEST {c_miv}m) | MALLA {c_gm}x{c_gm}m", layer='TEXTOS', style=text_style)
+        draw_left_text(msp, box_x + text_h * 0.6, start_y - line_h * 6, text_h * 0.66, "DATUM VERT.: MAREOGRAFO LA GUAIRA (m.s.n.m.)", layer='TEXTOS', style=text_style)
+
+    # Barra de Escala Gráfica a la derecha del cuadro de datos en la esquina inferior de map_box
+    bar_x = box_x + box_w + text_h * 1.6
+    bar_avail_w = (map_box['x'] + map_box['w'] - margin) - bar_x
+    if bar_avail_w > text_h * 12.0:
+        draw_scale_bar(
+            msp, bar_x, box_y + text_h * 2.1, print_scale, bar_avail_w, text_h,
+            layer='COTAS', style=text_style
+        )
 
 
     

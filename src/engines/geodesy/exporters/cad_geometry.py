@@ -1,4 +1,6 @@
 import math
+import re
+import unicodedata
 
 try:
     from ezdxf.enums import TextEntityAlignment
@@ -8,6 +10,15 @@ except Exception:
     class TextEntityAlignment:
         LEFT = _const.TEXT_ALIGNMENT_LEFT
         MIDDLE_CENTER = _const.TEXT_ALIGNMENT_MIDDLE_CENTER
+
+
+def _ascii_clean(value, fallback=''):
+    if value is None:
+        return fallback
+    nfkd = unicodedata.normalize('NFKD', str(value))
+    ascii_only = nfkd.encode('ASCII', 'ignore').decode('ASCII')
+    cleaned = re.sub(r'[^a-zA-Z0-9.,:/()#°\'" \-+=%]', '', ascii_only)
+    return cleaned.strip() or fallback
 
 
 def _draw_line(msp, x1, y1, x2, y2, layer='MARCO', linetype=None):
@@ -1014,6 +1025,8 @@ def _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn):
             lado_str = p1_lbl
             rumbo_str = '-'
             dist_str = '-'
+        z_val = p1.get('z')
+        z_str = format_number_fn(z_val, 2) if (z_val is not None and math.isfinite(float(z_val))) else '-'
         rows.append(
             {
                 'lado': lado_str,
@@ -1022,6 +1035,7 @@ def _build_unified_rows_for_parcel(p_item, get_bearing_fn, format_number_fn):
                 'vert': p1_lbl,
                 'norte': format_number_fn(p1['y'], 3),
                 'este': format_number_fn(p1['x'], 3),
+                'z': z_str,
             }
         )
     return rows
@@ -1063,8 +1077,9 @@ def _draw_compact_balance_and_pa(msp, box_x, top_y, box_w, hdr_h, row_h, title,
 
 
 def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, title, rows,
-                                     frame_thickness, text_h, text_style, footer_note=None):
-    """Dibuja un Cuadro de Construcción Unificado de 6 columnas (EST-PV | RUMBO | DIST | VERT | NORTE | ESTE)."""
+                                     frame_thickness, text_h, text_style, footer_note=None,
+                                     include_z=False):
+    """Dibuja un Cuadro de Construcción Unificado (6 cols o 7 cols con Cota Z)."""
     colhdr_h = hdr_h * 0.85
     has_footer = bool(footer_note)
     total_h = hdr_h + colhdr_h + len(rows) * row_h + (row_h if has_footer else 0.0)
@@ -1078,9 +1093,13 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
         min(text_h * 0.85, hdr_h * 0.50), box_w, title, layer='TEXTOS', style=text_style
     )
 
-    col_fracs = [0.12, 0.22, 0.11, 0.08, 0.235, 0.235]
+    if include_z:
+        col_fracs = [0.11, 0.20, 0.10, 0.07, 0.21, 0.21, 0.10]
+        col_labels = ['EST-PV', 'RUMBO', 'DIST(m)', 'VERT', 'NORTE(m)', 'ESTE(m)', 'Z(m)']
+    else:
+        col_fracs = [0.12, 0.22, 0.11, 0.08, 0.235, 0.235]
+        col_labels = ['EST-PV', 'RUMBO', 'DIST(m)', 'VERT', 'NORTE(m)', 'ESTE(m)']
     col_widths = [box_w * f for f in col_fracs]
-    col_labels = ['EST-PV', 'RUMBO', 'DIST(m)', 'VERT', 'NORTE(m)', 'ESTE(m)']
     data_bottom_y = top_y - hdr_h - colhdr_h - len(rows) * row_h
 
     acc_x = box_x
@@ -1104,6 +1123,8 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
         if r_idx > 0:
             _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
         vals = [row['lado'], row['rumbo'], row['dist'], row['vert'], row['norte'], row['este']]
+        if include_z:
+            vals.append(row.get('z', '-'))
         for c_idx, val in enumerate(vals):
             cell_txt_h = val_h_coord if c_idx >= 3 else val_h_base
             _draw_cell_text_fit(msp, col_centers[c_idx], y_mid, cell_txt_h, col_widths[c_idx], val, layer='TEXTOS', style=text_style)
@@ -1120,7 +1141,8 @@ def _draw_unified_construction_block(msp, box_x, top_y, box_w, hdr_h, row_h, tit
 
 def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table_unit,
                                 frame_thickness, text_h, text_style, metadata,
-                                get_bearing_fn, format_number_fn, clean_text_fn, extract_coords_fn):
+                                get_bearing_fn, format_number_fn, clean_text_fn, extract_coords_fn,
+                                include_z=False):
     """Nivel 1 (N <= 15): Formato clásico de 4 tablas separadas, encuadrado exactamente dentro de avail_h."""
     p_pts = p_item['pts']
     p_geom_type = p_item['geometryType']
@@ -1242,36 +1264,287 @@ def _draw_level1_classic_tables(msp, p_item, box_x, top_y, avail_h, box_w, table
         _draw_cell_text_fit(msp, box_x + r_c_lado + r_c_rumbo + r_c_dist * 0.5, y_mid, rb_txt_h, r_c_dist, format_number_fn(edge_dist, 2), layer='TEXTOS', style=text_style)
     t_y -= rb_h + gap_h
 
-    # 4. Tabla de Coordenadas UTM
+    # 4. Tabla de Coordenadas UTM (con Cota Z si incluye altimetría)
     coo_hdr_h = hdr_h
     coo_colhdr_h = hdr_h * 0.85
     coo_h = coo_hdr_h + coo_colhdr_h + n_pts * row_h
     _draw_rect(msp, box_x, t_y - coo_h, box_w, coo_h, thickness=frame_thickness * 0.5, layer='MARCO')
     _draw_line(msp, box_x, t_y - coo_hdr_h, box_x + box_w, t_y - coo_hdr_h, layer='MARCO')
     _draw_line(msp, box_x, t_y - coo_hdr_h - coo_colhdr_h, box_x + box_w, t_y - coo_hdr_h - coo_colhdr_h, layer='MARCO')
-    _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - coo_hdr_h * 0.5, min(text_h * 0.85, coo_hdr_h * 0.50), box_w, 'COORDENADAS (U.T.M)', layer='TEXTOS', style=text_style)
-
-    c_c1 = box_w * 0.16
-    c_c2 = box_w * 0.42
-    c_c3 = box_w * 0.42
-    _draw_line(msp, box_x + c_c1, t_y - coo_hdr_h, box_x + c_c1, t_y - coo_h, layer='MARCO')
-    _draw_line(msp, box_x + c_c1 + c_c2, t_y - coo_hdr_h, box_x + c_c1 + c_c2, t_y - coo_h, layer='MARCO')
+    coo_title = 'COORDENADAS (U.T.M) Y COTAS Z' if include_z else 'COORDENADAS (U.T.M)'
+    _draw_cell_text_fit(msp, box_x + box_w * 0.5, t_y - coo_hdr_h * 0.5, min(text_h * 0.85, coo_hdr_h * 0.50), box_w, coo_title, layer='TEXTOS', style=text_style)
 
     coo_col_y = t_y - coo_hdr_h - coo_colhdr_h * 0.5
     coo_ch_h = min(text_h * 0.76, coo_colhdr_h * 0.48)
-    _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, coo_col_y, coo_ch_h, c_c1, 'PUNTO', layer='TEXTOS', style=text_style)
-    _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, coo_col_y, coo_ch_h, c_c2, 'NORTE', layer='TEXTOS', style=text_style)
-    _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, coo_col_y, coo_ch_h, c_c3, 'ESTE', layer='TEXTOS', style=text_style)
-
     coord_txt_h = min(text_h * 1.02, row_h * 0.74)
-    for idx, pt in enumerate(p_pts):
-        y_top = t_y - coo_hdr_h - coo_colhdr_h - idx * row_h
-        y_center = y_top - row_h * 0.5
-        if idx > 0:
-            _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
-        _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, y_center, coord_txt_h, c_c1, normalize_vertex_id(pt.get('id'), idx + 1), layer='TEXTOS', style=text_style)
-        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, y_center, coord_txt_h, c_c2, format_number_fn(pt['y'], 3), layer='TEXTOS', style=text_style)
-        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, y_center, coord_txt_h, c_c3, format_number_fn(pt['x'], 3), layer='TEXTOS', style=text_style)
+
+    if include_z:
+        c_c1 = box_w * 0.13
+        c_c2 = box_w * 0.35
+        c_c3 = box_w * 0.35
+        c_c4 = box_w - c_c1 - c_c2 - c_c3
+        _draw_line(msp, box_x + c_c1, t_y - coo_hdr_h, box_x + c_c1, t_y - coo_h, layer='MARCO')
+        _draw_line(msp, box_x + c_c1 + c_c2, t_y - coo_hdr_h, box_x + c_c1 + c_c2, t_y - coo_h, layer='MARCO')
+        _draw_line(msp, box_x + c_c1 + c_c2 + c_c3, t_y - coo_hdr_h, box_x + c_c1 + c_c2 + c_c3, t_y - coo_h, layer='MARCO')
+        _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, coo_col_y, coo_ch_h, c_c1, 'PUNTO', layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, coo_col_y, coo_ch_h, c_c2, 'NORTE', layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, coo_col_y, coo_ch_h, c_c3, 'ESTE', layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 + c_c4 * 0.5, coo_col_y, coo_ch_h, c_c4, 'Z (m)', layer='TEXTOS', style=text_style)
+
+        for idx, pt in enumerate(p_pts):
+            y_top = t_y - coo_hdr_h - coo_colhdr_h - idx * row_h
+            y_center = y_top - row_h * 0.5
+            if idx > 0:
+                _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
+            z_val = pt.get('z')
+            z_txt = format_number_fn(z_val, 2) if (z_val is not None and math.isfinite(float(z_val))) else '-'
+            _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, y_center, coord_txt_h, c_c1, normalize_vertex_id(pt.get('id'), idx + 1), layer='TEXTOS', style=text_style)
+            _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, y_center, coord_txt_h, c_c2, format_number_fn(pt['y'], 3), layer='TEXTOS', style=text_style)
+            _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, y_center, coord_txt_h, c_c3, format_number_fn(pt['x'], 3), layer='TEXTOS', style=text_style)
+            _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 + c_c4 * 0.5, y_center, coord_txt_h, c_c4, z_txt, layer='TEXTOS', style=text_style)
+    else:
+        c_c1 = box_w * 0.16
+        c_c2 = box_w * 0.42
+        c_c3 = box_w * 0.42
+        _draw_line(msp, box_x + c_c1, t_y - coo_hdr_h, box_x + c_c1, t_y - coo_h, layer='MARCO')
+        _draw_line(msp, box_x + c_c1 + c_c2, t_y - coo_hdr_h, box_x + c_c1 + c_c2, t_y - coo_h, layer='MARCO')
+        _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, coo_col_y, coo_ch_h, c_c1, 'PUNTO', layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, coo_col_y, coo_ch_h, c_c2, 'NORTE', layer='TEXTOS', style=text_style)
+        _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, coo_col_y, coo_ch_h, c_c3, 'ESTE', layer='TEXTOS', style=text_style)
+
+        for idx, pt in enumerate(p_pts):
+            y_top = t_y - coo_hdr_h - coo_colhdr_h - idx * row_h
+            y_center = y_top - row_h * 0.5
+            if idx > 0:
+                _draw_line(msp, box_x, y_top, box_x + box_w, y_top, layer='MARCO')
+            _draw_cell_text_fit(msp, box_x + c_c1 * 0.5, y_center, coord_txt_h, c_c1, normalize_vertex_id(pt.get('id'), idx + 1), layer='TEXTOS', style=text_style)
+            _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 * 0.5, y_center, coord_txt_h, c_c2, format_number_fn(pt['y'], 3), layer='TEXTOS', style=text_style)
+            _draw_cell_text_fit(msp, box_x + c_c1 + c_c2 + c_c3 * 0.5, y_center, coord_txt_h, c_c3, format_number_fn(pt['x'], 3), layer='TEXTOS', style=text_style)
+
+
+def render_contours_in_map_box(
+    msp,
+    doc,
+    contours_data,
+    plot_box,
+    print_scale,
+    text_h,
+    text_style='GEO_ARIAL',
+    dxf_scale_factor=1.0,
+    dxf_offset_x=0.0,
+    dxf_offset_y=0.0,
+):
+    """Dibuja curvas de nivel (maestras/intermedias), malla IGVSB, nodos Z, cotas sobre curva y extremos dentro del plano oficial."""
+    if not isinstance(contours_data, dict) or not contours_data.get('contours'):
+        return
+
+    contour_layers = {
+        'CURVAS_MAESTRAS': {'color': 30, 'lineweight': 35},
+        'CURVAS_INTERMEDIAS': {'color': 8, 'lineweight': 15},
+        'TOPO_COTAS_CURVAS': {'color': 30},
+        'TOPO_COTAS_CURVAS_INT': {'color': 32},
+        'MALLA_ALTIMETRICA': {'color': 9},
+        'NODOS_COTA_Z': {'color': 3},
+        'COTAS_EXTREMAS': {'color': 4},
+    }
+    for lname, attrs in contour_layers.items():
+        if lname not in doc.layers:
+            l_attrs = {'color': attrs['color']}
+            if 'lineweight' in attrs:
+                l_attrs['lineweight'] = attrs['lineweight']
+            doc.layers.new(lname, dxfattribs=l_attrs)
+
+    if 'MALLA_ALTIMETRICA' in doc.layers and 'GRILLA_PUNTEADA' in doc.linetypes:
+        try:
+            doc.layers.get('MALLA_ALTIMETRICA').dxf.linetype = 'GRILLA_PUNTEADA'
+        except Exception:
+            pass
+
+    px_min = plot_box['x']
+    px_max = plot_box['x'] + plot_box['w']
+    py_min = plot_box['y']
+    py_max = plot_box['y'] + plot_box['h']
+
+    def _tx(e, n):
+        return (
+            (float(e) + dxf_offset_x) * dxf_scale_factor,
+            (float(n) + dxf_offset_y) * dxf_scale_factor,
+        )
+
+    def _in_plot(x, y):
+        return (px_min <= x <= px_max) and (py_min <= y <= py_max)
+
+    # 1. Malla Altimétrica IGVSB + Nodos Z diezmados
+    if contours_data.get('showDemGrid', True):
+        for gl in contours_data.get('clippedGridLinesUTM') or []:
+            raw_pts = gl.get('coordsUTM') or []
+            pts = [_tx(p[0], p[1]) for p in raw_pts if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if len(pts) >= 2:
+                msp.add_lwpolyline(pts, close=False, dxfattribs={'layer': 'MALLA_ALTIMETRICA'})
+
+        nodes = contours_data.get('interiorGridNodes') or []
+        stride = max(1, math.ceil(math.sqrt(max(1, len(nodes)) / 80.0)))
+        cross = text_h * 0.22
+        node_h = text_h * 0.45
+        for gn in nodes:
+            if not isinstance(gn, dict):
+                continue
+            gx, gy = _tx(gn.get('este', 0), gn.get('norte', 0))
+            if not _in_plot(gx, gy):
+                continue
+            _draw_line(msp, gx - cross, gy, gx + cross, gy, layer='NODOS_COTA_Z')
+            _draw_line(msp, gx, gy - cross, gx, gy + cross, layer='NODOS_COTA_Z')
+            col = int(gn.get('col', 0))
+            row = int(gn.get('row', 0))
+            if (col % stride == 0) and (row % stride == 0):
+                z_val = gn.get('z')
+                if z_val is not None and math.isfinite(float(z_val)):
+                    _draw_left_text(
+                        msp, gx + cross * 1.1, gy + cross * 0.5,
+                        node_h, f"{float(z_val):.1f}", layer='NODOS_COTA_Z', style=text_style
+                    )
+
+    # 2. Polilíneas de Curvas de Nivel (Maestras e Intermedias) y Etiquetas Cartográficas
+    master_w = print_scale * 0.00042
+    inter_w = print_scale * 0.00016
+    show_inter_labels = bool(contours_data.get('showIntermediateLabels', True))
+
+    for c in contours_data.get('contours') or []:
+        if not isinstance(c, dict):
+            continue
+        raw_coords = c.get('coordsUTM') or []
+        pts = [_tx(p[0], p[1]) for p in raw_coords if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(pts) < 2:
+            continue
+        is_master = bool(c.get('isMaster'))
+        elev = float(c.get('elevation', 0.0))
+        if not math.isfinite(elev):
+            elev = 0.0
+        layer = 'CURVAS_MAESTRAS' if is_master else 'CURVAS_INTERMEDIAS'
+        cw = master_w if is_master else inter_w
+        msp.add_lwpolyline(
+            pts,
+            close=False,
+            dxfattribs={'layer': layer, 'elevation': elev, 'const_width': cw},
+        )
+
+        if is_master or show_inter_labels:
+            labels = c.get('labels') or []
+            if not labels and is_master and c.get('labelPointUTM'):
+                labels = [
+                    {
+                        'pointUTM': c.get('labelPointUTM'),
+                        'angleDeg': math.degrees(float(c.get('labelAngleRad') or 0.0)),
+                        'formattedText': f"{elev:.1f}",
+                    }
+                ]
+            lbl_layer = 'TOPO_COTAS_CURVAS' if is_master else 'TOPO_COTAS_CURVAS_INT'
+            lbl_h = text_h * (0.72 if is_master else 0.56)
+            for lbl in labels:
+                lp = lbl.get('pointUTM')
+                if not isinstance(lp, (list, tuple)) or len(lp) < 2:
+                    continue
+                lx, ly = _tx(lp[0], lp[1])
+                if not _in_plot(lx, ly):
+                    continue
+                raw_txt = str(lbl.get('formattedText') or f"{elev:.1f}")
+                lbl_txt = _ascii_clean(raw_txt, f"{elev:.1f}")
+                if is_master and not lbl_txt.lower().endswith('m'):
+                    lbl_txt = f"{lbl_txt}m"
+                rot = float(lbl.get('angleDeg') or 0.0)
+                if rot > 90.0:
+                    rot -= 180.0
+                elif rot < -90.0:
+                    rot += 180.0
+                t = msp.add_text(
+                    lbl_txt,
+                    dxfattribs={
+                        'layer': lbl_layer,
+                        'height': lbl_h,
+                        'rotation': rot,
+                        'style': text_style,
+                    },
+                )
+                t.set_placement((lx, ly), align=TextEntityAlignment.MIDDLE_CENTER)
+
+    # 3. Cotas Extremas (Zmin / Zmax)
+    ext_specs = [
+        ('minPointUTM', 'Zmin'),
+        ('maxPointUTM', 'Zmax'),
+    ]
+    for key, tag in ext_specs:
+        pt = contours_data.get(key)
+        if not isinstance(pt, dict):
+            continue
+        if pt.get('este') is None or pt.get('norte') is None or pt.get('z') is None:
+            continue
+        ex, ey = _tx(pt['este'], pt['norte'])
+        if not _in_plot(ex, ey):
+            continue
+        ez = float(pt['z'])
+        _draw_circle(msp, ex, ey, text_h * 0.35, layer='COTAS_EXTREMAS')
+        _draw_left_text(
+            msp, ex + text_h * 0.5, ey - text_h * 0.25,
+            text_h * 0.58, f"{tag} {ez:.2f}m", layer='COTAS_EXTREMAS', style=text_style
+        )
+
+
+def draw_altimetric_summary_block(
+    msp, box_x, top_y, box_w, hdr_h, row_h, contours_data,
+    frame_thickness, text_h, text_style, format_number_fn
+):
+    """Dibuja cuadro compacto Resumen Altimétrico y Curvas (IGVSB) al pie del cuerpo central."""
+    total_h = hdr_h + 4.0 * row_h
+    _draw_rect(msp, box_x, top_y - total_h, box_w, total_h, thickness=frame_thickness * 0.5, layer='MARCO')
+    _draw_line(msp, box_x, top_y - hdr_h, box_x + box_w, top_y - hdr_h, layer='MARCO')
+    for r in range(1, 4):
+        ry = top_y - hdr_h - r * row_h
+        _draw_line(msp, box_x, ry, box_x + box_w, ry, layer='MARCO')
+
+    _draw_cell_text_fit(
+        msp, box_x + box_w * 0.5, top_y - hdr_h * 0.5,
+        min(text_h * 0.80, hdr_h * 0.52), box_w,
+        'RESUMEN ALTIMETRICO Y CURVAS (IGVSB)', layer='TEXTOS', style=text_style
+    )
+
+    cell_h = min(text_h * 0.72, row_h * 0.58)
+    min_z = format_number_fn(contours_data.get('minZ', 0), 2)
+    max_z = format_number_fn(contours_data.get('maxZ', 0), 2)
+    delta_h = format_number_fn(contours_data.get('deltaH', 0), 2)
+    mean_z = format_number_fn(contours_data.get('meanZ', 0), 2)
+    slope_pct = format_number_fn(contours_data.get('meanSlopePct', 0), 1)
+    relief = _ascii_clean(contours_data.get('reliefClass') or 'ONDULADO', 'ONDULADO').upper()
+    iv = contours_data.get('interval', 1)
+    m_iv = contours_data.get('masterInterval', 5)
+    grid_m = contours_data.get('gridSpacingMeters', 10)
+    warn = _ascii_clean(contours_data.get('uncertaintyWarning') or '', '')
+    source_note = 'ALTIMETRIA SATELITAL: ANTEPROYECTO REFERENCIAL' if warn else 'DATUM VERT.: MAREOGRAFO DE LA GUAIRA (m.s.n.m.)'
+
+    # Fila 1 (3 celdas)
+    y1 = top_y - hdr_h - row_h * 0.5
+    c3 = box_w / 3.0
+    _draw_line(msp, box_x + c3, top_y - hdr_h, box_x + c3, top_y - hdr_h - row_h, layer='MARCO')
+    _draw_line(msp, box_x + 2.0 * c3, top_y - hdr_h, box_x + 2.0 * c3, top_y - hdr_h - row_h, layer='MARCO')
+    _draw_cell_text_fit(msp, box_x + c3 * 0.5, y1, cell_h, c3, f"Z MIN: {min_z}m", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c3 * 1.5, y1, cell_h, c3, f"Z MAX: {max_z}m", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c3 * 2.5, y1, cell_h, c3, f"dH: {delta_h}m", layer='TEXTOS', style=text_style)
+
+    # Fila 2 (2 celdas)
+    y2 = top_y - hdr_h - row_h * 1.5
+    c2 = box_w * 0.5
+    _draw_line(msp, box_x + c2, top_y - hdr_h - row_h, box_x + c2, top_y - hdr_h - 3.0 * row_h, layer='MARCO')
+    _draw_cell_text_fit(msp, box_x + c2 * 0.5, y2, cell_h, c2, f"Z MED: {mean_z}m | PEND: {slope_pct}%", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c2 * 1.5, y2, cell_h, c2, f"RELIEVE: {relief}", layer='TEXTOS', style=text_style)
+
+    # Fila 3 (2 celdas)
+    y3 = top_y - hdr_h - row_h * 2.5
+    _draw_cell_text_fit(msp, box_x + c2 * 0.5, y3, cell_h, c2, f"EQUID: dZ={iv}m (MAEST {m_iv}m)", layer='TEXTOS', style=text_style)
+    _draw_cell_text_fit(msp, box_x + c2 * 1.5, y3, cell_h, c2, f"MALLA IGVSB: {grid_m}x{grid_m}m", layer='TEXTOS', style=text_style)
+
+    # Fila 4 (1 celda completa)
+    y4 = top_y - hdr_h - row_h * 3.5
+    _draw_cell_text_fit(msp, box_x + box_w * 0.5, y4, cell_h * 0.92, box_w, source_note, layer='TEXTOS', style=text_style)
+    return total_h
 
 
 def render_adaptive_construction_tables(
@@ -1291,12 +1564,14 @@ def render_adaptive_construction_tables(
     extract_coords_fn,
     metadata=None,
     project_name='PARCELA',
+    contours_data=None,
 ):
     """
-    Motor Adaptativo de Cuadros de Construcción en 3 Niveles:
+    Motor Adaptativo de Cuadros de Construcción en 3 Niveles (con soporte planialtimétrico):
       - Nivel 1 (1 parcela, <= 15 pts): 4 tablas clásicas separadas encuadradas exactamente en middle_box.
       - Nivel 2 (16..38 pts o multiparcela que quepa legible en middle_box): Cuadro Unificado (1 fila/vértice).
-      - Nivel 3 (> 38 pts o desborde): 35 filas en lámina principal + Módulo Anexo Lateral paginado (45 filas/col).
+      - Nivel 3 (> 38 pts o desborde): filas en lámina principal + Módulo Anexo Lateral paginado (45 filas/col).
+      - Si contours_data contiene curvas, reserva espacio al pie de middle_box para el Resumen Altimétrico IGVSB y agrega Cota Z.
     Retorna extra_right_extent (0.0 si no hubo anexo).
     """
     if not processed_parcels:
@@ -1305,11 +1580,32 @@ def render_adaptive_construction_tables(
     table_unit = inner['h'] / 100.0
     t_y = inner['y'] + inner['h'] - table_unit * 1.5
     min_y_limit = inner['y'] + margin
-    avail_h = max(t_y - min_y_limit, 1e-4)
+    avail_h_total = max(t_y - min_y_limit, 1e-4)
 
     pad_x = margin * 0.35
     box_x = middle_box['x'] + pad_x
     box_w = middle_box['w'] - 2.0 * pad_x
+
+    has_contours = isinstance(contours_data, dict) and bool(contours_data.get('contours'))
+    has_z = has_contours and any(
+        pt.get('z') is not None and math.isfinite(float(pt.get('z')))
+        for p in processed_parcels
+        for pt in p['pts']
+    )
+
+    alt_hdr = table_unit * 2.5
+    alt_row = table_unit * 2.3
+    alt_total_h = alt_hdr + 4.0 * alt_row
+    alt_gap = table_unit * 0.9
+
+    if has_contours and avail_h_total > alt_total_h + table_unit * 20.0:
+        avail_h = avail_h_total - alt_total_h - alt_gap
+        draw_altimetric_summary_block(
+            msp, box_x, min_y_limit + alt_total_h, box_w, alt_hdr, alt_row, contours_data,
+            frame_thickness, text_h, text_style, format_number_fn
+        )
+    else:
+        avail_h = avail_h_total
 
     n_parcels = len(processed_parcels)
     total_vertices = sum(len(p['pts']) for p in processed_parcels)
@@ -1319,7 +1615,8 @@ def render_adaptive_construction_tables(
         _draw_level1_classic_tables(
             msp, processed_parcels[0], box_x, t_y, avail_h, box_w, table_unit,
             frame_thickness, text_h, text_style, metadata,
-            get_bearing_fn, format_number_fn, clean_text_fn, extract_coords_fn
+            get_bearing_fn, format_number_fn, clean_text_fn, extract_coords_fn,
+            include_z=has_z,
         )
         return 0.0
 
@@ -1332,7 +1629,7 @@ def render_adaptive_construction_tables(
     avail_rows_l2 = avail_h - n_gaps_l2 * gap_l2 - n_hdr_mult_l2 * hdr_l2
     projected_row_h_l2 = avail_rows_l2 / max(n_rows_l2, 1)
 
-    if total_vertices <= 38 and projected_row_h_l2 >= table_unit * 1.50:
+    if total_vertices <= 38 and projected_row_h_l2 >= table_unit * 1.45:
         row_h = min(table_unit * 3.4, projected_row_h_l2)
         for p_item in processed_parcels:
             p_pts = p_item['pts']
@@ -1352,13 +1649,13 @@ def render_adaptive_construction_tables(
             cuadro_title = 'CUADRO DE CONSTRUCCION CATASTRAL (UTM)' if n_parcels == 1 else f"CUADRO DE CONSTRUCCION: {p_name}"
             used_cuadro = _draw_unified_construction_block(
                 msp, box_x, t_y, box_w, hdr_l2, row_h, cuadro_title, rows,
-                frame_thickness, text_h, text_style
+                frame_thickness, text_h, text_style, include_z=has_z
             )
             t_y -= used_cuadro + gap_l2
         return 0.0
 
-    # ─ Nivel 3: Paginación (Primeros 35 en lámina + Anexo Lateral de 45/col) ─
-    MAX_MAIN_ROWS = 35
+    # ─ Nivel 3: Paginación (Primeros 30/35 en lámina + Anexo Lateral de 45/col) ─
+    MAX_MAIN_ROWS = 30 if has_contours else 35
     MAX_ANNEX_ROWS = 45
 
     all_rows = []
@@ -1383,7 +1680,7 @@ def render_adaptive_construction_tables(
     hdr_l3 = table_unit * 2.4
     n_main_slots = 2 + len(main_rows) + (1 if annex_rows else 0)
     avail_rows_l3 = avail_h - gap_l3 - (1.0 + 1.85) * hdr_l3
-    row_h_l3 = min(table_unit * 2.8, max(avail_rows_l3 / max(n_main_slots, 1), table_unit * 1.45))
+    row_h_l3 = min(table_unit * 2.8, max(avail_rows_l3 / max(n_main_slots, 1), table_unit * 1.40))
 
     used_bal = _draw_compact_balance_and_pa(
         msp, box_x, t_y, box_w, hdr_l3, row_h_l3,
@@ -1403,7 +1700,7 @@ def render_adaptive_construction_tables(
         f"CUADRO DE CONSTRUCCION (1-{len(main_rows)} DE {len(all_rows)})",
         main_rows,
         frame_thickness, text_h, text_style,
-        footer_note=footer_note
+        footer_note=footer_note, include_z=has_z
     )
 
     if not annex_rows:
@@ -1461,7 +1758,7 @@ def render_adaptive_construction_tables(
             msp, cx_box, col_top_y, col_w, hdr_annex, row_h_annex,
             f"CUADRO ANEXO ({start_idx}-{end_idx} DE {len(all_rows)})",
             chunk,
-            frame_thickness, text_h, text_style
+            frame_thickness, text_h, text_style, include_z=has_z
         )
         start_idx = end_idx + 1
 

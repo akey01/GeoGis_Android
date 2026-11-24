@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import { Parcel } from './store';
 import { DXF_SCALE_FACTOR, DXF_OFFSET_X, DXF_OFFSET_Y } from '@/lib/servicesConfig';
 import { unifyParcelsToSingleParcel } from './polygon-union';
+import type { ParcelContourData } from '@/src/components/map/contours/contourEngine';
+import { exportParcelContoursDXF } from '@/src/components/map/contours/contourEngine';
 
 type Point2D = {
   x: number;
@@ -59,7 +61,81 @@ async function downloadViaBlob(url: string, filename: string): Promise<boolean> 
   }
 }
 
-export async function exportParcelToDXF(parcel: Parcel): Promise<{ success: boolean; url?: string }> {
+export interface DxfContourOptions {
+  includeContours?: boolean;
+  showDemGrid?: boolean;
+  showIntermediateLabels?: boolean;
+}
+
+/**
+ * Serializa datos de curvas de nivel, malla IGVSB y estadísticas altimétricas en JSON compacto
+ * para renderizarlas dentro de la lámina oficial A3 de render.py.
+ */
+export function buildContoursPayload(
+  contourData: ParcelContourData,
+  options?: { showDemGrid?: boolean; showIntermediateLabels?: boolean }
+) {
+  const showDemGrid = options?.showDemGrid ?? true;
+  const showIntermediateLabels = options?.showIntermediateLabels ?? true;
+  const nodes = contourData.interiorGridNodes ?? [];
+  const stride = nodes.length > 1200 ? 2 : 1;
+
+  return {
+    interval: contourData.interval,
+    masterInterval: contourData.masterInterval,
+    gridSpacingMeters: contourData.gridSpacingMeters ?? contourData.gridSpacingE ?? 10,
+    minZ: contourData.minZ,
+    maxZ: contourData.maxZ,
+    meanZ: contourData.meanZ,
+    deltaH: contourData.deltaH,
+    meanSlopePct: contourData.meanSlopePct,
+    reliefClass: contourData.reliefClass,
+    demSource: contourData.demSource,
+    uncertaintyWarning: contourData.uncertaintyWarning,
+    minPointUTM: contourData.minPointUTM,
+    maxPointUTM: contourData.maxPointUTM,
+    showDemGrid,
+    showIntermediateLabels,
+    verticesZ: (contourData.vertices ?? []).map((v) => ({
+      id: v.id,
+      z: Number((v.z ?? 0).toFixed(2)),
+    })),
+    contours: (contourData.contours ?? []).map((c) => ({
+      elevation: c.elevation,
+      isMaster: c.isMaster,
+      coordsUTM: c.coordsUTM.map(([e, n]) => [Number(e.toFixed(2)), Number(n.toFixed(2))]),
+      labels: (c.labels ?? []).map((l) => ({
+        pointUTM: [Number(l.pointUTM[0].toFixed(2)), Number(l.pointUTM[1].toFixed(2))],
+        angleDeg: Number(l.angleDeg.toFixed(1)),
+        formattedText: l.formattedText,
+      })),
+    })),
+    clippedGridLinesUTM: showDemGrid
+      ? (contourData.clippedGridLinesUTM ?? []).map((gl) => ({
+        axis: gl.axis,
+        coord: gl.coord,
+        coordsUTM: gl.coordsUTM.map(([e, n]) => [Number(e.toFixed(2)), Number(n.toFixed(2))]),
+      }))
+      : [],
+    interiorGridNodes: showDemGrid
+      ? nodes
+        .filter((gn) => stride === 1 || (gn.col % stride === 0 && gn.row % stride === 0))
+        .map((gn) => ({
+          este: Number(gn.este.toFixed(2)),
+          norte: Number(gn.norte.toFixed(2)),
+          z: Number(gn.z.toFixed(2)),
+          col: gn.col,
+          row: gn.row,
+        }))
+      : [],
+  };
+}
+
+export async function exportParcelToDXF(
+  parcel: Parcel,
+  contourData?: ParcelContourData | null,
+  contourOptions?: DxfContourOptions
+): Promise<{ success: boolean; url?: string }> {
   if (!parcel.puntos || (parcel.geometryType === 'cerrada' && parcel.puntos.length < 3) || (parcel.geometryType !== 'cerrada' && parcel.puntos.length < 2)) {
     const msg = 'La parcela no tiene suficientes puntos para la geometría seleccionada.';
     console.error('[DXF]', msg);
@@ -69,38 +145,40 @@ export async function exportParcelToDXF(parcel: Parcel): Promise<{ success: bool
   const rawParcelName = parcel.nombre ? String(parcel.nombre).trim() : 'Parcela';
   const sanitized = cleanText(rawParcelName, 'Parcela') || rawParcelName;
   const projectName = encodeURIComponent(sanitized);
+  const includeContours = Boolean(contourData && contourData.contours?.length && contourOptions?.includeContours !== false);
 
   try {
     const res = await fetch('/api/cad-layout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      points: parcel.puntos,
-      dxfScaleFactor: DXF_SCALE_FACTOR,
-      dxfOffsetX: DXF_OFFSET_X,
-      dxfOffsetY: DXF_OFFSET_Y,
-      geometryType: parcel.geometryType,
-      metadata: {
-        projectName,
-        areaDoc: parcel.area,
-        fecha: parcel.fecha,
-        estado: (parcel as any).estado || '',
-        municipio: (parcel as any).municipio || '',
-        parroquia: (parcel as any).parroquia || '',
-        propietario: (parcel as any).propietario || '',
-        rif: (parcel as any).rif || '',
-        domicilio: (parcel as any).domicilio || '',
-        profesional: (parcel as any).profesional || '',
-        civ: (parcel as any).civ || '',
-        zona: (parcel as any).zona || '',
-        seccion: (parcel as any).seccion || '',
-        cedulaCat: (parcel as any).cedulaCat || '',
-        observaciones: (parcel as any).observaciones || ''
-      }
-    }),
-    signal: AbortSignal.timeout(180000)
-  });
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        points: parcel.puntos,
+        dxfScaleFactor: DXF_SCALE_FACTOR,
+        dxfOffsetX: DXF_OFFSET_X,
+        dxfOffsetY: DXF_OFFSET_Y,
+        geometryType: parcel.geometryType,
+        contoursData: includeContours && contourData ? buildContoursPayload(contourData, contourOptions) : undefined,
+        metadata: {
+          projectName,
+          areaDoc: parcel.area,
+          fecha: parcel.fecha,
+          estado: (parcel as any).estado || '',
+          municipio: (parcel as any).municipio || '',
+          parroquia: (parcel as any).parroquia || '',
+          propietario: (parcel as any).propietario || '',
+          rif: (parcel as any).rif || '',
+          domicilio: (parcel as any).domicilio || '',
+          profesional: (parcel as any).profesional || '',
+          civ: (parcel as any).civ || '',
+          zona: (parcel as any).zona || '',
+          seccion: (parcel as any).seccion || '',
+          cedulaCat: (parcel as any).cedulaCat || '',
+          observaciones: (parcel as any).observaciones || ''
+        }
+      }),
+      signal: AbortSignal.timeout(180000)
+    });
 
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
@@ -123,19 +201,29 @@ export async function exportParcelToDXF(parcel: Parcel): Promise<{ success: bool
     }
 
     const parcelName = decodeURIComponent(projectName).replace(/\s+/g, '_');
+    const finalFileName = `${parcelName}${includeContours ? '_TOPO_OFICIAL' : ''}.dxf`;
 
     // 1. Descargar el archivo DXF directo vía Blob seguro en memoria
-    const dxfOk = await downloadViaBlob(downloadUrl, `${parcelName}.dxf`);
+    const dxfOk = await downloadViaBlob(downloadUrl, finalFileName);
     if (!dxfOk) {
       toast.error('No se pudo transferir el archivo DXF al navegador');
       return { success: false };
     }
 
-    toast.success(`Plano ${parcelName}.dxf descargado exitosamente`);
+    toast.success(
+      includeContours
+        ? `Plano Oficial Topográfico ${finalFileName} descargado exitosamente`
+        : `Plano ${finalFileName} descargado exitosamente`
+    );
 
     return { success: true, url: downloadUrl };
   } catch (err: any) {
     console.error('[DXF Error]', err);
+    if (includeContours && contourData) {
+      toast('Servidor CAD sin respuesta: exportando respaldo DXF local de curvas.', { icon: '⚠️' });
+      exportParcelContoursDXF(contourData);
+      return { success: true };
+    }
     toast.error(`Error de conexión local: ${err.message || 'Verifica que el servidor esté activo'}`);
     return { success: false };
   }
@@ -324,8 +412,8 @@ export async function exportParcelToDXF2(
         points: parcel.puntos,
         geometryType: parcel.geometryType,
         metadata: {
-        includeSatellite: true,
-        projectName: parcel.nombre,
+          includeSatellite: true,
+          projectName: parcel.nombre,
           estado: (parcel as any).estado || '',
           municipio: (parcel as any).municipio || '',
           parroquia: (parcel as any).parroquia || '',

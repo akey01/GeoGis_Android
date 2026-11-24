@@ -12,7 +12,7 @@ export { cleanupOutputsDirAsync };
 const CACHE_TTL_DXF = 86_400;
 const isRenderCloud = Boolean(process.env.RENDER || process.env.NODE_ENV === 'production');
 const MAX_POINTS = isRenderCloud ? 500 : 5000;
-const MAX_JSON_BYTES = isRenderCloud ? 1024 * 1024 : 10 * 1024 * 1024;
+const MAX_JSON_BYTES = isRenderCloud ? 8 * 1024 * 1024 : 20 * 1024 * 1024;
 
 function dxfCacheKey(body: any, role: string, shouldWatermark: boolean): string {
   const stable = JSON.stringify({ ...body, __role: role, __wm: shouldWatermark }, (_k, v) =>
@@ -20,7 +20,7 @@ function dxfCacheKey(body: any, role: string, shouldWatermark: boolean): string 
       ? Object.keys(v).sort().reduce((a, k) => { (a as any)[k] = (v as any)[k]; return a; }, {} as any)
       : v
   );
-  return `dxf_v7:${createHash('sha256').update(stable).digest('hex')}`;
+  return `dxf_v8:${createHash('sha256').update(stable).digest('hex')}`;
 }
 
 function validateCadPayload(body: any, maxPointsAllowed: number | null) {
