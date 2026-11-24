@@ -95,7 +95,7 @@ export default function ContourMapHUD() {
           id: v.id,
           ok: true,
           direction: data.direction as any,
-          input: { este: v.este, norte: v.norte, alt: v.z },
+          input: { id: v.id, este: v.este, norte: v.norte, alt: v.z },
           result: { este: v.este, norte: v.norte, lat: v.lat, lng: v.lng, cota_regven: v.z, huso: data.huso },
         })),
       };
