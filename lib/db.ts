@@ -15,8 +15,48 @@ declare global {
   var __geotransSchemaVerified: boolean | undefined;
 }
 
+function normalizeDatabaseUrl(raw: string): string {
+  let url = raw.trim().replace(/^DATABASE_(?:DIRECT_)?URL\s*=\s*/i, '').trim();
+  while (
+    (url.startsWith('"') && url.endsWith('"')) ||
+    (url.startsWith("'") && url.endsWith("'"))
+  ) {
+    url = url.slice(1, -1).trim();
+  }
+  if (!url) return '';
+
+  const match = /^(postgres(?:ql)?:\/\/)([^:@\s]+):(.+)@([^@\s]+)$/i.exec(url);
+  if (match) {
+    const [, scheme, user, rawPass, hostAndPath] = match;
+    const hasBrackets = rawPass.startsWith('[') && rawPass.endsWith(']');
+    const cleanPass = hasBrackets ? rawPass.slice(1, -1) : rawPass;
+    const expectedHost = hostAndPath.split('/')[0].split('?')[0].split(':')[0];
+
+    if (!hasBrackets) {
+      try {
+        const parsed = new URL(url);
+        if (parsed.hostname === expectedHost) {
+          return url;
+        }
+      } catch {
+        // Continúa para codificar caracteres especiales de la contraseña
+      }
+    }
+
+    const rebuilt = `${scheme}${user}:${encodeURIComponent(cleanPass)}@${hostAndPath}`;
+    try {
+      new URL(rebuilt);
+      return rebuilt;
+    } catch {
+      // Fallback al retorno saneado básico
+    }
+  }
+
+  return url;
+}
+
 function getDatabaseUrl(): string {
-  return (process.env.DATABASE_URL || '').trim();
+  return normalizeDatabaseUrl(process.env.DATABASE_URL || '');
 }
 
 const isPostgres = true;
