@@ -40,7 +40,6 @@ import { toast } from 'react-hot-toast';
 import { cn } from '@/lib/utils';
 import { Move, Crosshair, X, Maximize2, Mountain, Navigation } from 'lucide-react';
 import TacticalMapRail, { type TacticalPopoverType } from '@/src/components/map/TacticalMapRail';
-import MeasureToolbar from '@/src/components/map/measure/MeasureToolbar';
 import { useMeasureTool } from '@/src/components/map/measure/useMeasureTool';
 import { useMeasureStore } from '@/src/components/map/measure/useMeasureStore';
 import { useContourLayer } from '@/src/components/map/contours/useContourLayer';
@@ -1948,9 +1947,6 @@ export default function MapViewer({ className }: MapViewerProps) {
           </div>
         );
       })()}
-
-      {/* ── Panel de Medición Anclado a la Paleta Única ────────────────────── */}
-      <MeasureToolbar hideTrigger />
 
       {/* ── HUD Altimétrico y Modal Imprimible de Curvas de Nivel ────────────── */}
       <ContourMapHUD />

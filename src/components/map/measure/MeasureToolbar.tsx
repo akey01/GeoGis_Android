@@ -18,6 +18,7 @@ import {
 
 export interface MeasureToolbarProps {
   hideTrigger?: boolean;
+  inline?: boolean;
 }
 
 const TOOLS: Array<{ kind: MeasureKind; label: string; title: string; hint: string; Icon: typeof Ruler }> = [
@@ -38,7 +39,7 @@ const AREA_UNITS: Array<{ v: AreaUnit; l: string }> = [
 const selectCls =
   'flex-1 min-w-0 bg-[#0d1322] border border-[#242a3a] rounded-md px-1.5 py-1 text-[11px] text-[#dde2f8] focus:outline-none focus:border-[#4cd7f6]';
 
-export default function MeasureToolbar({ hideTrigger = false }: MeasureToolbarProps) {
+export default function MeasureToolbar({ hideTrigger = false, inline = false }: MeasureToolbarProps) {
   const panelOpen = useMeasureStore((s) => s.panelOpen);
   const mode = useMeasureStore((s) => s.mode);
   const reading = useMeasureStore((s) => s.reading);
@@ -52,7 +53,7 @@ export default function MeasureToolbar({ hideTrigger = false }: MeasureToolbarPr
   const setAreaUnit = useMeasureStore((s) => s.setAreaUnit);
   const requestClear = useMeasureStore((s) => s.requestClear);
 
-  if (hideTrigger && !panelOpen) return null;
+  if ((hideTrigger || inline) && !panelOpen) return null;
 
   const activeTool = TOOLS.find((t) => t.kind === mode);
   const rows = reading ? describeReading(reading, { distance: distanceUnit, area: areaUnit }) : [];
@@ -145,6 +146,10 @@ export default function MeasureToolbar({ hideTrigger = false }: MeasureToolbarPr
       </div>
     </div>
   ) : null;
+
+  if (inline) {
+    return panelNode;
+  }
 
   if (hideTrigger) {
     return (
