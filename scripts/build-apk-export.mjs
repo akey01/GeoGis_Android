@@ -12,6 +12,7 @@ const SERVER_ONLY_ENTRIES = [
   'app/login',
   'app/register',
   'proxy.ts',
+  'public/wasm',
 ];
 
 const APK_PAGE_TSX = `'use client';

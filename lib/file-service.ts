@@ -471,14 +471,25 @@ export const FileService = {
   },
 
   /**
-   * Parse DXF polygons (LWPOLYLINE con bulge, POLYLINE, LINE encadenadas, ARC, CIRCLE, SPLINE, SOLID, INSERT)
+   * Parse DXF polygons (LWPOLYLINE con bulge, POLYLINE, LINE encadenadas, ARC, CIRCLE, ELLIPSE, SPLINE, SOLID, INSERT)
    */
   parseDXFPolygons(dxfText: string): { polygons: DXFPolygon[]; huso: number } {
     const DxfParser = require('dxf-parser').default || require('dxf-parser');
     const parser = new DxfParser();
     const dxf = parser.parseSync(dxfText);
-    const entities = dxf?.entities || [];
-    const blocks = dxf?.blocks || {};
+    return this.parseCADEntities(dxf?.entities || [], dxf?.blocks || {}, 'DXF');
+  },
+
+  /**
+   * Convierte entidades CAD normalizadas (DXF o DWG vía LibreDWG) a polígonos GeoGIS6.
+   */
+  parseCADEntities(
+    entities: any[],
+    blocks: Record<string, { entities?: any[] }> = {},
+    idPrefix: string = 'DXF'
+  ): { polygons: DXFPolygon[]; huso: number } {
+    const safeEntities = Array.isArray(entities) ? entities : [];
+    const safeBlocks = blocks && typeof blocks === 'object' ? blocks : {};
 
     type Pt2 = { x: number; y: number };
     interface RawShape {
@@ -556,10 +567,11 @@ export const FileService = {
         case 'POLYLINE': {
           const rawV: any[] = Array.isArray(entity.vertices) ? entity.vertices : [];
           if (rawV.length < 2) break;
+          const rawFlags = Number(entity.flags ?? entity.flag ?? 0) || 0;
           const isClosed = Boolean(
             entity.shape === true ||
             entity.closed === true ||
-            ((Number(entity.flags) || 0) & 1) === 1
+            (rawFlags & 1) === 1
           );
           const expanded: Pt2[] = [];
           for (let idx = 0; idx < rawV.length; idx++) {
@@ -627,6 +639,40 @@ export const FileService = {
           rawShapes.push({ verts: pts, closed: true, layer, entityType: 'CIRCLE' });
           break;
         }
+        case 'ELLIPSE': {
+          const cx = entity.center?.x;
+          const cy = entity.center?.y;
+          const mx = entity.majorAxisEndPoint?.x;
+          const my = entity.majorAxisEndPoint?.y;
+          const ratio = Number(entity.axisRatio ?? 1);
+          if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(mx) || !Number.isFinite(my) || !Number.isFinite(ratio)) {
+            break;
+          }
+          const aLen = Math.hypot(mx, my);
+          if (aLen <= 1e-6) break;
+          const rot = Math.atan2(my, mx);
+          const bLen = aLen * Math.abs(ratio);
+          const a0 = Number(entity.startAngle ?? 0);
+          const a1 = Number(entity.endAngle ?? Math.PI * 2);
+          let sweep = a1 - a0;
+          if (sweep <= 0) sweep += Math.PI * 2;
+          const isClosed = Math.abs(sweep - Math.PI * 2) < 1e-3;
+          const segments = Math.max(8, Math.min(36, Math.ceil((sweep / (Math.PI * 2)) * 36)));
+          const pts: Pt2[] = [];
+          const endIdx = isClosed ? segments - 1 : segments;
+          for (let k = 0; k <= endIdx; k++) {
+            const t = a0 + (sweep * k) / segments;
+            const lx = aLen * Math.cos(t);
+            const ly = bLen * Math.sin(t);
+            const wx = cx + lx * Math.cos(rot) - ly * Math.sin(rot);
+            const wy = cy + lx * Math.sin(rot) + ly * Math.cos(rot);
+            pts.push(applyXform({ x: wx, y: wy }, xf));
+          }
+          if (pts.length >= 2) {
+            rawShapes.push({ verts: pts, closed: isClosed, layer, entityType: 'ELLIPSE' });
+          }
+          break;
+        }
         case 'SPLINE': {
           const srcPts: any[] =
             (Array.isArray(entity.fitPoints) && entity.fitPoints.length >= 2)
@@ -636,7 +682,7 @@ export const FileService = {
             .filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y))
             .map((p) => applyXform({ x: p.x, y: p.y }, xf));
           if (pts.length >= 2) {
-            const isClosed = Boolean(entity.closed || ((Number(entity.flags) || 0) & 1) === 1);
+            const isClosed = Boolean(entity.closed || ((Number(entity.flags ?? entity.flag ?? 0) || 0) & 1) === 1);
             rawShapes.push({ verts: pts, closed: isClosed, layer, entityType: 'SPLINE' });
           }
           break;
@@ -659,7 +705,7 @@ export const FileService = {
         }
         case 'INSERT': {
           if (depth >= 4 || !entity.name) break;
-          const block = blocks[entity.name];
+          const block = safeBlocks[entity.name];
           if (!block || !Array.isArray(block.entities) || block.entities.length === 0) break;
           const pos = entity.position || { x: 0, y: 0 };
           const bx = Number.isFinite(pos.x) ? pos.x : 0;
@@ -680,7 +726,7 @@ export const FileService = {
       }
     };
 
-    for (const entity of entities) {
+    for (const entity of safeEntities) {
       expandEntity(entity, IDENTITY_XFORM, null, 0);
     }
 
@@ -811,7 +857,7 @@ export const FileService = {
       const husoPoly = autoDetectHuso(avgEPoly);
 
       polygons.push({
-        id: `DXF-${polygons.length + 1}`,
+        id: `${idPrefix}-${polygons.length + 1}`,
         layer: shape.layer,
         vertices: mapped,
         closed,
@@ -835,6 +881,126 @@ export const FileService = {
       globalAvgHuso = autoDetectHuso(count > 0 ? totalE / count : 0);
     }
     return { polygons, huso: globalAvgHuso };
+  },
+
+  /**
+   * Extrae puntos/vértices desde entidades CAD normalizadas (para importación por lotes DWG/DXF).
+   */
+  extractPointsFromCADEntities(
+    entities: any[],
+    blocks: Record<string, { entities?: any[] }> = {}
+  ): GeoPoint[] {
+    const safeEntities = Array.isArray(entities) ? entities : [];
+    const safeBlocks = blocks && typeof blocks === 'object' ? blocks : {};
+
+    interface InsertXform {
+      ox: number;
+      oy: number;
+      sx: number;
+      sy: number;
+      rotRad: number;
+    }
+    const IDENTITY_XFORM: InsertXform = { ox: 0, oy: 0, sx: 1, sy: 1, rotRad: 0 };
+    const applyXform = (x: number, y: number, xf: InsertXform) => {
+      const lx = x * xf.sx;
+      const ly = y * xf.sy;
+      if (Math.abs(xf.rotRad) < 1e-9) {
+        return { x: xf.ox + lx, y: xf.oy + ly };
+      }
+      const c = Math.cos(xf.rotRad);
+      const s = Math.sin(xf.rotRad);
+      return {
+        x: xf.ox + lx * c - ly * s,
+        y: xf.oy + lx * s + ly * c,
+      };
+    };
+
+    const collected: { e: number; n: number; h: number; desc: string; name?: string }[] = [];
+
+    const pushPt = (x: any, y: any, z: any, xf: InsertXform, desc: string, name?: string) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const pt = applyXform(x, y, xf);
+      if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return;
+      if (Math.abs(pt.x) <= 1e-4 && Math.abs(pt.y) <= 1e-4) return;
+      collected.push({
+        e: pt.x,
+        n: pt.y,
+        h: Number.isFinite(z) ? z : 0,
+        desc,
+        name: name ? String(name) : undefined,
+      });
+    };
+
+    const walk = (entity: any, xf: InsertXform, depth: number) => {
+      if (!entity || !entity.type) return;
+      switch (entity.type) {
+        case 'POINT': {
+          const p = entity.position ?? entity;
+          pushPt(p?.x, p?.y, p?.z, xf, 'POINT', entity.name || entity.text);
+          break;
+        }
+        case 'VERTEX': {
+          const p = entity.position ?? entity;
+          pushPt(p?.x, p?.y, p?.z, xf, 'VERTEX');
+          break;
+        }
+        case 'LWPOLYLINE':
+        case 'POLYLINE': {
+          const verts: any[] = Array.isArray(entity.vertices) ? entity.vertices : [];
+          for (const v of verts) {
+            pushPt(v?.x, v?.y, v?.z ?? entity.elevation, xf, entity.type);
+          }
+          break;
+        }
+        case 'LINE': {
+          const s = entity.vertices?.[0] ?? entity.start;
+          const e = entity.vertices?.[1] ?? entity.end;
+          pushPt(s?.x, s?.y, s?.z, xf, 'LINE');
+          pushPt(e?.x, e?.y, e?.z, xf, 'LINE');
+          break;
+        }
+        case 'INSERT': {
+          if (depth >= 4 || !entity.name) break;
+          const block = safeBlocks[entity.name];
+          if (!block || !Array.isArray(block.entities)) break;
+          const pos = entity.position || { x: 0, y: 0 };
+          const worldOrigin = applyXform(
+            Number.isFinite(pos.x) ? pos.x : 0,
+            Number.isFinite(pos.y) ? pos.y : 0,
+            xf
+          );
+          const childXf: InsertXform = {
+            ox: worldOrigin.x,
+            oy: worldOrigin.y,
+            sx: xf.sx * (Number.isFinite(entity.xScale) ? entity.xScale : 1),
+            sy: xf.sy * (Number.isFinite(entity.yScale) ? entity.yScale : 1),
+            rotRad: xf.rotRad + ((Number.isFinite(entity.rotation) ? entity.rotation : 0) * Math.PI) / 180,
+          };
+          for (const sub of block.entities) {
+            walk(sub, childXf, depth + 1);
+          }
+          break;
+        }
+      }
+    };
+
+    for (const ent of safeEntities) {
+      walk(ent, IDENTITY_XFORM, 0);
+    }
+
+    const hasUtmScale = collected.some((p) => Math.abs(p.e) > 10000 || Math.abs(p.n) > 10000);
+    const filtered = hasUtmScale
+      ? collected.filter((p) => Math.abs(p.e) >= 500 || Math.abs(p.n) >= 500)
+      : collected;
+
+    let pointIdx = 1;
+    return filtered.map((p) => ({
+      id: p.name || `P${pointIdx++}`,
+      e: p.e,
+      n: p.n,
+      h: p.h,
+      desc: p.desc,
+    }));
   },
 
   /**

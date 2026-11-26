@@ -2,6 +2,7 @@
 
 import React, { useRef, useState } from 'react';
 import { FileService, GeoPoint } from '@/lib/file-service';
+import { parseDWGPoints } from '@/lib/dwg-service';
 import { useAppStore } from '@/lib/store';
 import { GeoEngine, HAYFORD, GRS80 } from '@/lib/geo-engine';
 import { Upload, FileSpreadsheet, Layers, RefreshCw, AlertCircle, FileText, Play } from 'lucide-react';
@@ -326,6 +327,8 @@ export default function BatchImport() {
         points = await FileService.parseExcel(file, esFormatoInverso, coordTypeSeleccionado);
       } else if (ext === 'dxf') {
         points = await FileService.parseDXF(file);
+      } else if (ext === 'dwg') {
+        points = await parseDWGPoints(file);
       } else {
         const text = await file.text();
         points = FileService.parseText(text, esFormatoInverso, coordTypeSeleccionado);
@@ -406,7 +409,7 @@ export default function BatchImport() {
             ref={fileInputRef} 
             onChange={handleFile} 
             className="hidden" 
-            accept=".csv,.txt,.xlsx,.xls,.dxf"
+            accept=".csv,.txt,.xlsx,.xls,.dxf,.dwg"
           />
           
           <div className="flex flex-col items-center justify-center space-y-3 relative z-10">
@@ -417,7 +420,7 @@ export default function BatchImport() {
               <p className="text-xs font-bold text-slate-300 uppercase tracking-widest">
                 {loading ? 'Procesando Lote...' : 'Cargar Archivo'}
               </p>
-              <p className="text-[10px] text-slate-500 mt-1">Soporta CSV, XLSX, TXT, DXF</p>
+              <p className="text-[10px] text-slate-500 mt-1">Soporta CSV, XLSX, TXT, DXF, DWG</p>
             </div>
           </div>
 

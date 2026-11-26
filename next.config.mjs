@@ -44,8 +44,15 @@ const nextConfig = {
                 {
                   key: 'Content-Security-Policy',
                   value:
-                    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: *.google.com *.gstatic.com *.arcgisonline.com *.arcgis.com; connect-src 'self' *.render.com *.onrender.com *.supabase.co *.google.com *.gstatic.com *.googleapis.com *.arcgisonline.com *.arcgis.com https://api.github.com https://api.open-meteo.com https://api.open-elevation.com;",
+                    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: *.google.com *.gstatic.com *.arcgisonline.com *.arcgis.com; connect-src 'self' *.render.com *.onrender.com *.supabase.co *.google.com *.gstatic.com *.googleapis.com *.arcgisonline.com *.arcgis.com https://api.github.com https://api.open-meteo.com https://api.open-elevation.com;",
                 },
+              ],
+            },
+            {
+              source: '/wasm/:path*',
+              headers: [
+                { key: 'Content-Type', value: 'application/wasm' },
+                { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
               ],
             },
           ];

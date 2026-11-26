@@ -3,6 +3,7 @@
 import React, { useRef, useState } from 'react';
 import { X, Upload, MapPin, Layers, ChevronDown, ChevronRight, AlertCircle, Check, RefreshCw } from 'lucide-react';
 import { FileService, type DXFPolygon } from '@/lib/file-service';
+import { parseDWGPolygons, isDwgBinaryBuffer } from '@/lib/dwg-service';
 import { useAppStore } from '@/lib/store';
 import { GeoEngine, HAYFORD, GRS80 } from '@/lib/geo-engine';
 import { normalizeRingClockwiseFromNorth } from '@/lib/polygon-union';
@@ -26,6 +27,8 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
   const [transforming, setTransforming] = useState(false);
   const [importing, setImporting] = useState(false);
   const [expandedLayers, setExpandedLayers] = useState<Set<string>>(new Set());
+  const [sourceFormat, setSourceFormat] = useState<'DXF' | 'DWG'>('DXF');
+  const [sourceInfo, setSourceInfo] = useState<string | null>(null);
 
   const layers = React.useMemo(() => {
     const map = new Map<string, DXFPolygon[]>();
@@ -36,14 +39,32 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
     return Array.from(map.entries());
   }, [polygons]);
 
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const processSelectedFile = async (file: File) => {
     setError(null);
     setLoading(true);
     try {
-      const text = await file.text();
-      const result = FileService.parseDXFPolygons(text);
+      const headerBuf = await file.slice(0, 16).arrayBuffer();
+      const isDwg = isDwgBinaryBuffer(headerBuf) || /\.dwg$/i.test(file.name);
+      setSourceFormat(isDwg ? 'DWG' : 'DXF');
+
+      let result: { polygons: DXFPolygon[]; huso: number };
+      if (isDwg) {
+        const dwgRes = await parseDWGPolygons(file);
+        result = { polygons: dwgRes.polygons, huso: dwgRes.huso };
+        setSourceInfo(dwgRes.versionLabel ? `${file.name} · ${dwgRes.versionLabel}` : file.name);
+      } else {
+        const text = await file.text();
+        result = FileService.parseDXFPolygons(text);
+        setSourceInfo(file.name);
+      }
+
+      if (result.polygons.length === 0) {
+        setError('No se encontraron polígonos o líneas válidas en el archivo CAD.');
+        setPolygons([]);
+        setSelectedIds(new Set());
+        return;
+      }
+
       setPolygons(result.polygons);
       setImportHuso(result.huso);
       if (result.polygons.some((p) => p.isGeographic)) {
@@ -53,10 +74,26 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
       const firstLayer = result.polygons[0]?.layer;
       setExpandedLayers(new Set(firstLayer ? [firstLayer] : []));
     } catch (err: any) {
-      setError(err?.message || 'Error al parsear el archivo DXF');
+      setError(err?.message || 'Error al parsear el archivo CAD');
       setPolygons([]);
+      setSelectedIds(new Set());
     } finally {
       setLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await processSelectedFile(file);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file) {
+      void processSelectedFile(file);
     }
   };
 
@@ -286,7 +323,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
           }
         }
 
-        const baseName = poly.layer !== '0' ? poly.layer.toUpperCase() : `DXF-${poly.id}`;
+        const baseName = poly.layer !== '0' ? poly.layer.toUpperCase() : poly.id;
         const idxInLayer = (layerSeen.get(baseName) || 0) + 1;
         layerSeen.set(baseName, idxInLayer);
         const totalInLayer = layerTotals.get(baseName) || 1;
@@ -355,7 +392,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
         <div className="flex items-center justify-between p-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <MapPin className="w-5 h-5 text-emerald-400" />
-            <h2 className="text-sm font-bold text-white uppercase tracking-wider">GeoGIS6 · Importar DXF</h2>
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">GeoGIS6 · Importar DXF / DWG</h2>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors p-1">
             <X className="w-5 h-5" />
@@ -372,17 +409,26 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
 
           <div
             onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDrop}
             className="border-2 border-dashed border-slate-700 hover:border-emerald-500/50 rounded-xl p-8 text-center cursor-pointer transition-colors group"
           >
             <Upload className="w-8 h-8 mx-auto mb-2 text-slate-500 group-hover:text-emerald-400 transition-colors" />
             <p className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">
-              {loading ? 'Procesando...' : 'Arrastra o selecciona un archivo DXF'}
+              {loading
+                ? (sourceFormat === 'DWG' ? 'Decodificando DWG...' : 'Procesando DXF...')
+                : 'Arrastra o selecciona un archivo DXF o DWG'}
             </p>
-            <p className="text-[10px] text-slate-600 mt-1">LWPOLYLINE, POLYLINE, LINE, CIRCLE</p>
+            <p className="text-[10px] text-slate-600 mt-1">
+              AutoCAD DXF / DWG (R13–2024) · LWPOLYLINE, POLYLINE, LINE, ARC, CIRCLE, INSERT
+            </p>
+            {sourceInfo && !loading && (
+              <p className="text-[10px] font-mono text-emerald-400 mt-2">{sourceInfo}</p>
+            )}
             <input
               ref={fileInputRef}
               type="file"
-              accept=".dxf"
+              accept=".dxf,.dwg"
               onChange={handleFile}
               className="hidden"
             />
@@ -391,7 +437,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
           {loading && (
             <div className="flex items-center justify-center gap-2 py-4 text-slate-400 text-xs">
               <RefreshCw className="w-4 h-4 animate-spin" />
-              Parseando DXF...
+              {sourceFormat === 'DWG' ? 'Decodificando DWG (WASM)...' : 'Parseando DXF...'}
             </div>
           )}
 
@@ -427,7 +473,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Datum Origen del DXF</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Datum Origen del {sourceFormat}</label>
                   <select
                     value={sourceDatum}
                     onChange={(e) => setSourceDatum(e.target.value as any)}
@@ -463,7 +509,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
               {sourceDatum === 'psad56' && (
                 <div className="flex items-center justify-between gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-xl text-[10.5px] text-amber-300">
                   <span>
-                    DXF marcado como <strong>PSAD56 (La Canoa)</strong>. Si ya está en REGVEN/foto satelital, cámbialo a REGVEN para evitar ~370 m de desfase.
+                    {sourceFormat} marcado como <strong>PSAD56 (La Canoa)</strong>. Si ya está en REGVEN/foto satelital, cámbialo a REGVEN para evitar ~370 m de desfase.
                   </span>
                   <button
                     type="button"
@@ -484,7 +530,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-slate-300">
-                    <span>DXF: {previewAudit.rawE.toFixed(2)}E, {previewAudit.rawN.toFixed(2)}N</span>
+                    <span>{sourceFormat}: {previewAudit.rawE.toFixed(2)}E, {previewAudit.rawN.toFixed(2)}N</span>
                     <span>Mapa: {previewAudit.outE.toFixed(2)}E, {previewAudit.outN.toFixed(2)}N</span>
                   </div>
                 </div>
