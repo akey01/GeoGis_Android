@@ -17,6 +17,7 @@ import { getDistance } from 'ol/sphere';
 import { defaults as defaultInteractions } from 'ol/interaction';
 import {
   ArrowRight,
+  Compass,
   Crosshair,
   FolderOpen,
   Layers,
@@ -28,7 +29,6 @@ import {
   Ruler,
   Satellite,
   Search,
-  Share2,
   Trash2,
   X,
 } from 'lucide-react';
@@ -51,6 +51,7 @@ interface ProjectMapScreenProps {
   fitTrigger: number;
   onToggleCrs: () => void;
   onSelectParcel: (parcelId: string) => void;
+  onSelectVertex?: (vertexId: string) => void;
   onOpenParcel: () => void;
   onOpenProjects: () => void;
   onCreateStarterParcel?: () => void;
@@ -84,6 +85,7 @@ export default function ProjectMapScreen({
   fitTrigger,
   onToggleCrs,
   onSelectParcel,
+  onSelectVertex,
   onOpenParcel,
   onOpenProjects,
   onCreateStarterParcel,
@@ -105,6 +107,7 @@ export default function ProjectMapScreen({
 
   const [baseLayer, setBaseLayer] = useState<BaseMapLayerId>('esri_sat');
   const [showAllParcels, setShowAllParcels] = useState(true);
+  const [showGpsGuide, setShowGpsGuide] = useState(false);
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [showParcelDrawer, setShowParcelDrawer] = useState(false);
@@ -112,17 +115,24 @@ export default function ProjectMapScreen({
   const [mapZoom, setMapZoom] = useState(18);
   const [scaleInfo, setScaleInfo] = useState({ denom: 1000, meters: 25 });
 
-  // Latest callbacks & state refs for OL click listener
+  // Latest callbacks & state refs for OL listeners and non-resetting auto-fit
   const measureModeRef = useRef(measureMode);
   measureModeRef.current = measureMode;
+  const parcelsRef = useRef(parcels);
+  parcelsRef.current = parcels;
+  const gnssFixRef = useRef(gnssFix);
+  gnssFixRef.current = gnssFix;
   const activeParcelRef = useRef(activeParcel);
   activeParcelRef.current = activeParcel;
   const onSelectParcelRef = useRef(onSelectParcel);
   onSelectParcelRef.current = onSelectParcel;
+  const onSelectVertexRef = useRef(onSelectVertex);
+  onSelectVertexRef.current = onSelectVertex;
   const onStakeVertexRef = useRef(onStakeVertex);
   onStakeVertexRef.current = onStakeVertex;
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
+  const lastAutoFitKeyRef = useRef<string | null>(null);
 
   // Compute total measured distance in meters
   const measuredDistanceM = useMemo(() => {
@@ -134,40 +144,39 @@ export default function ProjectMapScreen({
     return total;
   }, [measurePts]);
 
-  // Fit map view to all parcels in current project (or fallback to GNSS / Venezuela)
-  const fitAllParcels = useCallback(
-    (animate = true) => {
-      const map = mapRef.current;
-      if (!map) return;
-      const extent = createEmpty();
-      for (const p of parcels) {
-        const ring = getParcelRing3857(p);
-        if (ring.length > 0) {
-          extendExtent(extent, boundingExtent(ring));
-        }
+  // Fit map view to all parcels in current project (never depends on live GPS ticks)
+  const fitAllParcels = useCallback((animate = true) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const currentParcels = parcelsRef.current;
+    const currentFix = gnssFixRef.current;
+    const extent = createEmpty();
+    for (const p of currentParcels) {
+      const ring = getParcelRing3857(p);
+      if (ring.length > 0) {
+        extendExtent(extent, boundingExtent(ring));
       }
-      if (!isExtentEmpty(extent)) {
-        map.getView().fit(extent, {
-          padding: [56, 48, 175, 56],
-          maxZoom: 19.5,
-          duration: animate ? 380 : 0,
-        });
-      } else if (gnssFix.isLiveHardware && Number.isFinite(gnssFix.lat) && Number.isFinite(gnssFix.lng)) {
-        map.getView().animate({
-          center: fromLonLat([gnssFix.lng, gnssFix.lat]),
-          zoom: 17,
-          duration: animate ? 380 : 0,
-        });
-      } else {
-        map.getView().animate({
-          center: fromLonLat([-66.9036, 10.4806]),
-          zoom: 6,
-          duration: animate ? 380 : 0,
-        });
-      }
-    },
-    [gnssFix.isLiveHardware, gnssFix.lat, gnssFix.lng, parcels]
-  );
+    }
+    if (!isExtentEmpty(extent)) {
+      map.getView().fit(extent, {
+        padding: [56, 48, 175, 56],
+        maxZoom: 20,
+        duration: animate ? 380 : 0,
+      });
+    } else if (currentFix.isLiveHardware && Number.isFinite(currentFix.lat) && Number.isFinite(currentFix.lng)) {
+      map.getView().animate({
+        center: fromLonLat([currentFix.lng, currentFix.lat]),
+        zoom: 17,
+        duration: animate ? 380 : 0,
+      });
+    } else {
+      map.getView().animate({
+        center: fromLonLat([-66.9036, 10.4806]),
+        zoom: 6,
+        duration: animate ? 380 : 0,
+      });
+    }
+  }, []);
 
   // Fit map view to a single parcel
   const flyToParcel = useCallback((parcel: FieldParcel) => {
@@ -178,7 +187,7 @@ export default function ProjectMapScreen({
     const ext = boundingExtent(ring);
     map.getView().fit(ext, {
       padding: [68, 56, 185, 64],
-      maxZoom: 20,
+      maxZoom: 21,
       duration: 380,
     });
   }, []);
@@ -416,8 +425,8 @@ export default function ProjectMapScreen({
       view: new View({
         center: initialCenter,
         zoom: activeParcel ? 18 : 6,
-        minZoom: 5,
-        maxZoom: 21,
+        minZoom: 3,
+        maxZoom: 23,
         constrainResolution: false,
       }),
       controls: [],
@@ -444,7 +453,7 @@ export default function ProjectMapScreen({
     map.on('moveend', updateScale);
     updateScale();
 
-    // Tap interaction: measure OR select vertex OR select parcel
+    // Tap interaction: measure OR select any parcel / vertex freely on the map
     map.on('singleclick', (evt) => {
       if (measureModeRef.current) {
         const pt = evt.coordinate as [number, number];
@@ -452,6 +461,7 @@ export default function ProjectMapScreen({
         return;
       }
 
+      const viewRes = map.getView().getResolution() || 999;
       let hitVertexId: string | null = null;
       let hitParcelId: string | null = null;
       let hitParcelCode: string | null = null;
@@ -460,9 +470,8 @@ export default function ProjectMapScreen({
         evt.pixel,
         (feat) => {
           const kind = feat.get('kind');
-          if (kind === 'vertex' && !hitVertexId) {
+          if (kind === 'vertex' && !hitVertexId && viewRes < 3.0) {
             hitVertexId = String(feat.get('vertexId'));
-            return true;
           }
           if (kind === 'parcel' && !hitParcelId) {
             hitParcelId = String(feat.get('parcelId'));
@@ -473,18 +482,20 @@ export default function ProjectMapScreen({
         { hitTolerance: 10 }
       );
 
+      if (hitParcelId && hitParcelId !== activeParcelRef.current?.id) {
+        onSelectParcelRef.current(hitParcelId);
+        onNotifyRef.current(`Parcela ${hitParcelCode} seleccionada`);
+        return;
+      }
+
       if (hitVertexId) {
-        onStakeVertexRef.current(hitVertexId);
+        onSelectVertexRef.current?.(hitVertexId);
+        onNotifyRef.current(`Vértice ${hitVertexId} seleccionado · Pulsa "Localizar" si deseas guía GPS`);
         return;
       }
 
       if (hitParcelId) {
-        if (hitParcelId !== activeParcelRef.current?.id) {
-          onSelectParcelRef.current(hitParcelId);
-          onNotifyRef.current(`Parcela ${hitParcelCode} seleccionada`);
-        } else {
-          onNotifyRef.current(`Parcela activa: ${hitParcelCode} · Pulsa "Abrir Parcela" para ver vértices`);
-        }
+        onNotifyRef.current(`Parcela activa: ${hitParcelCode} · Pulsa "Abrir Parcela" o "Localizar"`);
       }
     });
 
@@ -577,13 +588,16 @@ export default function ProjectMapScreen({
     }
   }, [parcels, activeParcel, selectedVertexId, showAllParcels]);
 
-  // Fit extent whenever project changes or fitTrigger increments
+  // Fit extent ONLY when project changes, parcels first load, or user presses Encuadrar
   useEffect(() => {
+    const fitKey = `${project?.id || 'none'}:${fitTrigger}:${parcels.length > 0 ? 'ready' : 'empty'}`;
+    if (lastAutoFitKeyRef.current === fitKey) return;
+    lastAutoFitKeyRef.current = fitKey;
     const t = setTimeout(() => fitAllParcels(fitTrigger > 0), 80);
     return () => clearTimeout(t);
-  }, [fitAllParcels, fitTrigger, project?.id]);
+  }, [fitAllParcels, fitTrigger, project?.id, parcels.length]);
 
-  // Update GNSS live marker + accuracy ring + vector guía al vértice seleccionado
+  // Update GNSS live marker + accuracy ring + optional vector guía al vértice seleccionado
   useEffect(() => {
     const gSrc = gnssSourceRef.current;
     gSrc.clear();
@@ -599,7 +613,7 @@ export default function ProjectMapScreen({
       })
     );
 
-    if (gnssFix.isLiveHardware && activeParcel && activeParcel.vertices.length > 0) {
+    if (showGpsGuide && gnssFix.isLiveHardware && activeParcel && activeParcel.vertices.length > 0) {
       const targetV =
         activeParcel.vertices.find((v) => v.id === selectedVertexId) ||
         activeParcel.vertices[0];
@@ -640,7 +654,7 @@ export default function ProjectMapScreen({
         kind: 'gnss_puck',
       })
     );
-  }, [gnssFix, activeParcel, selectedVertexId]);
+  }, [gnssFix, activeParcel, selectedVertexId, showGpsGuide]);
 
   // Update interactive measure features
   useEffect(() => {
@@ -677,7 +691,7 @@ export default function ProjectMapScreen({
     const view = mapRef.current?.getView();
     if (!view) return;
     const z = view.getZoom() ?? 18;
-    view.animate({ zoom: Math.max(5, Math.min(21, z + delta)), duration: 220 });
+    view.animate({ zoom: Math.max(3, Math.min(23, z + delta)), duration: 220 });
   };
 
   const handleCycleBaseLayer = () => {
@@ -886,6 +900,23 @@ export default function ProjectMapScreen({
           >
             <Crosshair className="w-4 h-4" />
           </button>
+          <button
+            type="button"
+            aria-label="Guía GPS al vértice"
+            onClick={() => {
+              setShowGpsGuide((prev) => {
+                const next = !prev;
+                onNotify(next ? 'Guía GPS al vértice activada' : 'Guía GPS desactivada (navegación libre)');
+                return next;
+              });
+            }}
+            className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${
+              showGpsGuide ? 'text-[#003824] bg-[#4edea3]' : 'text-[#bcc9cd] hover:text-[#4edea3]'
+            }`}
+            title="Mostrar u ocultar línea guía desde GPS al vértice seleccionado"
+          >
+            <Compass className="w-4 h-4" />
+          </button>
         </div>
 
         {/* Right Floating Zoom & Base Layer Controls */}
@@ -969,11 +1000,12 @@ export default function ProjectMapScreen({
               <div className="flex items-center gap-2 pt-0.5">
                 <button
                   type="button"
-                  onClick={() => onStakeVertex(activeParcel.vertices[0]?.id || 'V-01')}
-                  className="h-11 px-3 rounded bg-[#242a3a] text-[#dde2f8] hover:bg-[#33394a] flex items-center justify-center transition-colors"
-                  title="Ir directo a Replanteo RTK"
+                  onClick={() => onStakeVertex(selectedVertexId || activeParcel.vertices[0]?.id || 'V-01')}
+                  className="h-11 px-3 rounded bg-[#242a3a] text-[#4cd7f6] hover:bg-[#33394a] flex items-center justify-center gap-1.5 font-stitch-headline text-[11.5px] font-bold uppercase transition-colors shrink-0"
+                  title="Abrir Localización GPS para el vértice seleccionado"
                 >
-                  <Share2 className="w-4 h-4 text-[#4cd7f6]" />
+                  <Crosshair className="w-4 h-4" />
+                  <span>Localizar</span>
                 </button>
                 <button
                   type="button"

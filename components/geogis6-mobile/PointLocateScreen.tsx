@@ -21,6 +21,7 @@ import {
   Radar,
   RotateCcw,
   Save,
+  Search,
   SlidersHorizontal,
   X,
 } from 'lucide-react';
@@ -43,11 +44,13 @@ import StakeoutRadar, { type RadarOrientationMode } from './StakeoutRadar';
 
 interface PointLocateScreenProps {
   parcel: FieldParcel | null;
+  parcels?: FieldParcel[];
   selectedVertexId: string;
   crsMode: CrsMode;
   gnssFix: LiveGnssFix;
   shiftEste: number;
   shiftNorte: number;
+  onSelectParcel?: (parcelId: string) => void;
   onSelectVertex: (vertexId: string) => void;
   onApplyShift: (dE: number, dN: number) => void;
   onCaptureCurrentVertex: (averagedFix?: Partial<LiveGnssFix>) => void;
@@ -64,11 +67,13 @@ function getStakedStorageKey(parcelId: string): string {
 
 export default function PointLocateScreen({
   parcel,
+  parcels,
   selectedVertexId,
   crsMode,
   gnssFix,
   shiftEste,
   shiftNorte,
+  onSelectParcel,
   onSelectVertex,
   onApplyShift,
   onCaptureCurrentVertex,
@@ -81,6 +86,8 @@ export default function PointLocateScreen({
   const [orientationMode, setOrientationMode] = useState<RadarOrientationMode>('north_up');
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [showPointsPicker, setShowPointsPicker] = useState(false);
+  const [showParcelPicker, setShowParcelPicker] = useState(false);
+  const [parcelQuery, setParcelQuery] = useState('');
   const [sortByNearest, setSortByNearest] = useState(false);
   const [draftShiftE, setDraftShiftE] = useState(shiftEste.toFixed(3));
   const [draftShiftN, setDraftShiftN] = useState(shiftNorte.toFixed(3));
@@ -598,9 +605,24 @@ export default function PointLocateScreen({
                   <span className="font-stitch-headline text-[16px] font-semibold leading-none text-[#dde2f8]">
                     {target.id}
                   </span>
-                  <span className="font-stitch-mono text-[9.5px] bg-[#242a3a] px-1.5 py-0.5 rounded text-[#bcc9cd] truncate">
-                    {parcel.code}
-                  </span>
+                  {parcels && parcels.length > 1 && onSelectParcel ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setParcelQuery('');
+                        setShowParcelPicker(true);
+                      }}
+                      className="font-stitch-mono text-[9.5px] bg-[#242a3a] hover:bg-[#2f3445] border border-[#4cd7f6]/40 px-1.5 py-0.5 rounded text-[#4cd7f6] truncate flex items-center gap-1"
+                      title="Cambiar de parcela"
+                    >
+                      <span className="truncate">{parcel.code}</span>
+                      <span className="text-[8px] opacity-80">▼</span>
+                    </button>
+                  ) : (
+                    <span className="font-stitch-mono text-[9.5px] bg-[#242a3a] px-1.5 py-0.5 rounded text-[#bcc9cd] truncate">
+                      {parcel.code}
+                    </span>
+                  )}
                 </div>
                 <span className="font-stitch-mono text-[10px] text-[#869397] truncate mt-0.5">
                   {target.code} · {crsMode === 'regven' ? `REGVEN ${parcel.huso}N` : `PSAD56 ${parcel.huso}N`}
@@ -1029,6 +1051,79 @@ export default function PointLocateScreen({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Selector de Cualquier Parcela del Proyecto */}
+      {showParcelPicker && parcels && onSelectParcel && (
+        <div className="absolute inset-0 z-50 bg-[#0d1322]/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full bg-[#191f2f] rounded-xl p-4 shadow-2xl flex flex-col gap-2.5 border border-[#2f3445]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-stitch-headline text-[15px] font-semibold truncate">
+                Cambiar Parcela ({parcels.length})
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowParcelPicker(false)}
+                className="w-7 h-7 rounded bg-[#242a3a] text-[#bcc9cd] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="relative flex items-center">
+              <Search className="w-4 h-4 absolute left-3 text-[#869397]" />
+              <input
+                type="text"
+                value={parcelQuery}
+                onChange={(e) => setParcelQuery(e.target.value)}
+                placeholder="Buscar código, sector o propietario..."
+                className="w-full h-9 bg-[#080e1d] border border-[#242a3a] rounded-lg pl-9 pr-3 font-stitch-mono text-[11px] text-[#dde2f8] placeholder:text-[#869397] outline-none focus:border-[#4cd7f6]/60"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto no-scrollbar">
+              {parcels
+                .filter((p) => {
+                  const q = parcelQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    p.code.toLowerCase().includes(q) ||
+                    p.owner.toLowerCase().includes(q) ||
+                    p.sector.toLowerCase().includes(q)
+                  );
+                })
+                .map((p) => {
+                  const isSel = p.id === parcel.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        onSelectParcel(p.id);
+                        setShowParcelPicker(false);
+                        onNotify(`Parcela ${p.code} seleccionada`);
+                      }}
+                      className={`w-full text-left p-2.5 rounded-lg border transition-colors ${
+                        isSel
+                          ? 'bg-[#242a3a] border-[#4cd7f6]/60'
+                          : 'bg-[#080e1d] border-[#242a3a] hover:bg-[#151b2b]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-stitch-headline text-[13.5px] font-bold text-[#dde2f8] truncate">
+                          {p.code}
+                        </span>
+                        <span className="font-stitch-mono text-[10px] text-[#4edea3] shrink-0">
+                          {p.vertices.length}V · {p.areaGraficaM2.toLocaleString('en-US', { maximumFractionDigits: 1 })} m²
+                        </span>
+                      </div>
+                      <div className="font-stitch-mono text-[9.5px] text-[#869397] truncate mt-0.5">
+                        {p.owner} · {p.sector}
+                      </div>
+                    </button>
+                  );
+                })}
             </div>
           </div>
         </div>

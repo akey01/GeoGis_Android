@@ -1116,6 +1116,7 @@ export default function GeoGis6MobileShell() {
             fitTrigger={mapFitTrigger}
             onToggleCrs={handleToggleCrs}
             onSelectParcel={handleSelectParcel}
+            onSelectVertex={setSelectedVertexId}
             onOpenParcel={() => setActiveScreen('parcela')}
             onOpenProjects={() => setActiveScreen('auth')}
             onCreateStarterParcel={handleCreateStarterParcelFromGps}
@@ -1149,11 +1150,13 @@ export default function GeoGis6MobileShell() {
         {activeScreen === 'localizacion' && (
           <PointLocateScreen
             parcel={activeParcel}
+            parcels={parcels}
             selectedVertexId={selectedVertexId}
             crsMode={crsMode}
             gnssFix={gnssFix}
             shiftEste={shiftEste}
             shiftNorte={shiftNorte}
+            onSelectParcel={handleSelectParcel}
             onSelectVertex={setSelectedVertexId}
             onApplyShift={(dE, dN) => {
               setShiftEste(dE);
