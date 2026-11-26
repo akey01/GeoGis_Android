@@ -12,15 +12,27 @@ export interface GeoPoint {
   desc: string;
 }
 
+export interface DXFVertex {
+  e: number;
+  n: number;
+  lat?: number;
+  lng?: number;
+  result?: any;
+}
+
 export interface DXFPolygon {
   id: string;
   layer: string;
-  vertices: { e: number; n: number }[];
+  vertices: DXFVertex[];
   closed: boolean;
   entityType: string;
   color: string;
   /** Huso UTM detectado del archivo DXF (18-21). Necesario para reproyectar correctamente a EPSG:3857. */
   huso: number;
+  /** True si los vértices vienen en grados geográficos (Lon/Lat) en lugar de metros UTM. */
+  isGeographic?: boolean;
+  /** Código EPSG de las coordenadas transformadas cuando están en dxfPreview. */
+  resultEpsg?: string;
 }
 
 const LAYER_COLORS = [
@@ -411,7 +423,7 @@ export const FileService = {
   },
 
   /**
-   * Parse DXF (Points & Vertices)
+   * Parse DXF (Points, Vertices & LWPOLYLINE)
    */
   async parseDXF(file: File): Promise<GeoPoint[]> {
     const text = await file.text();
@@ -423,7 +435,7 @@ export const FileService = {
     let pointIdx = 1;
 
     const flush = () => {
-      if (x !== null && y !== null) {
+      if (x !== null && y !== null && Number.isFinite(x) && Number.isFinite(y) && (x !== 0 || y !== 0)) {
         points.push({
           id: name || `P${pointIdx++}`,
           e: x,
@@ -436,16 +448,20 @@ export const FileService = {
     };
 
     while (i < lines.length) {
-      const code = parseInt(lines[i]?.trim());
+      const code = parseInt(lines[i]?.trim(), 10);
       const val = lines[i + 1]?.trim();
 
       if (code === 0) {
         flush();
         entityType = val?.toUpperCase() || '';
-      } else if ((entityType === 'POINT' || entityType === 'VERTEX') && !isNaN(code)) {
-        if (code === 10) x = parseFloat(val);
-        else if (code === 20) y = parseFloat(val);
-        else if (code === 30) z = parseFloat(val);
+      } else if ((entityType === 'POINT' || entityType === 'VERTEX' || entityType === 'LWPOLYLINE') && !isNaN(code)) {
+        if (code === 10) {
+          if (entityType === 'LWPOLYLINE' && x !== null && y !== null) {
+            flush();
+          }
+          x = parseFloat(val);
+        } else if (code === 20) y = parseFloat(val);
+        else if (code === 30 || code === 38) z = parseFloat(val);
         else if (code === 1 || code === 400) name = val;
       }
       i += 2;
@@ -455,89 +471,358 @@ export const FileService = {
   },
 
   /**
-   * Parse DXF polygons (LWPOLYLINE, POLYLINE, LINE, CIRCLE)
+   * Parse DXF polygons (LWPOLYLINE con bulge, POLYLINE, LINE encadenadas, ARC, CIRCLE, SPLINE, SOLID, INSERT)
    */
   parseDXFPolygons(dxfText: string): { polygons: DXFPolygon[]; huso: number } {
-    const DxfParser = require('dxf-parser').default;
+    const DxfParser = require('dxf-parser').default || require('dxf-parser');
     const parser = new DxfParser();
     const dxf = parser.parseSync(dxfText);
-    const polygons: DXFPolygon[] = [];
-    const entities = dxf.entities || [];
+    const entities = dxf?.entities || [];
+    const blocks = dxf?.blocks || {};
 
-    for (const entity of entities) {
-      let verts: { x: number; y: number }[] = [];
-      let closed = false;
+    type Pt2 = { x: number; y: number };
+    interface RawShape {
+      verts: Pt2[];
+      closed: boolean;
+      layer: string;
+      entityType: string;
+    }
+    interface RawLineSeg {
+      a: Pt2;
+      b: Pt2;
+      layer: string;
+      used: boolean;
+    }
+    interface InsertXform {
+      ox: number;
+      oy: number;
+      sx: number;
+      sy: number;
+      rotRad: number;
+    }
+
+    const IDENTITY_XFORM: InsertXform = { ox: 0, oy: 0, sx: 1, sy: 1, rotRad: 0 };
+
+    const applyXform = (pt: Pt2, xf: InsertXform): Pt2 => {
+      const lx = pt.x * xf.sx;
+      const ly = pt.y * xf.sy;
+      if (Math.abs(xf.rotRad) < 1e-9) {
+        return { x: xf.ox + lx, y: xf.oy + ly };
+      }
+      const c = Math.cos(xf.rotRad);
+      const s = Math.sin(xf.rotRad);
+      return {
+        x: xf.ox + lx * c - ly * s,
+        y: xf.oy + lx * s + ly * c,
+      };
+    };
+
+    const tessellateBulge = (p1: Pt2, p2: Pt2, bulge: number): Pt2[] => {
+      if (!Number.isFinite(bulge) || Math.abs(bulge) < 1e-6) return [];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const chord = Math.hypot(dx, dy);
+      if (chord < 1e-6) return [];
+      const theta = 4 * Math.atan(bulge);
+      const denomSin = Math.sin(Math.abs(theta) / 2);
+      if (denomSin < 1e-9) return [];
+      const radius = chord / (2 * denomSin);
+      const sagittaFactor = (1 - bulge * bulge) / (2 * bulge);
+      const mx = (p1.x + p2.x) * 0.5;
+      const my = (p1.y + p2.y) * 0.5;
+      const nx = -dy / chord;
+      const ny = dx / chord;
+      const cx = mx + nx * (chord * 0.5 * sagittaFactor);
+      const cy = my + ny * (chord * 0.5 * sagittaFactor);
+      const startAngle = Math.atan2(p1.y - cy, p1.x - cx);
+      const steps = Math.max(2, Math.min(16, Math.ceil((Math.abs(theta) / (2 * Math.PI)) * 36)));
+      const extra: Pt2[] = [];
+      for (let k = 1; k < steps; k++) {
+        const a = startAngle + (theta * k) / steps;
+        extra.push({ x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) });
+      }
+      return extra;
+    };
+
+    const rawShapes: RawShape[] = [];
+    const rawLines: RawLineSeg[] = [];
+
+    const expandEntity = (entity: any, xf: InsertXform, parentLayer: string | null, depth: number) => {
+      if (!entity || !entity.type) return;
+      const layer = String(entity.layer && entity.layer !== '0' ? entity.layer : parentLayer || entity.layer || '0');
 
       switch (entity.type) {
         case 'LWPOLYLINE':
-          verts = (entity.vertices || []).map((v: any) => ({ x: v.x, y: v.y }));
-          closed = entity.shape === true;
-          break;
-        case 'POLYLINE':
-          verts = (entity.vertices || []).map((v: any) => ({ x: v.x, y: v.y }));
-          closed = entity.shape === true;
-          break;
-        case 'LINE':
-          verts = [
-            { x: entity.start?.x ?? 0, y: entity.start?.y ?? 0 },
-            { x: entity.end?.x ?? 0, y: entity.end?.y ?? 0 },
-          ];
-          closed = false;
-          break;
-        case 'CIRCLE': {
-          const cx = entity.center?.x ?? 0;
-          const cy = entity.center?.y ?? 0;
-          const r = entity.radius ?? 1;
-          const segments = 36;
-          for (let i = 0; i < segments; i++) {
-            const a = (2 * Math.PI * i) / segments;
-            verts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+        case 'POLYLINE': {
+          const rawV: any[] = Array.isArray(entity.vertices) ? entity.vertices : [];
+          if (rawV.length < 2) break;
+          const isClosed = Boolean(
+            entity.shape === true ||
+            entity.closed === true ||
+            ((Number(entity.flags) || 0) & 1) === 1
+          );
+          const expanded: Pt2[] = [];
+          for (let idx = 0; idx < rawV.length; idx++) {
+            const v = rawV[idx];
+            if (!Number.isFinite(v?.x) || !Number.isFinite(v?.y)) continue;
+            const p1 = applyXform({ x: v.x, y: v.y }, xf);
+            expanded.push(p1);
+            const bulge = Number(v.bulge ?? 0);
+            const hasNext = idx < rawV.length - 1 || isClosed;
+            if (hasNext && Math.abs(bulge) > 1e-6) {
+              const vNext = rawV[(idx + 1) % rawV.length];
+              if (Number.isFinite(vNext?.x) && Number.isFinite(vNext?.y)) {
+                const p2 = applyXform({ x: vNext.x, y: vNext.y }, xf);
+                expanded.push(...tessellateBulge(p1, p2, bulge));
+              }
+            }
           }
-          closed = true;
+          if (expanded.length >= 2) {
+            rawShapes.push({ verts: expanded, closed: isClosed, layer, entityType: entity.type });
+          }
+          break;
+        }
+        case 'LINE': {
+          const s = entity.vertices?.[0] ?? entity.start;
+          const e = entity.vertices?.[1] ?? entity.end;
+          if (!Number.isFinite(s?.x) || !Number.isFinite(s?.y) || !Number.isFinite(e?.x) || !Number.isFinite(e?.y)) {
+            break;
+          }
+          const a = applyXform({ x: s.x, y: s.y }, xf);
+          const b = applyXform({ x: e.x, y: e.y }, xf);
+          if (Math.hypot(b.x - a.x, b.y - a.y) > 1e-4) {
+            rawLines.push({ a, b, layer, used: false });
+          }
+          break;
+        }
+        case 'ARC': {
+          const cx = entity.center?.x;
+          const cy = entity.center?.y;
+          const r = entity.radius;
+          if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(r) || r <= 0) break;
+          const a0 = Number(entity.startAngle ?? 0);
+          const a1 = Number(entity.endAngle ?? Math.PI * 2);
+          let sweep = a1 - a0;
+          if (sweep <= 0) sweep += Math.PI * 2;
+          const steps = Math.max(8, Math.min(36, Math.ceil((sweep / (Math.PI * 2)) * 36)));
+          const pts: Pt2[] = [];
+          for (let k = 0; k <= steps; k++) {
+            const ang = a0 + (sweep * k) / steps;
+            pts.push(applyXform({ x: cx + r * Math.cos(ang), y: cy + r * Math.sin(ang) }, xf));
+          }
+          rawShapes.push({ verts: pts, closed: false, layer, entityType: 'ARC' });
+          break;
+        }
+        case 'CIRCLE': {
+          const cx = entity.center?.x;
+          const cy = entity.center?.y;
+          const r = entity.radius ?? 1;
+          if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(r) || r <= 0) break;
+          const pts: Pt2[] = [];
+          const segments = 36;
+          for (let k = 0; k < segments; k++) {
+            const a = (2 * Math.PI * k) / segments;
+            pts.push(applyXform({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }, xf));
+          }
+          rawShapes.push({ verts: pts, closed: true, layer, entityType: 'CIRCLE' });
+          break;
+        }
+        case 'SPLINE': {
+          const srcPts: any[] =
+            (Array.isArray(entity.fitPoints) && entity.fitPoints.length >= 2)
+              ? entity.fitPoints
+              : (Array.isArray(entity.controlPoints) ? entity.controlPoints : []);
+          const pts: Pt2[] = srcPts
+            .filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y))
+            .map((p) => applyXform({ x: p.x, y: p.y }, xf));
+          if (pts.length >= 2) {
+            const isClosed = Boolean(entity.closed || ((Number(entity.flags) || 0) & 1) === 1);
+            rawShapes.push({ verts: pts, closed: isClosed, layer, entityType: 'SPLINE' });
+          }
+          break;
+        }
+        case 'SOLID':
+        case '3DFACE': {
+          const corners: any[] = Array.isArray(entity.points) ? entity.points : [];
+          const pts: Pt2[] = [];
+          for (const p of corners) {
+            if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
+            const mappedPt = applyXform({ x: p.x, y: p.y }, xf);
+            if (pts.length === 0 || Math.hypot(mappedPt.x - pts[pts.length - 1].x, mappedPt.y - pts[pts.length - 1].y) > 1e-4) {
+              pts.push(mappedPt);
+            }
+          }
+          if (pts.length >= 3) {
+            rawShapes.push({ verts: pts, closed: true, layer, entityType: entity.type });
+          }
+          break;
+        }
+        case 'INSERT': {
+          if (depth >= 4 || !entity.name) break;
+          const block = blocks[entity.name];
+          if (!block || !Array.isArray(block.entities) || block.entities.length === 0) break;
+          const pos = entity.position || { x: 0, y: 0 };
+          const bx = Number.isFinite(pos.x) ? pos.x : 0;
+          const by = Number.isFinite(pos.y) ? pos.y : 0;
+          const worldOrigin = applyXform({ x: bx, y: by }, xf);
+          const childXf: InsertXform = {
+            ox: worldOrigin.x,
+            oy: worldOrigin.y,
+            sx: xf.sx * (Number.isFinite(entity.xScale) ? entity.xScale : 1),
+            sy: xf.sy * (Number.isFinite(entity.yScale) ? entity.yScale : 1),
+            rotRad: xf.rotRad + ((Number.isFinite(entity.rotation) ? entity.rotation : 0) * Math.PI) / 180,
+          };
+          for (const sub of block.entities) {
+            expandEntity(sub, childXf, layer, depth + 1);
+          }
           break;
         }
       }
+    };
 
-      if (verts.length < 2) continue;
+    for (const entity of entities) {
+      expandEntity(entity, IDENTITY_XFORM, null, 0);
+    }
 
-      const avgX = verts.reduce((s, v) => s + v.x, 0) / verts.length;
-      const avgY = verts.reduce((s, v) => s + v.y, 0) / verts.length;
-      // En CAD/DXF estándar: X = Este, Y = Norte.
-      // Solo se invierte si en el CAD se dibujó explícitamente con Norte en X y Este en Y.
-      const isCADInvertido = Math.abs(avgX) > 1000000 && Math.abs(avgY) < 1000000;
+    // Encadenar segmentos LINE conectados de una misma capa en polilíneas/polígonos continuos
+    const STITCH_TOL = 0.05;
+    const linesByLayer = new Map<string, RawLineSeg[]>();
+    for (const seg of rawLines) {
+      if (!linesByLayer.has(seg.layer)) linesByLayer.set(seg.layer, []);
+      linesByLayer.get(seg.layer)!.push(seg);
+    }
 
-      const mapped = verts.map(v => ({
-        n: isCADInvertido ? v.x : v.y,
-        e: isCADInvertido ? v.y : v.x,
-      }));
+    linesByLayer.forEach((segs, layer) => {
+      for (let i = 0; i < segs.length; i++) {
+        if (segs[i].used) continue;
+        segs[i].used = true;
+        const chain: Pt2[] = [segs[i].a, segs[i].b];
 
-      const EPS = 0.01;
-      if (!closed && mapped.length >= 3) {
+        let extended = true;
+        while (extended) {
+          extended = false;
+          const tail = chain[chain.length - 1];
+          for (let j = 0; j < segs.length; j++) {
+            if (segs[j].used) continue;
+            if (Math.hypot(segs[j].a.x - tail.x, segs[j].a.y - tail.y) <= STITCH_TOL) {
+              segs[j].used = true;
+              chain.push(segs[j].b);
+              extended = true;
+              break;
+            }
+            if (Math.hypot(segs[j].b.x - tail.x, segs[j].b.y - tail.y) <= STITCH_TOL) {
+              segs[j].used = true;
+              chain.push(segs[j].a);
+              extended = true;
+              break;
+            }
+          }
+          if (extended) continue;
+          const head = chain[0];
+          for (let j = 0; j < segs.length; j++) {
+            if (segs[j].used) continue;
+            if (Math.hypot(segs[j].b.x - head.x, segs[j].b.y - head.y) <= STITCH_TOL) {
+              segs[j].used = true;
+              chain.unshift(segs[j].a);
+              extended = true;
+              break;
+            }
+            if (Math.hypot(segs[j].a.x - head.x, segs[j].a.y - head.y) <= STITCH_TOL) {
+              segs[j].used = true;
+              chain.unshift(segs[j].b);
+              extended = true;
+              break;
+            }
+          }
+        }
+
+        const first = chain[0];
+        const last = chain[chain.length - 1];
+        const closedChain = chain.length >= 3 && Math.hypot(first.x - last.x, first.y - last.y) <= STITCH_TOL;
+        rawShapes.push({
+          verts: closedChain ? chain.slice(0, -1) : chain,
+          closed: closedChain,
+          layer,
+          entityType: closedChain ? 'LINE_POLY' : 'LINE',
+        });
+      }
+    });
+
+    // Filtrar geometrías nulas (0,0) o artefactos de espacio papel cuando el plano tiene coordenadas métricas UTM
+    const nonDegenerate = rawShapes.filter((s) => {
+      if (s.verts.length < 2) return false;
+      return s.verts.some((v) => Math.abs(v.x) > 1e-4 || Math.abs(v.y) > 1e-4);
+    });
+
+    const hasUtmScale = nonDegenerate.some((s) =>
+      s.verts.some((v) => Math.abs(v.x) > 10000 || Math.abs(v.y) > 10000)
+    );
+
+    const filteredShapes = hasUtmScale
+      ? nonDegenerate.filter((s) => s.verts.some((v) => Math.abs(v.x) >= 500 || Math.abs(v.y) >= 500))
+      : nonDegenerate;
+
+    const polygons: DXFPolygon[] = [];
+
+    for (const shape of filteredShapes) {
+      const verts = shape.verts;
+      let closed = shape.closed;
+
+      const isGeographic =
+        verts.every((v) => Math.abs(v.x) <= 180 && Math.abs(v.y) <= 90) &&
+        verts.some((v) => Math.abs(v.x) > 1e-6 || Math.abs(v.y) > 1e-6);
+
+      let mapped: DXFVertex[];
+      if (isGeographic) {
+        const avgX = verts.reduce((s, v) => s + v.x, 0) / verts.length;
+        const avgY = verts.reduce((s, v) => s + v.y, 0) / verts.length;
+        // En CAD estándar X=Lon (-73..-59 en VE), Y=Lat (0.5..13); detectar si viene invertido
+        const swappedGeo = Math.abs(avgX) <= 15 && Math.abs(avgY) >= 50;
+        mapped = verts.map((v) => ({
+          e: swappedGeo ? v.y : v.x,
+          n: swappedGeo ? v.x : v.y,
+        }));
+      } else {
+        const avgX = verts.reduce((s, v) => s + v.x, 0) / verts.length;
+        const avgY = verts.reduce((s, v) => s + v.y, 0) / verts.length;
+        // En CAD/DXF estándar: X = Este, Y = Norte. Solo invierte si X > 1.000.000 e Y < 1.000.000
+        const isCADInvertido = Math.abs(avgX) > 1000000 && Math.abs(avgY) < 1000000;
+        mapped = verts.map((v) => ({
+          n: isCADInvertido ? v.x : v.y,
+          e: isCADInvertido ? v.y : v.x,
+        }));
+      }
+
+      const EPS = isGeographic ? 1e-6 : 0.01;
+      while (mapped.length >= 3) {
         const first = mapped[0];
         const last = mapped[mapped.length - 1];
-        if (Math.abs(first.e - last.e) < EPS && Math.abs(first.n - last.n) < EPS) {
+        if (Math.hypot(first.e - last.e, first.n - last.n) <= EPS) {
           closed = true;
+          mapped = mapped.slice(0, -1);
+        } else {
+          break;
         }
       }
 
-      const layer = entity.layer || '0';
+      if (mapped.length < 2) continue;
 
-      // Calcular huso provisional por polígono usando el promedio del Este
       const avgEPoly = mapped.reduce((s, v) => s + v.e, 0) / mapped.length;
       const husoPoly = autoDetectHuso(avgEPoly);
 
       polygons.push({
         id: `DXF-${polygons.length + 1}`,
-        layer,
+        layer: shape.layer,
         vertices: mapped,
         closed,
-        entityType: entity.type,
-        color: colorByLayer(layer),
+        entityType: shape.entityType,
+        color: colorByLayer(shape.layer),
         huso: husoPoly,
+        isGeographic,
       });
     }
 
-    let globalAvgE = 20;
+    let globalAvgHuso = autoDetectHuso(0);
     if (polygons.length > 0) {
       let totalE = 0;
       let count = 0;
@@ -547,9 +832,9 @@ export const FileService = {
           count++;
         }
       }
-      globalAvgE = autoDetectHuso(count > 0 ? totalE / count : 0);
+      globalAvgHuso = autoDetectHuso(count > 0 ? totalE / count : 0);
     }
-    return { polygons, huso: globalAvgE };
+    return { polygons, huso: globalAvgHuso };
   },
 
   /**

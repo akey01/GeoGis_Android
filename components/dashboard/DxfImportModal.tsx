@@ -16,7 +16,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
   const [polygons, setPolygons] = useState<DXFPolygon[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { method, rigidCorrection, autoResiduoMalla, direction, setDxfPreview, huso: storeHuso } = useAppStore();
+  const { routine, method, rigidCorrection, adicoraCorrection, autoResiduoMalla, direction, setDxfPreview, huso: storeHuso } = useAppStore();
   const [sourceDatum, setSourceDatum] = useState<'psad56' | 'regven' | 'wgs84'>('psad56');
   const [importHuso, setImportHuso] = useState(storeHuso);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -43,6 +43,9 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
       const result = FileService.parseDXFPolygons(text);
       setPolygons(result.polygons);
       setImportHuso(result.huso);
+      if (result.polygons.some((p) => p.isGeographic)) {
+        setSourceDatum('wgs84');
+      }
       setSelectedIds(new Set(result.polygons.map(p => p.id)));
       const firstLayer = result.polygons[0]?.layer;
       setExpandedLayers(new Set(firstLayer ? [firstLayer] : []));
@@ -84,16 +87,60 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
     });
   };
 
-  const transformPolygon = (poly: DXFPolygon) => {
+  const transformPolygon = (poly: DXFPolygon): DXFPolygon => {
     const huso = importHuso;
-    const destIsPsad56 = direction === 'regven_canoa';
     const sourceIsPsad56 = sourceDatum === 'psad56';
+    const destIsPsad56 = routine === 'ploteo' ? sourceIsPsad56 : direction === 'regven_canoa';
+    const resultDir: 'canoa_regven' | 'regven_canoa' = destIsPsad56 ? 'regven_canoa' : 'canoa_regven';
+    const resultEpsg = destIsPsad56 ? `EPSG:248${huso}` : `EPSG:220${huso - 17}`;
 
-    const transformedVerts = poly.vertices.map(v => {
+    const srcUtmVerts = poly.vertices.map((v) => {
+      const isGeoPt =
+        poly.isGeographic ||
+        (sourceDatum === 'wgs84' && Math.abs(v.e) <= 180 && Math.abs(v.n) <= 90);
+      if (isGeoPt) {
+        const utmSrc = GeoEngine.geoToUTM(v.n, v.e, huso, sourceIsPsad56 ? HAYFORD : GRS80);
+        return { e: utmSrc.este, n: utmSrc.norte, origE: v.e, origN: v.n };
+      }
+      return { e: v.e, n: v.n, origE: v.e, origN: v.n };
+    });
+
+    if (sourceIsPsad56 && !destIsPsad56 && method === 'rigida02') {
+      const r02 = GeoEngine.transformRigida02(
+        srcUtmVerts.map((v, i) => ({
+          id: `P${i + 1}`,
+          norte_origen: v.n,
+          este_origen: v.e,
+          cota_origen: 0,
+        })),
+        {
+          deltaEste: adicoraCorrection?.de,
+          deltaNorte: adicoraCorrection?.dn,
+          cotaGeoidal: adicoraCorrection?.cotaGeoidal,
+        }
+      );
+      const transformedVerts = srcUtmVerts.map((v, i) => {
+        const res02 = r02.resultados[i];
+        const geoD = GeoEngine.utmToGeo(res02.este_regven, res02.norte_regven, huso, false, GRS80);
+        const result = {
+          este: res02.este_regven,
+          norte: res02.norte_regven,
+          lat: geoD.lat,
+          lng: geoD.lng,
+          huso,
+          direction: resultDir,
+          dLineal: Math.hypot(res02.este_regven - v.e, res02.norte_regven - v.n),
+        };
+        return { e: v.e, n: v.n, lat: result.lat, lng: result.lng, result };
+      });
+      return { ...poly, huso, resultEpsg, vertices: transformedVerts };
+    }
+
+    const transformedVerts = srcUtmVerts.map((v) => {
       let result: any;
 
       if (sourceIsPsad56 === destIsPsad56) {
-        // Mismo datum (No se requiere desplazamiento geodésico)
+        // Mismo datum o Ploteo Directo sin desplazamiento geodésico
         const el = sourceIsPsad56 ? HAYFORD : GRS80;
         const geo = GeoEngine.utmToGeo(v.e, v.n, huso, false, el);
         result = {
@@ -101,6 +148,8 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
           norte: v.n,
           lat: geo.lat,
           lng: geo.lng,
+          huso,
+          direction: resultDir,
           dLineal: 0,
         };
       } else if (sourceIsPsad56 && !destIsPsad56) {
@@ -108,21 +157,22 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
         if (method === 'rigida') {
           const dnVal = autoResiduoMalla ? undefined : rigidCorrection.dn;
           const deVal = autoResiduoMalla ? undefined : rigidCorrection.de;
-          result = GeoEngine.transformRigida(v.e, v.n, 0, huso, false, dnVal, deVal); // false = directo (PSAD56->REGVEN)
+          result = GeoEngine.transformRigida(v.e, v.n, 0, huso, false, dnVal, deVal);
         } else if (method === 'dma_badekas' || method === 'dma_badekas_regven') {
           const dmaType = method === 'dma_badekas' ? 'dma_psad56_real' : 'dma_regven';
           result = GeoEngine.transformDma(v.e, v.n, 0, huso, dmaType);
         } else {
-          // Badekas standard
           const geoO = GeoEngine.utmToGeo(v.e, v.n, huso, false, HAYFORD);
           let cart = GeoEngine.geoToCart(geoO.lat, geoO.lng, 0, HAYFORD);
           cart = GeoEngine.badekas(cart.X, cart.Y, cart.Z, false);
           const geoD = GeoEngine.cartToGeo(cart.X, cart.Y, cart.Z, GRS80);
           const utmD = GeoEngine.geoToUTM(geoD.lat, geoD.lng, huso, GRS80);
           result = {
-            este: utmD.este, norte: utmD.norte,
-            lat: geoD.lat, lng: geoD.lng,
-            dLineal: Math.sqrt((utmD.este - v.e) ** 2 + (utmD.norte - v.n) ** 2),
+            este: utmD.este,
+            norte: utmD.norte,
+            lat: geoD.lat,
+            lng: geoD.lng,
+            dLineal: Math.hypot(utmD.este - v.e, utmD.norte - v.n),
           };
         }
       } else {
@@ -130,26 +180,28 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
         if (method === 'rigida') {
           const dnVal = autoResiduoMalla ? undefined : rigidCorrection.dn;
           const deVal = autoResiduoMalla ? undefined : rigidCorrection.de;
-          result = GeoEngine.transformRigida(v.e, v.n, 0, huso, true, dnVal, deVal); // true = inverso (REGVEN->PSAD56)
+          result = GeoEngine.transformRigida(v.e, v.n, 0, huso, true, dnVal, deVal);
         } else {
-          // Badekas standard inverso
           const geoO = GeoEngine.utmToGeo(v.e, v.n, huso, false, GRS80);
           let cart = GeoEngine.geoToCart(geoO.lat, geoO.lng, 0, GRS80);
           cart = GeoEngine.badekas(cart.X, cart.Y, cart.Z, true);
           const geoD = GeoEngine.cartToGeo(cart.X, cart.Y, cart.Z, HAYFORD);
           const utmD = GeoEngine.geoToUTM(geoD.lat, geoD.lng, huso, HAYFORD);
           result = {
-            este: utmD.este, norte: utmD.norte,
-            lat: geoD.lat, lng: geoD.lng,
-            dLineal: Math.sqrt((utmD.este - v.e) ** 2 + (utmD.norte - v.n) ** 2),
+            este: utmD.este,
+            norte: utmD.norte,
+            lat: geoD.lat,
+            lng: geoD.lng,
+            dLineal: Math.hypot(utmD.este - v.e, utmD.norte - v.n),
           };
         }
       }
 
-      return { ...v, lat: result.lat, lng: result.lng, result };
+      result = { ...result, huso, direction: resultDir };
+      return { e: v.e, n: v.n, lat: result.lat, lng: result.lng, result };
     });
 
-    return { ...poly, vertices: transformedVerts };
+    return { ...poly, huso, resultEpsg, vertices: transformedVerts };
   };
 
   const handleTransform = async () => {
@@ -171,8 +223,13 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
     if (selected.length === 0) return;
     setImporting(true);
     try {
-      const existing = useAppStore.getState().savedParcels;
-      const existingIds = new Set(existing.map(p => p.id));
+      const layerTotals = new Map<string, number>();
+      for (const poly of selected) {
+        const baseName = poly.layer !== '0' ? poly.layer.toUpperCase() : poly.id;
+        layerTotals.set(baseName, (layerTotals.get(baseName) || 0) + 1);
+      }
+      const layerSeen = new Map<string, number>();
+      const newParcels: any[] = [];
 
       for (const poly of selected) {
         const transformedPoly = transformPolygon(poly);
@@ -190,8 +247,17 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
 
         const pts = orderedVerts.map((v, i) => ({
           id: `P${i + 1}`,
+          direction: v.result?.direction || direction,
           input: { este: v.e, norte: v.n, huso: importHuso },
-          result: v.result || { este: v.e, norte: v.n, lat: 0, lng: 0, dLineal: 0 },
+          result: v.result || {
+            este: v.e,
+            norte: v.n,
+            lat: v.lat ?? 0,
+            lng: v.lng ?? 0,
+            huso: importHuso,
+            direction,
+            dLineal: 0,
+          },
           ok: true,
         }));
 
@@ -217,9 +283,15 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
           }
         }
 
-        const newParcel = {
+        const baseName = poly.layer !== '0' ? poly.layer.toUpperCase() : `DXF-${poly.id}`;
+        const idxInLayer = (layerSeen.get(baseName) || 0) + 1;
+        layerSeen.set(baseName, idxInLayer);
+        const totalInLayer = layerTotals.get(baseName) || 1;
+        const parcelName = totalInLayer > 1 ? `${baseName} (${idxInLayer})` : baseName;
+
+        newParcels.push({
           id: `POL-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`,
-          nombre: poly.layer !== '0' ? poly.layer.toUpperCase() : `DXF-${poly.id}`,
+          nombre: parcelName,
           fecha: new Date().toLocaleDateString('es-VE'),
           area,
           perim,
@@ -227,15 +299,15 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
           puntos: pts,
           geometryType: geoType as 'cerrada' | 'abierta' | 'puntos',
           method,
+          hatchColor: poly.color,
           rigidCorrection: method === 'rigida' ? rigidCorrection : undefined,
-        };
-
-        existingIds.add(newParcel.id);
-        const current = useAppStore.getState().savedParcels;
-        useAppStore.setState({
-          savedParcels: [...current, newParcel as any].sort((a, b) => a.nombre.localeCompare(b.nombre)),
         });
       }
+
+      const current = useAppStore.getState().savedParcels;
+      useAppStore.setState({
+        savedParcels: [...current, ...newParcels].sort((a, b) => a.nombre.localeCompare(b.nombre)),
+      });
 
       setDxfPreview(null);
       onClose();
@@ -395,6 +467,18 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
                 </div>
               </div>
 
+              <div className="flex items-center justify-between px-2.5 py-1.5 bg-slate-800/40 border border-slate-700/50 rounded-lg text-[10px] text-slate-400">
+                <span>
+                  Modo activo:{' '}
+                  <strong className="text-emerald-400">
+                    {routine === 'ploteo' ? 'Ploteo Directo' : `Transformación (${method.toUpperCase()})`}
+                  </strong>
+                </span>
+                <span>
+                  {polygons.some((p) => p.isGeographic) ? 'Coordenadas Geográficas' : 'Coordenadas UTM'}
+                </span>
+              </div>
+
               <div className="flex gap-2 pt-2">
                 <button
                   onClick={handleTransform}
@@ -402,7 +486,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
                   className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2"
                 >
                   {transforming ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}
-                  Transformar
+                  Previsualizar
                 </button>
                 <button
                   onClick={handleImport}

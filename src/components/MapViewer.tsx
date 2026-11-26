@@ -417,9 +417,26 @@ export default function MapViewer({ className }: MapViewerProps) {
   const parcelsLayerStyle = useCallback((feature: FeatureLike, resolution: number): Style => {
     const isDxf = feature.get('isDxf') === true;
     if (isDxf) {
-      return getCachedStyle('dxf-poly', () => new Style({
-        stroke: new Stroke({ color: '#f43f5e', width: 2, lineDash: [6, 4] }),
-        fill: new Fill({ color: 'rgba(244, 63, 94, 0.15)' }),
+      const dxfColor = String(feature.get('dxfColor') || '#f43f5e');
+      const dxfLayer = String(feature.get('dxfLayer') || '');
+      const dxfGeomType = feature.get('geometryType') || 'cerrada';
+      const showDxfLbl = resolution <= 25.0 && dxfLayer.length > 0 && dxfLayer !== '0';
+      const hexD = dxfColor.replace('#', '');
+      const dr = parseInt(hexD.substring(0, 2), 16) || 244;
+      const dg = parseInt(hexD.substring(2, 4), 16) || 63;
+      const db = parseInt(hexD.substring(4, 6), 16) || 94;
+      return getCachedStyle(`dxf-${dxfColor}-${dxfGeomType}-${showDxfLbl ? dxfLayer : 'nolbl'}`, () => new Style({
+        stroke: new Stroke({ color: dxfColor, width: 2.2, lineDash: [6, 4] }),
+        fill: dxfGeomType === 'cerrada' ? new Fill({ color: `rgba(${dr}, ${dg}, ${db}, 0.16)` }) : undefined,
+        text: showDxfLbl
+          ? new Text({
+              text: dxfLayer,
+              font: '600 10px Inter, sans-serif',
+              fill: new Fill({ color: dxfColor }),
+              stroke: new Stroke({ color: '#020617', width: 3 }),
+              overflow: true,
+            })
+          : undefined,
       }));
     }
 
@@ -1178,24 +1195,68 @@ export default function MapViewer({ className }: MapViewerProps) {
       vtxFeaturesToAdd.push(multiPtFeature);
     });
 
-    // Renderizar dxfPreview
+    // Renderizar dxfPreview (usa coordenadas ya transformadas/resultEpsg, soporta cerrados y abiertos)
+    const dxfCoordinatesToFit: Coordinate[] = [];
     if (dxfPreview && dxfPreview.length > 0) {
       dxfPreview.forEach((dxfPoly) => {
         const dxfHuso = [18, 19, 20, 21].includes(Number(dxfPoly.huso)) ? Number(dxfPoly.huso) : huso;
-        const dxfEpsg = `EPSG:220${dxfHuso - 17}`;
+        const defaultEpsg = dxfPoly.resultEpsg || `EPSG:220${dxfHuso - 17}`;
         const coords: Coordinate[] = dxfPoly.vertices
-          .map((pt) => {
-            if (typeof pt.e === 'number' && typeof pt.n === 'number') {
-              return transform([pt.e, pt.n], dxfEpsg, 'EPSG:3857');
+          .map((pt: any) => {
+            try {
+              if (
+                pt?.result &&
+                typeof pt.result.este === 'number' && !isNaN(pt.result.este) &&
+                typeof pt.result.norte === 'number' && !isNaN(pt.result.norte) &&
+                (Math.abs(pt.result.este) > 1000 || Math.abs(pt.result.norte) > 1000)
+              ) {
+                const resEpsg =
+                  pt.result.direction === 'regven_canoa' ? `EPSG:248${dxfHuso}` : defaultEpsg;
+                return transform([pt.result.este, pt.result.norte], resEpsg, 'EPSG:3857');
+              }
+              if (
+                typeof pt?.lat === 'number' && !isNaN(pt.lat) &&
+                typeof pt?.lng === 'number' && !isNaN(pt.lng) &&
+                Math.abs(pt.lat) <= 90 && Math.abs(pt.lng) <= 180 &&
+                (pt.lat !== 0 || pt.lng !== 0)
+              ) {
+                return transform([pt.lng, pt.lat], 'EPSG:4326', 'EPSG:3857');
+              }
+              if (dxfPoly.isGeographic && typeof pt?.e === 'number' && typeof pt?.n === 'number') {
+                return transform([pt.e, pt.n], 'EPSG:4326', 'EPSG:3857');
+              }
+              if (typeof pt?.e === 'number' && typeof pt?.n === 'number' && !isNaN(pt.e) && !isNaN(pt.n)) {
+                return transform([pt.e, pt.n], defaultEpsg, 'EPSG:3857');
+              }
+            } catch {
+              // Fallback silent
             }
             return null;
           })
-          .filter((c): c is Coordinate => c !== null);
+          .filter((c): c is Coordinate => c !== null && isFinite(c[0]) && isFinite(c[1]));
 
-        if (coords.length >= 3) {
-          const dxfFeat = new Feature({ geometry: new Polygon([[...coords, coords[0]]]) });
+        if (dxfPoly.closed && coords.length >= 3) {
+          const ring = [...coords];
+          const first = ring[0];
+          const last = ring[ring.length - 1];
+          if (first[0] !== last[0] || first[1] !== last[1]) {
+            ring.push([first[0], first[1]]);
+          }
+          const dxfFeat = new Feature({ geometry: new Polygon([ring]) });
           dxfFeat.set('isDxf', true);
+          dxfFeat.set('dxfColor', dxfPoly.color);
+          dxfFeat.set('dxfLayer', dxfPoly.layer);
+          dxfFeat.set('geometryType', 'cerrada');
           featuresToAdd.push(dxfFeat);
+          dxfCoordinatesToFit.push(...coords);
+        } else if (coords.length >= 2) {
+          const lineFeat = new Feature({ geometry: new LineString(coords) });
+          lineFeat.set('isDxf', true);
+          lineFeat.set('dxfColor', dxfPoly.color);
+          lineFeat.set('dxfLayer', dxfPoly.layer);
+          lineFeat.set('geometryType', 'abierta');
+          featuresToAdd.push(lineFeat);
+          dxfCoordinatesToFit.push(...coords);
         }
       });
     }
@@ -1219,12 +1280,27 @@ export default function MapViewer({ className }: MapViewerProps) {
     verticesLayerRef.current?.changed();
     map.render();
 
-    // Ajuste de cámara inicial: solo cuando hay parcelas y es la primera carga
+    // Ajuste de cámara: priorizar dxfPreview cuando está activo o nuevas parcelas importadas
     const parcelsCount = savedParcels.length;
-    const countChanged = parcelsCount !== prevParcelsCountRef.current;
+    const prevParcelsCount = prevParcelsCountRef.current;
     prevParcelsCountRef.current = parcelsCount;
 
-    if (!hasInitialFitRef.current || (countChanged && parcelsCount > 0 && resultsLengthRef.current === 0)) {
+    if (dxfCoordinatesToFit.length > 0) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const c of dxfCoordinatesToFit) {
+        if (c[0] < minX) minX = c[0];
+        if (c[1] < minY) minY = c[1];
+        if (c[0] > maxX) maxX = c[0];
+        if (c[1] > maxY) maxY = c[1];
+      }
+      if (isFinite(minX) && isFinite(minY)) {
+        map.getView().fit([minX, minY, maxX, maxY], {
+          duration: 500,
+          padding: [80, 80, 80, 80],
+          maxZoom: 19,
+        });
+      }
+    } else if (!hasInitialFitRef.current || (parcelsCount > prevParcelsCount && parcelsCount > 0)) {
       if (allCoordinatesToFit.length > 0) {
         const extent = source.getExtent();
         if (extent && isFinite(extent[0]) && isFinite(extent[1])) {
