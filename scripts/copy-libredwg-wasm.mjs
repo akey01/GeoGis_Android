@@ -4,7 +4,28 @@ import path from 'node:path';
 const ROOT = process.cwd();
 const PKG_DIR = path.join(ROOT, 'node_modules', '@mlightcad', 'libredwg-web');
 const TARGET_DIR = path.join(ROOT, 'public', 'wasm');
-const TARGET_FILE = path.join(TARGET_DIR, 'libredwg-web.wasm');
+
+function copyDirFiltered(srcDir, dstDir, allowedExts) {
+  if (!fs.existsSync(srcDir)) return 0;
+  let copied = 0;
+  const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const dstPath = path.join(dstDir, entry.name);
+    if (entry.isDirectory()) {
+      copied += copyDirFiltered(srcPath, dstPath, allowedExts);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const lower = entry.name.toLowerCase();
+    if (lower.endsWith('.d.ts') || lower.endsWith('.map')) continue;
+    if (!allowedExts.some((ext) => lower.endsWith(ext))) continue;
+    fs.mkdirSync(path.dirname(dstPath), { recursive: true });
+    fs.copyFileSync(srcPath, dstPath);
+    copied++;
+  }
+  return copied;
+}
 
 function findWasmFile(dir, depth = 0) {
   if (!fs.existsSync(dir) || depth > 4) return null;
@@ -33,20 +54,21 @@ if (!fs.existsSync(PKG_DIR)) {
   process.exit(0);
 }
 
-const candidates = [
-  path.join(PKG_DIR, 'wasm', 'libredwg-web.wasm'),
-  path.join(PKG_DIR, 'dist', 'libredwg-web.wasm'),
-  path.join(PKG_DIR, 'libredwg-web.wasm'),
-];
+const distCopied = copyDirFiltered(path.join(PKG_DIR, 'dist'), path.join(TARGET_DIR, 'dist'), ['.js', '.mjs']);
+const wasmCopied = copyDirFiltered(path.join(PKG_DIR, 'wasm'), path.join(TARGET_DIR, 'wasm'), ['.js', '.mjs', '.wasm']);
 
-const sourceFile = candidates.find((p) => fs.existsSync(p)) || findWasmFile(PKG_DIR);
+const fallbackWasm =
+  [
+    path.join(PKG_DIR, 'wasm', 'libredwg-web.wasm'),
+    path.join(PKG_DIR, 'dist', 'libredwg-web.wasm'),
+    path.join(PKG_DIR, 'libredwg-web.wasm'),
+  ].find((p) => fs.existsSync(p)) || findWasmFile(PKG_DIR);
 
-if (!sourceFile) {
-  console.warn('[copy-libredwg-wasm] No se encontró archivo .wasm dentro de @mlightcad/libredwg-web.');
-  process.exit(0);
+if (fallbackWasm) {
+  fs.mkdirSync(TARGET_DIR, { recursive: true });
+  fs.copyFileSync(fallbackWasm, path.join(TARGET_DIR, 'libredwg-web.wasm'));
 }
 
-fs.mkdirSync(TARGET_DIR, { recursive: true });
-fs.copyFileSync(sourceFile, TARGET_FILE);
-const sizeKb = (fs.statSync(TARGET_FILE).size / 1024).toFixed(1);
-console.log(`[copy-libredwg-wasm] Copiado ${path.relative(ROOT, sourceFile)} -> public/wasm/libredwg-web.wasm (${sizeKb} KB)`);
+console.log(
+  `[copy-libredwg-wasm] Copiados dist=${distCopied}, wasm=${wasmCopied}${fallbackWasm ? ' + libredwg-web.wasm' : ''} -> public/wasm/`
+);

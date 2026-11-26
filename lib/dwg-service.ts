@@ -41,7 +41,9 @@ async function getLibreDwg(): Promise<{ libredwg: any; dwgFileType: any }> {
 
   if (!libreDwgPromise) {
     libreDwgPromise = (async () => {
-      const mod: any = await import('@mlightcad/libredwg-web');
+      const loadBrowserEsm = new Function('url', 'return import(url)') as (url: string) => Promise<any>;
+      const moduleUrl = `${window.location.origin}/wasm/dist/libredwg-web.js`;
+      const mod: any = await loadBrowserEsm(moduleUrl);
       const LibreDwgClass = mod?.LibreDwg || mod?.default?.LibreDwg;
       const dwgFileType = mod?.Dwg_File_Type || mod?.default?.Dwg_File_Type;
 
@@ -51,8 +53,9 @@ async function getLibreDwg(): Promise<{ libredwg: any; dwgFileType: any }> {
 
       let instance: any = null;
       const attempts: Array<() => Promise<any>> = [
+        () => LibreDwgClass.create('/wasm/wasm/'),
         () => LibreDwgClass.create('/wasm/'),
-        () => LibreDwgClass.create('/wasm/libredwg-web.wasm'),
+        () => LibreDwgClass.create('/wasm/wasm/libredwg-web.wasm'),
         () => LibreDwgClass.create(),
       ];
 
