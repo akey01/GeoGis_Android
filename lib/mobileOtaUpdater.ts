@@ -53,11 +53,18 @@ export async function notifyOtaAppReady(): Promise<void> {
   }
 }
 
+export function normalizeSha256(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(trimmed) ? trimmed : null;
+}
+
 export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
   let bestCode = APP_VERSION_CODE;
   let bestName = APP_VERSION_NAME;
   let bestNativeCode = APP_NATIVE_VERSION_CODE;
   let bestBundleUrl: string | null = null;
+  let bestBundleSha256: string | null = null;
   let bestApkUrl = APK_DOWNLOAD_URL;
   let bestNotes = 'GeoGIS6 Mobile actualizado a la última versión estable.';
   let healthyApiBase: string | null = null;
@@ -84,6 +91,7 @@ export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
       const { json: v, baseUrl } = apiResult.value;
       healthyApiBase = baseUrl;
       const code = Number(v.bundleVersionCode ?? v.versionCode ?? 0);
+      const apiSha256 = normalizeSha256(v.bundleSha256);
       if (code > bestCode) {
         bestCode = code;
         bestName = String(v.versionName || bestName);
@@ -92,8 +100,11 @@ export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
           typeof v.bundleUrl === 'string' && v.bundleUrl
             ? v.bundleUrl
             : `${baseUrl}/api/ota-bundle?v=${code}`;
+        bestBundleSha256 = apiSha256;
         bestApkUrl = String(v.downloadUrl || bestApkUrl);
         bestNotes = String(v.notes || bestNotes);
+      } else if (code === bestCode && apiSha256 && !bestBundleSha256) {
+        bestBundleSha256 = apiSha256;
       }
     }
 
@@ -112,6 +123,7 @@ export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
       let ghName = mName ? mName[1].trim() : bestName;
       let ghNative = mNative ? Number(mNative[1]) : APP_NATIVE_VERSION_CODE;
       let ghBundleUrl = zipAsset?.browser_download_url || null;
+      let ghBundleSha256: string | null = null;
       let ghApkUrl = apkAsset?.browser_download_url || bestApkUrl;
       let ghNotes = body.replace(/\[[A-Z0-9_]+=[^\]]+\]/g, '').trim() || bestNotes;
 
@@ -127,6 +139,7 @@ export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
             ghName = String(parsed.versionName || ghName);
             ghNative = Number(parsed.nativeVersionCode ?? ghNative);
             ghBundleUrl = parsed.bundleUrl || ghBundleUrl;
+            ghBundleSha256 = normalizeSha256(parsed.bundleSha256) || ghBundleSha256;
             ghApkUrl = parsed.downloadUrl || ghApkUrl;
             ghNotes = parsed.notes || ghNotes;
           }
@@ -145,6 +158,7 @@ export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
         if (!bestBundleUrl && ghBundleUrl) {
           bestBundleUrl = ghBundleUrl;
         }
+        bestBundleSha256 = ghBundleSha256 || bestBundleSha256;
         bestApkUrl = ghApkUrl;
         bestNotes = ghNotes;
       }
@@ -172,7 +186,7 @@ export async function checkOtaManifest(): Promise<OtaUpdateStatus> {
     latestCode: bestCode,
     latestName: bestName,
     bundleUrl: bestBundleUrl,
-    bundleSha256: null,
+    bundleSha256: bestBundleSha256,
     apkDownloadUrl: bestApkUrl,
     notes: bestNotes,
     error: null,
@@ -210,6 +224,42 @@ export async function applyOtaBundleInApp(
     }
   }
 
+  let checksum = normalizeSha256(manifest.bundleSha256);
+  if (!checksum) {
+    try {
+      const { response } = await mobileApiFetch(
+        `/api/apk-version?t=${Date.now()}`,
+        { cache: 'no-store' },
+        { timeoutMs: 10000 },
+      );
+      if (response.ok) {
+        const json = await response.json().catch(() => null);
+        checksum = normalizeSha256(json?.bundleSha256);
+      }
+    } catch {
+      // Fallback al header X-Bundle-Sha256 en HEAD
+    }
+  }
+
+  if (!checksum && candidates[0]) {
+    try {
+      const headRes = await fetch(candidates[0], {
+        method: 'HEAD',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(10000),
+      });
+      if (headRes.ok) {
+        checksum = normalizeSha256(headRes.headers.get('x-bundle-sha256'));
+      }
+    } catch {
+      // ignore HEAD fallback failure
+    }
+  }
+
+  if (!checksum) {
+    throw new Error('No se pudo verificar el checksum SHA-256 del paquete de actualización');
+  }
+
   const listener = await CapacitorUpdater.addListener('download', (info: any) => {
     const pct = Math.max(0, Math.min(100, Math.round(Number(info?.percent ?? 0))));
     onProgress(pct);
@@ -222,6 +272,7 @@ export async function applyOtaBundleInApp(
         const bundle = await CapacitorUpdater.download({
           url,
           version: manifest.latestName,
+          checksum,
         });
         onProgress(100);
         await CapacitorUpdater.set({ id: bundle.id });

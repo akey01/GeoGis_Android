@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getOtaBundle } from '@/lib/serverOtaBundle';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -89,10 +90,24 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
+function normalizeSha256(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(trimmed) ? trimmed : null;
+}
+
 export async function GET(request: Request) {
   const origin = resolveRequestOrigin(request);
   const live = await getLiveManifest();
   const versionCode = Number(live.bundleVersionCode ?? live.versionCode ?? FALLBACK_MANIFEST.versionCode);
+
+  let bundleSha256 = normalizeSha256(live.bundleSha256);
+  try {
+    const bundle = await getOtaBundle(String(versionCode));
+    bundleSha256 = bundle.sha256;
+  } catch {
+    // Keep live.bundleSha256 if ZIP fetch temporarily fails
+  }
 
   return NextResponse.json(
     {
@@ -102,7 +117,7 @@ export async function GET(request: Request) {
       versionCode,
       bundleVersionCode: versionCode,
       bundleUrl: `${origin}/api/ota-bundle?v=${versionCode}`,
-      bundleSha256: null,
+      bundleSha256,
     },
     { status: 200, headers: CORS_HEADERS },
   );
