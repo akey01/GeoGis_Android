@@ -1,10 +1,13 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownToLine,
+  ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Bell,
+  BellOff,
   Box,
   Camera,
   Check,
@@ -12,17 +15,31 @@ import {
   ChevronLeft,
   ChevronRight,
   Compass,
-  Flag,
   ListOrdered,
   MapPin,
-  Navigation,
+  PlusCircle,
   Radar,
+  RotateCcw,
   Save,
-  Sliders,
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { formatAzimuthDms, type CrsMode, type FieldParcel, type LiveGnssFix } from './data/fieldData';
+import {
+  formatAzimuthDms,
+  formatCoord,
+  type CrsMode,
+  type FieldParcel,
+  type LiveGnssFix,
+} from './data/fieldData';
+import {
+  computeWeightedGnssAverage,
+  formatFieldDistance,
+  getDirectionGuidance,
+  normalizeAngle360,
+  useDeviceCompass,
+  type GnssSampleInput,
+} from '@/lib/mobileCompass';
+import StakeoutRadar, { type RadarOrientationMode } from './StakeoutRadar';
 
 interface PointLocateScreenProps {
   parcel: FieldParcel | null;
@@ -33,9 +50,16 @@ interface PointLocateScreenProps {
   shiftNorte: number;
   onSelectVertex: (vertexId: string) => void;
   onApplyShift: (dE: number, dN: number) => void;
-  onCaptureCurrentVertex: () => void;
+  onCaptureCurrentVertex: (averagedFix?: Partial<LiveGnssFix>) => void;
+  onAddVertexFromGps?: (averagedFix?: Partial<LiveGnssFix>) => void;
   onOpenProjects: () => void;
   onNotify: (msg: string) => void;
+}
+
+const TARGET_AVG_SAMPLES = 5;
+
+function getStakedStorageKey(parcelId: string): string {
+  return `geogis6_staked_vertices_v1_${parcelId}`;
 }
 
 export default function PointLocateScreen({
@@ -48,29 +72,71 @@ export default function PointLocateScreen({
   onSelectVertex,
   onApplyShift,
   onCaptureCurrentVertex,
+  onAddVertexFromGps,
   onOpenProjects,
   onNotify,
 }: PointLocateScreenProps) {
   const [viewMode, setViewMode] = useState<'radar' | 'ar'>('radar');
+  // Radar inicia por defecto en Norte Arriba
+  const [orientationMode, setOrientationMode] = useState<RadarOrientationMode>('north_up');
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [showPointsPicker, setShowPointsPicker] = useState(false);
+  const [sortByNearest, setSortByNearest] = useState(false);
   const [draftShiftE, setDraftShiftE] = useState(shiftEste.toFixed(3));
   const [draftShiftN, setDraftShiftN] = useState(shiftNorte.toFixed(3));
-  const [epochCount, setEpochCount] = useState(15);
-  const [capturing, setCapturing] = useState(false);
-  const [storedPointNo, setStoredPointNo] = useState(104);
-  const [captureBanner, setCaptureBanner] = useState<string | null>(null);
+  const [vibrateEnabled, setVibrateEnabled] = useState(true);
   const [cameraActive, setCameraActive] = useState(false);
+  const [stakedIds, setStakedIds] = useState<string[]>([]);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+
+  // Estado para promediado real de muestras GPS
+  const [isAveraging, setIsAveraging] = useState(false);
+  const [avgSamples, setAvgSamples] = useState<GnssSampleInput[]>([]);
+  const lastSampleTsRef = useRef<number>(0);
+  const prevDistRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  const vertices = parcel?.vertices ?? [];
-  const currentIdx = Math.max(
-    0,
-    vertices.findIndex((v) => v.id === selectedVertexId)
-  );
-  const target = vertices[currentIdx] || vertices[0] || null;
+  const compass = useDeviceCompass(gnssFix);
 
-  // Try activating real rear camera when switching to AR mode on Android hardware
+  // Ticker de 1 segundo para calcular la edad real de la última lectura GPS
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Cargar hitos marcados como localizados para esta parcela
+  useEffect(() => {
+    if (!parcel || typeof window === 'undefined') {
+      setStakedIds([]);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(getStakedStorageKey(parcel.id));
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          setStakedIds(arr.map(String));
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setStakedIds([]);
+  }, [parcel?.id]);
+
+  const persistStakedIds = (parcelId: string, next: string[]) => {
+    setStakedIds(next);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(getStakedStorageKey(parcelId), JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // Activar cámara trasera real en modo AR
   useEffect(() => {
     if (viewMode !== 'ar') {
       setCameraActive(false);
@@ -105,6 +171,134 @@ export default function PointLocateScreen({
     };
   }, [viewMode]);
 
+  const vertices = parcel?.vertices ?? [];
+  const currentIdx = Math.max(
+    0,
+    vertices.findIndex((v) => v.id === selectedVertexId),
+  );
+  const target = vertices[currentIdx] || vertices[0] || null;
+
+  // Recolectar lecturas GPS reales mientras el promediado está activo
+  useEffect(() => {
+    if (!isAveraging || !gnssFix.isLiveHardware) return;
+    if (gnssFix.timestamp === lastSampleTsRef.current) return;
+    lastSampleTsRef.current = gnssFix.timestamp;
+
+    setAvgSamples((prev) => {
+      const next = [
+        ...prev,
+        {
+          lat: gnssFix.lat,
+          lng: gnssFix.lng,
+          alt: gnssFix.alt,
+          accuracy: gnssFix.accuracy || 3.5,
+          esteRegven: gnssFix.esteRegven,
+          norteRegven: gnssFix.norteRegven,
+        },
+      ];
+      return next.slice(0, TARGET_AVG_SAMPLES);
+    });
+  }, [
+    isAveraging,
+    gnssFix.isLiveHardware,
+    gnssFix.timestamp,
+    gnssFix.lat,
+    gnssFix.lng,
+    gnssFix.alt,
+    gnssFix.accuracy,
+    gnssFix.esteRegven,
+    gnssFix.norteRegven,
+  ]);
+
+  // Finalizar captura automáticamente al completar TARGET_AVG_SAMPLES lecturas frescas
+  useEffect(() => {
+    if (!isAveraging || avgSamples.length < TARGET_AVG_SAMPLES || !target || !parcel) return;
+    const averaged = computeWeightedGnssAverage(avgSamples);
+    setIsAveraging(false);
+    setAvgSamples([]);
+    onCaptureCurrentVertex({
+      lat: averaged.lat,
+      lng: averaged.lng,
+      alt: averaged.alt,
+      accuracy: averaged.accuracy,
+      esteRegven: averaged.esteRegven,
+      norteRegven: averaged.norteRegven,
+      isLiveHardware: true,
+      timestamp: Date.now(),
+    });
+    if (!stakedIds.includes(target.id)) {
+      persistStakedIds(parcel.id, [...stakedIds, target.id]);
+    }
+    onNotify(
+      `¡${target.id} actualizado con ${averaged.sampleCount} lecturas (±${averaged.accuracy.toFixed(2)}m)!`,
+    );
+  }, [avgSamples, isAveraging, onCaptureCurrentVertex, onNotify, parcel, stakedIds, target]);
+
+  // Cálculos reales en vivo hacia el vértice seleccionado
+  const hasLiveGps = Boolean(gnssFix.isLiveHardware);
+  const deltaNorthM =
+    hasLiveGps && target ? target.norteRegven - gnssFix.norteRegven + shiftNorte : null;
+  const deltaEastM =
+    hasLiveGps && target ? target.esteRegven - gnssFix.esteRegven + shiftEste : null;
+  const distanceM =
+    deltaNorthM !== null && deltaEastM !== null ? Math.hypot(deltaNorthM, deltaEastM) : null;
+  const targetAzimuthDeg =
+    deltaNorthM !== null && deltaEastM !== null
+      ? normalizeAngle360((Math.atan2(deltaEastM, deltaNorthM) * 180) / Math.PI)
+      : null;
+  const azInfo =
+    deltaNorthM !== null && deltaEastM !== null
+      ? formatAzimuthDms(deltaEastM, deltaNorthM)
+      : null;
+  const guidance =
+    distanceM !== null && targetAzimuthDeg !== null
+      ? getDirectionGuidance(distanceM, targetAzimuthDeg, compass.headingDeg, 2.0)
+      : null;
+  const cutFillM = hasLiveGps && target ? target.cota - gnssFix.alt : null;
+  const gpsAgeSec = hasLiveGps
+    ? Math.max(0, Math.round((nowTick - gnssFix.timestamp) / 1000))
+    : null;
+
+  // Vibración discreta al entrar en zona de llegada (<= 2.5 m)
+  useEffect(() => {
+    if (distanceM === null) {
+      prevDistRef.current = null;
+      return;
+    }
+    const prev = prevDistRef.current;
+    prevDistRef.current = distanceM;
+    if (vibrateEnabled && prev !== null && prev > 2.5 && distanceM <= 2.5) {
+      try {
+        navigator.vibrate?.([120, 60, 120]);
+      } catch {
+        // ignore if unsupported
+      }
+    }
+  }, [distanceM, vibrateEnabled]);
+
+  const sortedVertices = useMemo(() => {
+    if (!sortByNearest || !hasLiveGps) return vertices;
+    return [...vertices].sort((a, b) => {
+      const da = Math.hypot(
+        a.norteRegven - gnssFix.norteRegven + shiftNorte,
+        a.esteRegven - gnssFix.esteRegven + shiftEste,
+      );
+      const db = Math.hypot(
+        b.norteRegven - gnssFix.norteRegven + shiftNorte,
+        b.esteRegven - gnssFix.esteRegven + shiftEste,
+      );
+      return da - db;
+    });
+  }, [
+    gnssFix.esteRegven,
+    gnssFix.norteRegven,
+    hasLiveGps,
+    shiftEste,
+    shiftNorte,
+    sortByNearest,
+    vertices,
+  ]);
+
   if (!parcel || !target) {
     return (
       <div className="flex flex-col w-full h-full items-center justify-center p-6 text-center bg-[#0d1322] text-[#dde2f8] gap-3">
@@ -113,7 +307,7 @@ export default function PointLocateScreen({
           Sin vértice para replanteo
         </h2>
         <p className="font-stitch-mono text-[11px] text-[#bcc9cd] max-w-xs leading-relaxed">
-          Selecciona o crea un proyecto con al menos una parcela para iniciar la localización RTK.
+          Selecciona o crea un proyecto con al menos una parcela para iniciar la localización en campo.
         </p>
         {gnssFix.isLiveHardware && (
           <div className="bg-[#151b2b] border border-[#242a3a] rounded-xl px-4 py-2.5 font-stitch-mono text-[11px] text-[#4edea3]">
@@ -131,26 +325,17 @@ export default function PointLocateScreen({
     );
   }
 
-  const rawNorth = gnssFix.isLiveHardware
-    ? target.norteRegven - gnssFix.norteRegven
-    : target.stakeNorthDelta;
-  const rawEast = gnssFix.isLiveHardware
-    ? target.esteRegven - gnssFix.esteRegven
-    : target.stakeEastDelta;
-  const adjustedNorth = rawNorth + shiftNorte;
-  const adjustedEast = rawEast + shiftEste;
-  const adjustedRadial = Math.hypot(adjustedNorth, adjustedEast);
-  const inTolerance = adjustedRadial <= 0.05;
-  const liveAz = formatAzimuthDms(adjustedEast, adjustedNorth);
-  const displayAzDeg = gnssFix.isLiveHardware ? liveAz.degMin : target.stakeAzimuthDeg;
-  const displayAzSec = gnssFix.isLiveHardware ? liveAz.sec : target.stakeAzimuthSec;
-  const liveCutFill = gnssFix.isLiveHardware ? target.cota - gnssFix.alt : target.stakeCutFill;
-  const roverPxX = gnssFix.isLiveHardware
-    ? Math.max(-72, Math.min(72, Math.round(-adjustedEast * 24)))
-    : target.roverOffsetX;
-  const roverPxY = gnssFix.isLiveHardware
-    ? Math.max(-72, Math.min(72, Math.round(adjustedNorth * 24)))
-    : target.roverOffsetY;
+  const isTargetStaked = stakedIds.includes(target.id);
+  const hasActiveShift = Math.abs(shiftEste) > 0.0001 || Math.abs(shiftNorte) > 0.0001;
+
+  const handleToggleStaked = (vertexId: string) => {
+    const exists = stakedIds.includes(vertexId);
+    const next = exists
+      ? stakedIds.filter((x) => x !== vertexId)
+      : [...stakedIds, vertexId];
+    persistStakedIds(parcel.id, next);
+    onNotify(exists ? `${vertexId} desmarcado` : `${vertexId} marcado como localizado`);
+  };
 
   const handlePrev = () => {
     const nextIdx = (currentIdx - 1 + vertices.length) % vertices.length;
@@ -162,19 +347,131 @@ export default function PointLocateScreen({
     onSelectVertex(vertices[nextIdx].id);
   };
 
-  const handleCapturePoint = () => {
-    if (capturing) return;
-    setCapturing(true);
-    setEpochCount(3);
-    setTimeout(() => setEpochCount(9), 260);
-    setTimeout(() => setEpochCount(15), 540);
-    setTimeout(() => {
-      setCapturing(false);
-      setStoredPointNo((n) => n + 1);
-      onCaptureCurrentVertex();
-      setCaptureBanner(`¡${target.id} Calibrado & Almacenado!`);
-      setTimeout(() => setCaptureBanner(null), 2400);
-    }, 680);
+  const handleStartOrFinishCapture = () => {
+    if (!hasLiveGps) {
+      onNotify('Esperando señal GPS real del dispositivo...');
+      return;
+    }
+
+    if (isAveraging) {
+      if (avgSamples.length === 0) {
+        setIsAveraging(false);
+        return;
+      }
+      const averaged = computeWeightedGnssAverage(avgSamples);
+      setIsAveraging(false);
+      setAvgSamples([]);
+      onCaptureCurrentVertex({
+        lat: averaged.lat,
+        lng: averaged.lng,
+        alt: averaged.alt,
+        accuracy: averaged.accuracy,
+        esteRegven: averaged.esteRegven,
+        norteRegven: averaged.norteRegven,
+        isLiveHardware: true,
+        timestamp: Date.now(),
+      });
+      if (!stakedIds.includes(target.id)) {
+        persistStakedIds(parcel.id, [...stakedIds, target.id]);
+      }
+      onNotify(
+        `${target.id} guardado con ${averaged.sampleCount} lectura(s) (±${averaged.accuracy.toFixed(2)}m)`,
+      );
+      return;
+    }
+
+    // Inicia recolección de muestras frescas reales comenzando por la lectura actual
+    lastSampleTsRef.current = gnssFix.timestamp;
+    setAvgSamples([
+      {
+        lat: gnssFix.lat,
+        lng: gnssFix.lng,
+        alt: gnssFix.alt,
+        accuracy: gnssFix.accuracy || 3.5,
+        esteRegven: gnssFix.esteRegven,
+        norteRegven: gnssFix.norteRegven,
+      },
+    ]);
+    setIsAveraging(true);
+    onNotify(`Capturando lecturas GPS para ${target.id} (1/${TARGET_AVG_SAMPLES})...`);
+  };
+
+  const handleCapturePhoto = () => {
+    if (viewMode !== 'ar') {
+      setViewMode('ar');
+      onNotify('Cámara AR activada · Pulsa "Foto Hito" para capturar con coordenadas');
+      return;
+    }
+
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !cameraActive) {
+      onNotify('Cámara trasera no disponible en este dispositivo');
+      return;
+    }
+
+    const width = video.videoWidth || 1280;
+    const height = video.videoHeight || 720;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, width, height);
+
+    // Franja inferior con sello topográfico real
+    const barH = Math.max(82, Math.round(height * 0.14));
+    ctx.fillStyle = 'rgba(8, 14, 29, 0.86)';
+    ctx.fillRect(0, height - barH, width, barH);
+
+    const eCoord = crsMode === 'regven' ? target.esteRegven : target.estePsad56;
+    const nCoord = crsMode === 'regven' ? target.norteRegven : target.nortePsad56;
+    const crsTitle = crsMode === 'regven' ? `REGVEN ${parcel.huso}N` : `PSAD56 ${parcel.huso}N`;
+
+    const padX = Math.round(width * 0.03);
+    const fontBig = Math.max(18, Math.round(barH * 0.28));
+    const fontSmall = Math.max(14, Math.round(barH * 0.21));
+
+    ctx.fillStyle = '#4edea3';
+    ctx.font = `700 ${fontBig}px monospace`;
+    ctx.fillText(
+      `GEOGIS6 · PARCELA ${parcel.code} · ${target.id} (${target.code})`,
+      padX,
+      height - barH + Math.round(barH * 0.38),
+    );
+
+    ctx.fillStyle = '#dde2f8';
+    ctx.font = `600 ${fontSmall}px monospace`;
+    ctx.fillText(
+      `${crsTitle} | E: ${eCoord.toFixed(3)} m  N: ${nCoord.toFixed(3)} m  Z: ${target.cota.toFixed(2)} m`,
+      padX,
+      height - barH + Math.round(barH * 0.72),
+    );
+
+    const accStr = hasLiveGps ? `GPS ±${gnssFix.accuracy.toFixed(1)}m` : 'Objetivo Catastral';
+    ctx.fillStyle = '#4cd7f6';
+    ctx.fillText(
+      `${accStr} · ${new Date().toLocaleString('es-VE')}`,
+      padX,
+      height - Math.round(barH * 0.08),
+    );
+
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `HITO_${parcel.code}_${target.id}.jpg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        onNotify(`Foto guardada: HITO_${parcel.code}_${target.id}.jpg`);
+      },
+      'image/jpeg',
+      0.92,
+    );
   };
 
   const handleSaveShift = () => {
@@ -185,65 +482,66 @@ export default function PointLocateScreen({
     onApplyShift(safeE, safeN);
     setShowShiftModal(false);
     onNotify(
-      `Shift aplicado: ΔE ${safeE >= 0 ? '+' : ''}${safeE.toFixed(3)}m · ΔN ${safeN >= 0 ? '+' : ''}${safeN.toFixed(3)}m`
+      `Shift aplicado: ΔE ${safeE >= 0 ? '+' : ''}${safeE.toFixed(3)}m · ΔN ${safeN >= 0 ? '+' : ''}${safeN.toFixed(3)}m`,
     );
   };
 
+  const renderDirectionArrow = () => {
+    if (!guidance) return <Compass className="w-4 h-4 text-[#4cd7f6]" />;
+    switch (guidance.turnType) {
+      case 'arrived':
+        return <CheckCircle2 className="w-4 h-4 text-[#4edea3]" />;
+      case 'straight':
+        return <ArrowUp className="w-4 h-4 text-[#4edea3]" />;
+      case 'right':
+        return <ArrowRight className="w-4 h-4 text-[#ffb95f]" />;
+      case 'left':
+        return <ArrowLeft className="w-4 h-4 text-[#ffb95f]" />;
+      case 'back':
+        return <RotateCcw className="w-4 h-4 text-[#ffb4ab]" />;
+      default:
+        return <Compass className="w-4 h-4 text-[#4cd7f6]" />;
+    }
+  };
+
+  // Posición horizontal del marcador en Cámara AR basado en giro relativo (FOV ±32°)
+  const relBearing = guidance?.relativeDeg ?? null;
+  const arInView = relBearing !== null && Math.abs(relBearing) <= 32;
+  const arLeftPct = relBearing !== null ? 50 + (relBearing / 32) * 40 : 50;
+
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto no-scrollbar text-[#dde2f8] bg-[#0d1322] select-none pb-3 relative">
-      {/* Section 1: Telemetry & Epoch Calibration Ribbon */}
-      <section className="px-3 pt-2 flex flex-col gap-1.5">
-        <div className="bg-[#151b2b] rounded-xl px-3 py-2 flex items-center justify-between shadow-sm border border-[#242a3a]">
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 bg-[#00a572]/30 px-2 py-0.5 rounded text-[#4edea3]">
-              <span className="w-2 h-2 rounded-full bg-[#4edea3] animate-ping" />
-              <span className="font-stitch-headline text-[11px] font-bold tracking-wider text-[#4edea3]">
-                {gnssFix.isLiveHardware ? 'GNSS LIVE' : 'FIXED'}
-              </span>
-            </div>
-            <span className="font-stitch-mono text-[10.5px] text-[#bcc9cd]">
-              EDAD: <strong className="text-[#dde2f8]">1.0s</strong>
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2.5 font-stitch-mono text-[10.5px]">
-            <div className="flex items-center gap-0.5">
-              <span className="text-[#bcc9cd]">H:</span>
-              <span className="text-[#4edea3] font-semibold">
-                {gnssFix.isLiveHardware ? `${gnssFix.accuracy.toFixed(2)}m` : '0.007m'}
-              </span>
-            </div>
-            <div className="flex items-center gap-0.5">
-              <span className="text-[#bcc9cd]">V:</span>
-              <span className="text-[#4edea3] font-semibold">0.012m</span>
-            </div>
-            <div className="flex items-center gap-0.5 bg-[#191f2f] px-1.5 py-0.5 rounded text-[#4cd7f6]">
-              <span className="text-[#bcc9cd]">PDOP:</span>
-              <span className="font-semibold">1.1</span>
-            </div>
-          </div>
+      {/* Barra superior limpia con solo telemetría real */}
+      <section className="px-3 pt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 bg-[#151b2b] px-2.5 py-1.5 rounded-lg border border-[#242a3a] min-w-0">
+          <span
+            className={`w-2 h-2 rounded-full shrink-0 ${
+              hasLiveGps ? 'bg-[#4edea3] animate-pulse' : 'bg-[#ffb95f]'
+            }`}
+          />
+          <span
+            className={`font-stitch-mono text-[10px] font-bold truncate ${
+              hasLiveGps ? 'text-[#4edea3]' : 'text-[#ffb95f]'
+            }`}
+          >
+            {hasLiveGps
+              ? `GPS ±${gnssFix.accuracy.toFixed(1)}m · ${gpsAgeSec}s`
+              : 'Buscando GPS...'}
+          </span>
+          <span className="text-[#3d494c]">|</span>
+          <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd] truncate">
+            {compass.source === 'magnetometer'
+              ? 'Brújula'
+              : compass.source === 'gps_course'
+                ? 'Rumbo GPS'
+                : 'Sin brújula'}
+          </span>
         </div>
 
-        <div className="bg-[#191f2f] rounded-xl p-2 flex items-center justify-between shadow-sm gap-2 border border-[#242a3a]">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-1.5 truncate">
-                <Sliders className="w-3.5 h-3.5 text-[#ffb95f] shrink-0" />
-                <span className="font-stitch-headline text-[11.5px] font-bold text-[#dde2f8] truncate">
-                  Calibración Épocas: {epochCount}/15
-                </span>
-              </div>
-              <span className="font-stitch-mono text-[10px] text-[#4edea3] bg-[#242a3a] px-1.5 py-0.5 rounded font-medium">
-                {capturing ? 'Promediando...' : 'Ponderado OK'}
-              </span>
-            </div>
-            <div className="w-full h-1.5 bg-[#2f3445] rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-[#ffb95f] to-[#4edea3] transition-all duration-300"
-                style={{ width: `${Math.round((epochCount / 15) * 100)}%` }}
-              />
-            </div>
-          </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="bg-[#151b2b] border border-[#242a3a] px-2 py-1.5 rounded-lg font-stitch-mono text-[10px] text-[#4cd7f6] font-bold">
+            {stakedIds.length}/{vertices.length} hitos
+          </span>
 
           <button
             type="button"
@@ -252,271 +550,251 @@ export default function PointLocateScreen({
               setDraftShiftN(shiftNorte.toFixed(3));
               setShowShiftModal(true);
             }}
-            className="h-10 px-2.5 bg-[#242a3a] hover:bg-[#33394a] text-[#4cd7f6] flex items-center gap-1 rounded transition-colors whitespace-nowrap shadow-sm"
+            className={`px-2 py-1.5 rounded-lg border font-stitch-mono text-[10px] font-bold flex items-center gap-1 ${
+              hasActiveShift
+                ? 'bg-[#ffb95f]/20 border-[#ffb95f]/60 text-[#ffb95f]'
+                : 'bg-[#151b2b] border-[#242a3a] text-[#bcc9cd]'
+            }`}
+            title="Ajuste Shift ΔE / ΔN"
           >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span className="font-stitch-headline text-[11px] font-bold uppercase">Shift ΔE ΔN</span>
+            <SlidersHorizontal className="w-3 h-3" />
+            <span>Shift</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setVibrateEnabled((v) => !v)}
+            className={`p-1.5 rounded-lg border ${
+              vibrateEnabled
+                ? 'bg-[#151b2b] border-[#242a3a] text-[#4edea3]'
+                : 'bg-[#151b2b] border-[#242a3a] text-[#869397]'
+            }`}
+            title={vibrateEnabled ? 'Vibración al llegar activa' : 'Vibración silenciada'}
+          >
+            {vibrateEnabled ? <Bell className="w-3.5 h-3.5" /> : <BellOff className="w-3.5 h-3.5" />}
           </button>
         </div>
       </section>
 
-      {/* Section 2: Directional Stakeout HUD Banner */}
+      {/* HUD Principal: Objetivo + Dirección en tiempo real + Distancia */}
       <section className="px-3 pt-2">
         <div className="bg-[#151b2b] rounded-xl p-2.5 shadow-md flex flex-col gap-2 border border-[#242a3a]">
-          <div className="flex items-center justify-between pb-1">
+          <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="w-7 h-7 rounded bg-[#06b6d4] text-[#003640] flex items-center justify-center font-stitch-headline font-bold text-[12px] shrink-0">
-                {target.shortId}
-              </span>
+              <button
+                type="button"
+                onClick={() => handleToggleStaked(target.id)}
+                className={`w-8 h-8 rounded-lg flex items-center justify-center font-stitch-headline font-bold text-[12px] shrink-0 border transition-colors ${
+                  isTargetStaked
+                    ? 'bg-[#4edea3] text-[#003824] border-[#4edea3]'
+                    : 'bg-[#06b6d4] text-[#003640] border-[#4cd7f6]'
+                }`}
+                title="Toca para marcar o desmarcar como localizado"
+              >
+                {isTargetStaked ? <Check className="w-4 h-4" /> : target.shortId}
+              </button>
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-stitch-headline text-[17px] font-semibold tracking-tight leading-none">
+                  <span className="font-stitch-headline text-[16px] font-semibold leading-none text-[#dde2f8]">
                     {target.id}
                   </span>
-                  <span className="font-stitch-mono text-[10px] bg-[#2f3445] px-1.5 py-0.5 rounded text-[#bcc9cd] truncate">
-                    Parcela {parcel.code}
+                  <span className="font-stitch-mono text-[9.5px] bg-[#242a3a] px-1.5 py-0.5 rounded text-[#bcc9cd] truncate">
+                    {parcel.code}
                   </span>
                 </div>
-                <span className="font-stitch-mono text-[10px] text-[#bcc9cd] truncate mt-0.5">
-                  {target.code} · {crsMode === 'regven' ? `REGVEN UTM ${parcel.huso}N` : `PSAD56 UTM ${parcel.huso}N`}
+                <span className="font-stitch-mono text-[10px] text-[#869397] truncate mt-0.5">
+                  {target.code} · {crsMode === 'regven' ? `REGVEN ${parcel.huso}N` : `PSAD56 ${parcel.huso}N`}
                 </span>
               </div>
             </div>
 
-            <div className="flex flex-col items-end shrink-0 pl-2">
-              <span className="font-stitch-mono text-[9.5px] text-[#4cd7f6] uppercase tracking-wider font-semibold">
-                Dist. Radial
-              </span>
+            <div className="flex flex-col items-end shrink-0">
               <span
-                className={`font-stitch-headline text-[24px] leading-tight font-bold tracking-tight ${
-                  inTolerance ? 'text-[#4edea3]' : 'text-[#4cd7f6]'
+                className={`font-stitch-headline text-[23px] leading-none font-bold tracking-tight ${
+                  distanceM === null
+                    ? 'text-[#869397]'
+                    : distanceM <= 3
+                      ? 'text-[#4edea3]'
+                      : distanceM <= 15
+                        ? 'text-[#ffb95f]'
+                        : 'text-[#4cd7f6]'
                 }`}
               >
-                {adjustedRadial.toFixed(3)}{' '}
-                <span className="font-stitch-mono text-[11px] text-[#bcc9cd]">m</span>
+                {distanceM !== null ? formatFieldDistance(distanceM) : '-- m'}
               </span>
+              <div className="flex items-center gap-1 mt-1">
+                {renderDirectionArrow()}
+                <span className="font-stitch-mono text-[10.5px] font-bold text-[#dde2f8]">
+                  {guidance ? guidance.headline : 'Esperando señal GPS'}
+                </span>
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-1.5 pt-0.5">
-            <div className="bg-[#191f2f] p-2 rounded flex flex-col items-center justify-center text-center">
-              <div className="flex items-center gap-0.5 text-[#4cd7f6]">
-                <ArrowUp className="w-3.5 h-3.5" />
-                <span className="font-stitch-mono text-[10px] uppercase font-bold">
-                  {adjustedNorth >= 0 ? 'Norte' : 'Sur'}
-                </span>
-              </div>
-              <span className="font-stitch-mono text-[15px] text-[#dde2f8] font-bold tracking-tight mt-0.5">
-                {Math.abs(adjustedNorth).toFixed(3)}
+          {/* 3 métricas vectoriales reales */}
+          <div className="grid grid-cols-3 gap-1.5">
+            <div className="bg-[#0d1322] px-2 py-1.5 rounded flex items-center justify-between border border-[#1f293d]">
+              <span className="font-stitch-mono text-[9.5px] text-[#869397] font-bold">
+                {deltaNorthM === null ? 'ΔN/S' : deltaNorthM >= 0 ? 'NORTE' : 'SUR'}
               </span>
-              <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">m</span>
+              <span className="font-stitch-mono text-[12px] text-[#dde2f8] font-bold">
+                {deltaNorthM !== null ? `${Math.abs(deltaNorthM).toFixed(2)}m` : '--'}
+              </span>
             </div>
 
-            <div className="bg-[#191f2f] p-2 rounded flex flex-col items-center justify-center text-center">
-              <div className="flex items-center gap-0.5 text-[#4cd7f6]">
-                <ArrowRight className="w-3.5 h-3.5" />
-                <span className="font-stitch-mono text-[10px] uppercase font-bold">
-                  {adjustedEast >= 0 ? 'Este' : 'Oeste'}
-                </span>
-              </div>
-              <span className="font-stitch-mono text-[15px] text-[#dde2f8] font-bold tracking-tight mt-0.5">
-                {Math.abs(adjustedEast).toFixed(3)}
+            <div className="bg-[#0d1322] px-2 py-1.5 rounded flex items-center justify-between border border-[#1f293d]">
+              <span className="font-stitch-mono text-[9.5px] text-[#869397] font-bold">
+                {deltaEastM === null ? 'ΔE/O' : deltaEastM >= 0 ? 'ESTE' : 'OESTE'}
               </span>
-              <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">m</span>
+              <span className="font-stitch-mono text-[12px] text-[#dde2f8] font-bold">
+                {deltaEastM !== null ? `${Math.abs(deltaEastM).toFixed(2)}m` : '--'}
+              </span>
             </div>
 
-            <div className="bg-[#191f2f] p-2 rounded flex flex-col items-center justify-center text-center">
-              <div className="flex items-center gap-0.5 text-[#ffb95f]">
-                <Compass className="w-3.5 h-3.5" />
-                <span className="font-stitch-mono text-[10px] uppercase font-bold">Azimut</span>
-              </div>
-              <span className="font-stitch-mono text-[13px] text-[#dde2f8] font-bold tracking-tight mt-1 truncate max-w-full">
-                {displayAzDeg}
+            <div className="bg-[#0d1322] px-2 py-1.5 rounded flex items-center justify-between border border-[#1f293d]">
+              <span className="font-stitch-mono text-[9.5px] text-[#ffb95f] font-bold">AZIMUT</span>
+              <span className="font-stitch-mono text-[11px] text-[#dde2f8] font-bold truncate ml-1">
+                {azInfo ? azInfo.full : '--'}
               </span>
-              <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">{displayAzSec}</span>
-            </div>
-
-            <div className="bg-[#191f2f] p-2 rounded flex flex-col items-center justify-center text-center">
-              <div className="flex items-center gap-0.5 text-[#4edea3]">
-                <ArrowDownToLine className="w-3.5 h-3.5" />
-                <span className="font-stitch-mono text-[10px] uppercase font-bold">
-                  {liveCutFill < 0 ? 'Corte' : 'Relleno'}
-                </span>
-              </div>
-              <span className="font-stitch-mono text-[15px] text-[#4edea3] font-bold tracking-tight mt-0.5">
-                {liveCutFill >= 0 ? '+' : ''}
-                {liveCutFill.toFixed(3)}
-              </span>
-              <span className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">m</span>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Section 3: Central Precision Bullseye & AR Viewfinder Canvas */}
-      <section className="px-3 pt-2 flex-1 flex flex-col min-h-[280px] relative">
-        <div className="relative w-full h-[280px] bg-[#080e1d] rounded-xl overflow-hidden shadow-inner flex items-center justify-center border border-[#242a3a]">
-          <div className="absolute top-2 inset-x-2 z-20 flex items-center justify-between">
-            <div className="flex items-center gap-2 bg-[#191f2f]/90 backdrop-blur-md px-2.5 py-1 rounded-full shadow-md border border-[#2f3445]">
-              <div className="relative w-6 h-6 rounded-full bg-[#2f3445] flex items-center justify-center overflow-hidden">
-                <div className="absolute w-4 h-4 rounded-full border border-[#3d494c]" />
-                <div className="absolute w-1.5 h-1.5 rounded-full bg-[#4edea3] translate-x-[2px] translate-y-[-1px] animate-pulse" />
-              </div>
-              <div className="flex flex-col">
-                <span className="font-stitch-mono text-[8.5px] text-[#bcc9cd] leading-none">INCLINACIÓN</span>
-                <span className="font-stitch-mono text-[10px] text-[#4edea3] font-bold leading-tight">
-                  0.5° OK
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center bg-[#151b2b] p-0.5 rounded-full shadow-md border border-[#242a3a]">
-              <button
-                type="button"
-                onClick={() => setViewMode('radar')}
-                className={`px-2.5 py-1 rounded-full font-stitch-headline text-[11px] flex items-center gap-1 transition-all ${
-                  viewMode === 'radar'
-                    ? 'bg-[#06b6d4] text-[#003640] font-bold'
-                    : 'text-[#bcc9cd]'
-                }`}
-              >
-                <Radar className="w-3.5 h-3.5" />
-                Radar
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('ar')}
-                className={`px-2.5 py-1 rounded-full font-stitch-headline text-[11px] flex items-center gap-1 transition-all ${
-                  viewMode === 'ar'
-                    ? 'bg-[#06b6d4] text-[#003640] font-bold'
-                    : 'text-[#bcc9cd]'
-                }`}
-              >
-                <Box className="w-3.5 h-3.5" />
-                Cámara AR
-              </button>
-            </div>
+      {/* Visor Central: Radar SVG Vectorial / Cámara AR */}
+      <section className="px-3 pt-2 flex-1 flex flex-col min-h-[285px] relative">
+        <div className="relative w-full h-full min-h-[285px] rounded-xl overflow-hidden">
+          {/* Selector Radar / Cámara AR flotante en esquina superior derecha */}
+          <div className="absolute top-2.5 right-2.5 z-30 flex items-center bg-[#151b2b]/95 p-0.5 rounded-full shadow-md border border-[#242a3a]">
+            <button
+              type="button"
+              onClick={() => setViewMode('radar')}
+              className={`px-2.5 py-1 rounded-full font-stitch-headline text-[10.5px] flex items-center gap-1 transition-all ${
+                viewMode === 'radar'
+                  ? 'bg-[#06b6d4] text-[#003640] font-bold'
+                  : 'text-[#bcc9cd]'
+              }`}
+            >
+              <Radar className="w-3.5 h-3.5" />
+              Radar
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('ar')}
+              className={`px-2.5 py-1 rounded-full font-stitch-headline text-[10.5px] flex items-center gap-1 transition-all ${
+                viewMode === 'ar'
+                  ? 'bg-[#06b6d4] text-[#003640] font-bold'
+                  : 'text-[#bcc9cd]'
+              }`}
+            >
+              <Box className="w-3.5 h-3.5" />
+              AR
+            </button>
           </div>
 
           {viewMode === 'radar' ? (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <svg className="absolute inset-0 w-full h-full opacity-15 pointer-events-none">
-                <defs>
-                  <pattern height="30" id="prod-radar-grid" patternUnits="userSpaceOnUse" width="30">
-                    <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#869397" strokeWidth="0.5" />
-                  </pattern>
-                </defs>
-                <rect fill="url(#prod-radar-grid)" height="100%" width="100%" />
-              </svg>
-
-              <div className="relative w-56 h-56 flex items-center justify-center mt-4">
-                <div className="absolute w-56 h-56 rounded-full border border-dashed border-[#3d494c] flex items-center justify-center">
-                  <span className="absolute top-1 text-[#bcc9cd] font-stitch-mono text-[9.5px]">1.00 m</span>
-                </div>
-                <div className="absolute w-32 h-32 rounded-full border border-[#3d494c] flex items-center justify-center bg-[#242a3a]/20">
-                  <span className="absolute top-1 text-[#bcc9cd] font-stitch-mono text-[8.5px]">0.20 m</span>
-                </div>
-                <div className="absolute w-14 h-14 rounded-full bg-[#4edea3]/15 flex items-center justify-center animate-pulse">
-                  <div className="w-9 h-9 rounded-full border border-[#4edea3] flex items-center justify-center">
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#4edea3]" />
-                  </div>
-                  <span className="absolute bottom-0.5 text-[#4edea3] font-stitch-mono text-[7.5px] font-bold">
-                    0.05m
-                  </span>
-                </div>
-
-                <div className="absolute inset-x-0 h-[1px] bg-[#3d494c]/45" />
-                <div className="absolute inset-y-0 w-[1px] bg-[#3d494c]/45" />
-
-                <span className="absolute top-1.5 font-stitch-headline text-[11px] text-[#4cd7f6] font-bold">N</span>
-                <span className="absolute right-2 font-stitch-headline text-[11px] text-[#bcc9cd]">E</span>
-                <span className="absolute bottom-1.5 font-stitch-headline text-[11px] text-[#bcc9cd]">S</span>
-                <span className="absolute left-2 font-stitch-headline text-[11px] text-[#bcc9cd]">W</span>
-
-                <div className="absolute z-10 flex flex-col items-center pointer-events-none">
-                  <div className="w-5 h-5 rounded-full bg-[#ffb4ab] flex items-center justify-center text-[#690005] shadow-md">
-                    <Flag className="w-3 h-3" />
-                  </div>
-                  <span className="bg-[#080e1d] px-1 rounded font-stitch-mono text-[9.5px] text-[#ffb4ab] font-bold mt-0.5">
-                    {target.id}
-                  </span>
-                </div>
-
-                <div
-                  className="absolute z-10 flex flex-col items-center transition-all duration-300"
-                  style={{
-                    transform: `translate(${roverPxX}px, ${roverPxY}px)`,
-                  }}
-                >
-                  <div className="w-7 h-7 rounded-full bg-[#4cd7f6]/20 flex items-center justify-center shadow-lg">
-                    <div className="w-4 h-4 rounded-full bg-[#4cd7f6] flex items-center justify-center text-[#003640]">
-                      <Navigation className="w-2.5 h-2.5 rotate-45" />
-                    </div>
-                  </div>
-                  <span className="bg-[#242a3a] px-1.5 py-0.5 rounded text-[#dde2f8] font-stitch-mono text-[9px] whitespace-nowrap mt-0.5 shadow font-bold">
-                    ROVER ({adjustedRadial.toFixed(2)}m)
-                  </span>
-                </div>
-              </div>
-
-              <div className="absolute bottom-2 left-2.5 bg-[#191f2f]/85 backdrop-blur px-2 py-0.5 rounded text-[#bcc9cd] font-stitch-mono text-[9.5px]">
-                Escala Radar: 1 cm = 0.25 m
-              </div>
-            </div>
+            <StakeoutRadar
+              orientationMode={orientationMode}
+              onToggleOrientation={() =>
+                setOrientationMode((m) => (m === 'north_up' ? 'heading_up' : 'north_up'))
+              }
+              hasLiveGps={hasLiveGps}
+              distanceM={distanceM}
+              deltaNorthM={deltaNorthM}
+              deltaEastM={deltaEastM}
+              targetAzimuthDeg={targetAzimuthDeg}
+              deviceHeadingDeg={compass.headingDeg}
+              gpsAccuracyM={gnssFix.accuracy || 3.5}
+              targetLabel={target.id}
+              isStaked={isTargetStaked}
+            />
           ) : (
-            <div className="absolute inset-0 stitch-ar-grid flex items-center justify-center overflow-hidden">
+            <div className="relative w-full h-full min-h-[285px] stitch-ar-grid bg-[#080e1d] rounded-xl overflow-hidden border border-[#242a3a] flex items-center justify-center">
               <video
                 ref={videoRef}
                 playsInline
                 muted
                 autoPlay
                 className={`absolute inset-0 w-full h-full object-cover transition-opacity ${
-                  cameraActive ? 'opacity-80' : 'opacity-0 pointer-events-none'
+                  cameraActive ? 'opacity-90' : 'opacity-0 pointer-events-none'
                 }`}
               />
-              <svg className="absolute inset-0 w-full h-full opacity-35 pointer-events-none" viewBox="0 0 380 280" preserveAspectRatio="none">
-                <line x1="0" y1="132" x2="380" y2="132" stroke="#4cd7f6" strokeOpacity="0.45" strokeWidth="1" />
-                <line x1="190" y1="132" x2="10" y2="280" stroke="#4cd7f6" strokeOpacity="0.4" strokeWidth="0.9" />
-                <line x1="190" y1="132" x2="110" y2="280" stroke="#4cd7f6" strokeOpacity="0.4" strokeWidth="0.9" />
-                <line x1="190" y1="132" x2="270" y2="280" stroke="#4cd7f6" strokeOpacity="0.4" strokeWidth="0.9" />
-                <line x1="190" y1="132" x2="370" y2="280" stroke="#4cd7f6" strokeOpacity="0.4" strokeWidth="0.9" />
-                <line x1="65" y1="170" x2="315" y2="170" stroke="#4cd7f6" strokeOpacity="0.3" strokeWidth="0.8" />
-                <line x1="30" y1="212" x2="350" y2="212" stroke="#4cd7f6" strokeOpacity="0.3" strokeWidth="0.8" />
-              </svg>
 
-              <div className="relative z-10 flex flex-col items-center mt-6">
-                <div className="bg-[#4cd7f6] px-2.5 py-1 rounded text-[#003640] font-stitch-headline text-[14px] font-bold shadow-lg animate-bounce flex items-center gap-1">
-                  <MapPin className="w-4 h-4" />
-                  HITO {target.id} ({adjustedRadial.toFixed(2)}m)
+              {/* Línea de horizonte + estado cámara */}
+              <div className="absolute inset-x-4 top-3 flex items-center justify-start pointer-events-none">
+                <span className="font-stitch-mono text-[10px] bg-[#0d1322]/85 border border-[#242a3a] text-[#4cd7f6] px-2 py-0.5 rounded">
+                  {cameraActive ? 'CÁMARA AR ACTIVA' : 'CÁMARA NO DISPONIBLE'}
+                </span>
+              </div>
+
+              {hasLiveGps && distanceM !== null ? (
+                arInView || relBearing === null ? (
+                  <div
+                    className="relative z-10 flex flex-col items-center transition-all duration-150"
+                    style={{
+                      position: 'absolute',
+                      left: `${arLeftPct}%`,
+                      top: '46%',
+                      transform: 'translate(-50%, -50%)',
+                    }}
+                  >
+                    <div className="bg-[#0d1322]/90 border-2 border-[#4edea3] px-2.5 py-1 rounded-lg text-[#dde2f8] font-stitch-mono text-[11px] font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap">
+                      <MapPin className="w-3.5 h-3.5 text-[#4edea3]" />
+                      <span>
+                        {target.id} · {formatFieldDistance(distanceM)}
+                      </span>
+                    </div>
+                    <div className="w-0.5 h-16 bg-gradient-to-b from-[#4edea3] to-transparent" />
+                    <div className="w-8 h-8 rounded-full border-2 border-[#4edea3] bg-[#4edea3]/20 flex items-center justify-center">
+                      <div className="w-2.5 h-2.5 rounded-full bg-[#4edea3]" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative z-10 bg-[#0d1322]/90 border border-[#ffb95f] px-3.5 py-2 rounded-xl flex items-center gap-2 shadow-xl">
+                    {relBearing < 0 ? (
+                      <ArrowLeft className="w-5 h-5 text-[#ffb95f]" />
+                    ) : (
+                      <ArrowRight className="w-5 h-5 text-[#ffb95f]" />
+                    )}
+                    <div className="flex flex-col">
+                      <span className="font-stitch-headline text-[12px] font-bold text-[#ffb95f]">
+                        {relBearing < 0
+                          ? `Gira ${Math.round(Math.abs(relBearing))}° a la izquierda`
+                          : `Gira ${Math.round(relBearing)}° a la derecha`}
+                      </span>
+                      <span className="font-stitch-mono text-[10px] text-[#bcc9cd]">
+                        {target.id} a {formatFieldDistance(distanceM)}
+                      </span>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="relative z-10 bg-[#0d1322]/85 border border-[#ffb95f]/60 px-3 py-2 rounded-lg font-stitch-mono text-[11px] text-[#ffb95f]">
+                  Buscando señal GPS para posicionar el hito...
                 </div>
-                <div className="w-1 h-24 bg-gradient-to-b from-[#4cd7f6] via-[#06b6d4] to-[#4edea3]" />
-                <div className="w-24 h-9 rounded-full border-2 border-[#4edea3] bg-[#4edea3]/20 -mt-2 animate-pulse flex items-center justify-center">
-                  <span className="font-stitch-mono text-[10px] text-[#4edea3] font-bold">
-                    {target.stakeCutFill >= 0 ? '+' : ''}
-                    {target.stakeCutFill.toFixed(2)}m H
+              )}
+
+              {cutFillM !== null && (
+                <div className="absolute bottom-2.5 left-2.5 z-10 bg-[#0d1322]/85 border border-[#242a3a] px-2 py-0.5 rounded font-stitch-mono text-[10px] text-[#4edea3] flex items-center gap-1">
+                  <ArrowDownToLine className="w-3 h-3" />
+                  <span>
+                    {cutFillM < 0 ? 'Corte' : 'Relleno'}: {cutFillM >= 0 ? '+' : ''}
+                    {cutFillM.toFixed(2)}m
                   </span>
                 </div>
-              </div>
-
-              <div className="absolute inset-x-6 top-14 flex items-center justify-between text-[#4cd7f6] opacity-85 pointer-events-none">
-                <div className="w-10 h-0.5 bg-[#4cd7f6]" />
-                <span className="font-stitch-mono text-[10px] bg-[#0d1322]/80 px-2 py-0.5 rounded">
-                  {cameraActive ? 'AR LIVE CAM · +1.2°' : 'AR HUD · +1.2°'}
-                </span>
-                <div className="w-10 h-0.5 bg-[#4cd7f6]" />
-              </div>
+              )}
             </div>
           )}
         </div>
       </section>
 
-      {/* Section 4: Field Survey Stakeout Controls */}
+      {/* Controles Reales de Campo */}
       <section className="px-3 pt-2.5 flex flex-col gap-2">
         <div className="grid grid-cols-4 gap-1.5">
           <button
             type="button"
             onClick={handlePrev}
-            className="h-11 bg-[#191f2f] hover:bg-[#242a3a] text-[#dde2f8] rounded flex items-center justify-center gap-0.5 font-stitch-headline text-[11px] font-bold shadow-sm border border-[#242a3a]"
+            className="h-10 bg-[#191f2f] hover:bg-[#242a3a] text-[#dde2f8] rounded-lg flex items-center justify-center gap-0.5 font-stitch-headline text-[11px] font-bold border border-[#242a3a]"
           >
             <ChevronLeft className="w-4 h-4" />
             <span className="truncate">Anterior</span>
@@ -525,7 +803,7 @@ export default function PointLocateScreen({
           <button
             type="button"
             onClick={handleNext}
-            className="h-11 bg-[#191f2f] hover:bg-[#242a3a] text-[#dde2f8] rounded flex items-center justify-center gap-0.5 font-stitch-headline text-[11px] font-bold shadow-sm border border-[#242a3a]"
+            className="h-10 bg-[#191f2f] hover:bg-[#242a3a] text-[#dde2f8] rounded-lg flex items-center justify-center gap-0.5 font-stitch-headline text-[11px] font-bold border border-[#242a3a]"
           >
             <span className="truncate">Siguiente</span>
             <ChevronRight className="w-4 h-4" />
@@ -534,7 +812,7 @@ export default function PointLocateScreen({
           <button
             type="button"
             onClick={() => setShowPointsPicker(true)}
-            className="h-11 bg-[#191f2f] hover:bg-[#242a3a] text-[#4cd7f6] rounded flex items-center justify-center gap-1 font-stitch-headline text-[11px] font-bold shadow-sm border border-[#242a3a]"
+            className="h-10 bg-[#191f2f] hover:bg-[#242a3a] text-[#4cd7f6] rounded-lg flex items-center justify-center gap-1 font-stitch-headline text-[11px] font-bold border border-[#242a3a]"
           >
             <ListOrdered className="w-4 h-4" />
             <span>Puntos</span>
@@ -542,71 +820,68 @@ export default function PointLocateScreen({
 
           <button
             type="button"
-            onClick={() => {
-              setViewMode('ar');
-              onNotify(`Foto EXIF UTM guardada · ${target.id} (${parcel.code})`);
-            }}
-            className="h-11 bg-[#191f2f] hover:bg-[#242a3a] text-[#ffb95f] rounded flex items-center justify-center gap-1 font-stitch-headline text-[11px] font-bold shadow-sm border border-[#242a3a]"
+            onClick={handleCapturePhoto}
+            className="h-10 bg-[#191f2f] hover:bg-[#242a3a] text-[#ffb95f] rounded-lg flex items-center justify-center gap-1 font-stitch-headline text-[11px] font-bold border border-[#242a3a]"
           >
             <Camera className="w-4 h-4" />
             <span className="truncate">Foto Hito</span>
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={handleCapturePoint}
-          className="w-full h-14 bg-[#4edea3] hover:bg-[#6ffbbe] active:scale-[0.98] text-[#003824] rounded-xl flex items-center justify-between px-3.5 shadow-lg transition-all"
-        >
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-full bg-[#003824]/15 flex items-center justify-center">
-              <Save className="w-5 h-5" />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleStartOrFinishCapture}
+            disabled={!hasLiveGps}
+            className={`flex-1 h-12 rounded-xl flex items-center justify-between px-3.5 shadow-lg transition-all ${
+              !hasLiveGps
+                ? 'bg-[#191f2f] text-[#869397] border border-[#242a3a] opacity-70'
+                : isAveraging
+                  ? 'bg-[#ffb95f] text-[#3a2200]'
+                  : 'bg-[#4edea3] hover:bg-[#6ffbbe] active:scale-[0.98] text-[#003824]'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Save className="w-4 h-4 shrink-0" />
+              <div className="flex flex-col text-left min-w-0">
+                <span className="font-stitch-headline text-[13px] tracking-tight leading-none uppercase font-bold truncate">
+                  {isAveraging
+                    ? `Promediando (${avgSamples.length}/${TARGET_AVG_SAMPLES}) · Toca para guardar`
+                    : 'Capturar Coordenada GPS'}
+                </span>
+                <span className="font-stitch-mono text-[9.5px] opacity-80 leading-tight mt-0.5 truncate">
+                  {hasLiveGps
+                    ? `E: ${gnssFix.esteRegven.toFixed(2)} · N: ${gnssFix.norteRegven.toFixed(2)}`
+                    : 'Requiere señal GPS activa'}
+                </span>
+              </div>
             </div>
-            <div className="flex flex-col text-left">
-              <span className="font-stitch-headline text-[15px] tracking-tight leading-none uppercase font-bold text-[#003824]">
-                {capturing ? 'Midiendo Épocas...' : 'Capturar Punto [F1]'}
-              </span>
-              <span className="font-stitch-mono text-[10px] text-[#003824]/80 font-medium leading-tight mt-0.5">
-                Promediar 15 épocas RTK fijas
-              </span>
-            </div>
-          </div>
+          </button>
 
-          <div className="flex flex-col items-end bg-[#003824]/10 px-2 py-1 rounded">
-            <span className="font-stitch-mono text-[9px] uppercase font-bold text-[#003824]">RMS 3D</span>
-            <span className="font-stitch-mono text-[14px] font-bold text-[#003824] leading-none">
-              0.014 m
-            </span>
-          </div>
-        </button>
+          {onAddVertexFromGps && (
+            <button
+              type="button"
+              disabled={!hasLiveGps}
+              onClick={() => onAddVertexFromGps(gnssFix)}
+              className="h-12 px-3 rounded-xl bg-[#242a3a] hover:bg-[#2f3445] border border-[#4cd7f6]/40 text-[#4cd7f6] font-stitch-headline text-[11px] font-bold uppercase flex items-center gap-1 shrink-0 disabled:opacity-45"
+              title="Agregar nuevo vértice con posición GPS actual"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>+ Vértice</span>
+            </button>
+          )}
+        </div>
       </section>
 
-      {captureBanner && (
-        <div className="absolute bottom-3 inset-x-3 z-40 bg-[#4edea3] text-[#003824] p-3 rounded-xl shadow-2xl flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 shrink-0" />
-            <div className="flex flex-col">
-              <span className="font-stitch-headline text-[14px] leading-none font-bold">{captureBanner}</span>
-              <span className="font-stitch-mono text-[10px] text-[#003824]/90 mt-0.5">
-                RMS H: 0.007m | ΔE: {shiftEste.toFixed(3)}m ΔN: {shiftNorte.toFixed(3)}m
-              </span>
-            </div>
-          </div>
-          <span className="font-stitch-mono text-[10.5px] bg-[#003824]/20 px-2 py-1 rounded font-bold">
-            N° {storedPointNo}
-          </span>
-        </div>
-      )}
-
-      {/* Calibration Shift Modal */}
+      {/* Modal Shift ΔE / ΔN */}
       {showShiftModal && (
         <div className="absolute inset-0 z-50 bg-[#0d1322]/90 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full bg-[#191f2f] rounded-xl p-4 shadow-2xl flex flex-col gap-3 border border-[#2f3445]">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <SlidersHorizontal className="w-5 h-5 text-[#4cd7f6]" />
-                <h2 className="font-stitch-headline text-[16px] font-semibold">
-                  Calibración de Punto Base / Shift
+                <h2 className="font-stitch-headline text-[15px] font-semibold">
+                  Calibración Shift ΔE / ΔN
                 </h2>
               </div>
               <button
@@ -617,40 +892,39 @@ export default function PointLocateScreen({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-[12.5px] text-[#bcc9cd]">
-              Ajuste los desfases de traslación horizontal con respecto al marco local ({crsMode === 'regven' ? 'REGVEN 19N' : 'PSAD56 19N'}).
+            <p className="text-[12px] text-[#bcc9cd]">
+              Desfase de calibración local en metros ({crsMode === 'regven' ? 'REGVEN' : 'PSAD56'}).
             </p>
             <div className="grid grid-cols-2 gap-2 font-stitch-mono">
               <div className="bg-[#151b2b] p-2 rounded flex flex-col gap-1 border border-[#242a3a]">
-                <span className="text-[#bcc9cd] text-[10px]">Shift Δ Este (X)</span>
-                <div className="flex items-center justify-between gap-1">
-                  <input
-                    value={draftShiftE}
-                    onChange={(e) => setDraftShiftE(e.target.value)}
-                    className="w-full bg-[#080e1d] text-[#4cd7f6] font-bold text-[13px] px-1.5 py-1 rounded outline-none"
-                  />
-                  <Check className="w-4 h-4 text-[#4edea3] shrink-0" />
-                </div>
+                <span className="text-[#bcc9cd] text-[10px]">Shift Δ Este (m)</span>
+                <input
+                  value={draftShiftE}
+                  onChange={(e) => setDraftShiftE(e.target.value)}
+                  className="w-full bg-[#080e1d] text-[#4cd7f6] font-bold text-[13px] px-2 py-1 rounded outline-none"
+                />
               </div>
               <div className="bg-[#151b2b] p-2 rounded flex flex-col gap-1 border border-[#242a3a]">
-                <span className="text-[#bcc9cd] text-[10px]">Shift Δ Norte (Y)</span>
-                <div className="flex items-center justify-between gap-1">
-                  <input
-                    value={draftShiftN}
-                    onChange={(e) => setDraftShiftN(e.target.value)}
-                    className="w-full bg-[#080e1d] text-[#4cd7f6] font-bold text-[13px] px-1.5 py-1 rounded outline-none"
-                  />
-                  <Check className="w-4 h-4 text-[#4edea3] shrink-0" />
-                </div>
+                <span className="text-[#bcc9cd] text-[10px]">Shift Δ Norte (m)</span>
+                <input
+                  value={draftShiftN}
+                  onChange={(e) => setDraftShiftN(e.target.value)}
+                  className="w-full bg-[#080e1d] text-[#4cd7f6] font-bold text-[13px] px-2 py-1 rounded outline-none"
+                />
               </div>
             </div>
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setShowShiftModal(false)}
-                className="flex-1 h-10 bg-[#242a3a] text-[#dde2f8] font-stitch-headline text-[12px] font-bold rounded uppercase"
+                onClick={() => {
+                  setDraftShiftE('0.000');
+                  setDraftShiftN('0.000');
+                  onApplyShift(0, 0);
+                  setShowShiftModal(false);
+                }}
+                className="px-3 h-10 bg-[#242a3a] text-[#bcc9cd] font-stitch-headline text-[11px] font-bold rounded uppercase"
               >
-                Cancelar
+                Cero
               </button>
               <button
                 type="button"
@@ -664,49 +938,97 @@ export default function PointLocateScreen({
         </div>
       )}
 
-      {/* Quick Vertex Picker Dialog */}
+      {/* Selector Inteligente de Vértices con Distancia Real en Vivo */}
       {showPointsPicker && (
         <div className="absolute inset-0 z-50 bg-[#0d1322]/90 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full bg-[#191f2f] rounded-xl p-4 shadow-2xl flex flex-col gap-2.5 border border-[#2f3445]">
-            <div className="flex items-center justify-between">
-              <span className="font-stitch-headline text-[15px] font-semibold">
-                Vértices · Parcela {parcel.code}
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-stitch-headline text-[15px] font-semibold truncate">
+                Vértices · {parcel.code} ({stakedIds.length}/{vertices.length})
               </span>
-              <button
-                type="button"
-                onClick={() => setShowPointsPicker(false)}
-                className="w-7 h-7 rounded bg-[#242a3a] text-[#bcc9cd] flex items-center justify-center"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto no-scrollbar">
-              {vertices.map((v) => (
+              <div className="flex items-center gap-1.5 shrink-0">
+                {hasLiveGps && (
+                  <button
+                    type="button"
+                    onClick={() => setSortByNearest((s) => !s)}
+                    className={`px-2 py-1 rounded font-stitch-mono text-[9.5px] font-bold border ${
+                      sortByNearest
+                        ? 'bg-[#4cd7f6]/20 border-[#4cd7f6] text-[#4cd7f6]'
+                        : 'bg-[#242a3a] border-transparent text-[#bcc9cd]'
+                    }`}
+                  >
+                    {sortByNearest ? 'Más cercano' : 'Orden ID'}
+                  </button>
+                )}
                 <button
-                  key={v.id}
                   type="button"
-                  onClick={() => {
-                    onSelectVertex(v.id);
-                    setShowPointsPicker(false);
-                  }}
-                  className={`p-2.5 rounded-lg flex items-center justify-between text-left transition-colors ${
-                    v.id === target.id
-                      ? 'bg-[#242a3a] border border-[#4cd7f6]/60'
-                      : 'bg-[#080e1d] hover:bg-[#151b2b]'
-                  }`}
+                  onClick={() => setShowPointsPicker(false)}
+                  className="w-7 h-7 rounded bg-[#242a3a] text-[#bcc9cd] flex items-center justify-center"
                 >
-                  <div>
-                    <span className="font-stitch-mono text-[12px] font-bold text-[#4cd7f6]">{v.id}</span>
-                    <span className="font-stitch-mono text-[11px] text-[#ffb95f] ml-2">{v.code}</span>
-                    <div className="font-stitch-mono text-[9.5px] text-[#bcc9cd]">
-                      Dist. estimada: {v.stakeDist.toFixed(3)} m · Az {v.stakeAzimuthDeg}
-                    </div>
-                  </div>
-                  <span className="font-stitch-mono text-[10px] text-[#4edea3] font-bold">
-                    {v.id === target.id ? 'ACTIVO' : 'SELECCIONAR'}
-                  </span>
+                  <X className="w-4 h-4" />
                 </button>
-              ))}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto no-scrollbar">
+              {sortedVertices.map((v) => {
+                const isActive = v.id === target.id;
+                const isDone = stakedIds.includes(v.id);
+                const dN = hasLiveGps ? v.norteRegven - gnssFix.norteRegven + shiftNorte : null;
+                const dE = hasLiveGps ? v.esteRegven - gnssFix.esteRegven + shiftEste : null;
+                const vDist = dN !== null && dE !== null ? Math.hypot(dN, dE) : null;
+                const vAz =
+                  dN !== null && dE !== null
+                    ? Math.round(normalizeAngle360((Math.atan2(dE, dN) * 180) / Math.PI))
+                    : null;
+                const showE = crsMode === 'regven' ? v.esteRegven : v.estePsad56;
+                const showN = crsMode === 'regven' ? v.norteRegven : v.nortePsad56;
+
+                return (
+                  <div
+                    key={v.id}
+                    className={`p-2 rounded-lg flex items-center justify-between gap-2 border ${
+                      isActive
+                        ? 'bg-[#242a3a] border-[#4cd7f6]/60'
+                        : 'bg-[#080e1d] border-transparent hover:bg-[#151b2b]'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectVertex(v.id);
+                        setShowPointsPicker(false);
+                      }}
+                      className="flex-1 text-left min-w-0"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-stitch-mono text-[12px] font-bold text-[#4cd7f6]">
+                          {v.id}
+                        </span>
+                        <span className="font-stitch-mono text-[10.5px] text-[#ffb95f] truncate">
+                          {v.code}
+                        </span>
+                      </div>
+                      <div className="font-stitch-mono text-[9.5px] text-[#bcc9cd] truncate">
+                        {vDist !== null
+                          ? `${formatFieldDistance(vDist)} · Az ${vAz}°`
+                          : `E:${formatCoord(showE)} N:${formatCoord(showN)}`}
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleToggleStaked(v.id)}
+                      className={`px-2 py-1 rounded font-stitch-mono text-[9.5px] font-bold shrink-0 ${
+                        isDone
+                          ? 'bg-[#4edea3]/20 text-[#4edea3] border border-[#4edea3]/50'
+                          : 'bg-[#191f2f] text-[#869397] border border-[#242a3a]'
+                      }`}
+                    >
+                      {isDone ? '✓ Listo' : 'Marcar'}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

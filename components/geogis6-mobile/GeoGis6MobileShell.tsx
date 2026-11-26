@@ -453,6 +453,12 @@ export default function GeoGis6MobileShell() {
           norteRegven: utm.norte,
           isLiveHardware: true,
           timestamp: pos.timestamp,
+          heading: typeof c.heading === 'number' && Number.isFinite(c.heading) ? c.heading : null,
+          speed: typeof c.speed === 'number' && Number.isFinite(c.speed) ? c.speed : null,
+          altitudeAccuracy:
+            typeof c.altitudeAccuracy === 'number' && Number.isFinite(c.altitudeAccuracy)
+              ? c.altitudeAccuracy
+              : null,
         });
       },
       () => {
@@ -835,27 +841,55 @@ export default function GeoGis6MobileShell() {
     notify(`Objetivo RTK fijado: ${vertexId} (${activeParcel.code})`);
   };
 
-  const handleCaptureCurrentVertex = () => {
-    if (!activeParcel || !selectedProject || !gnssFix.isLiveHardware) return;
-    const nextParcels = parcels.map((p) =>
-      p.id === activeParcel.id
-        ? {
-            ...p,
-            vertices: p.vertices.map((v) =>
-              v.id === selectedVertexId
-                ? {
-                    ...v,
-                    esteRegven: gnssFix.esteRegven,
-                    norteRegven: gnssFix.norteRegven,
-                    lat: gnssFix.lat,
-                    lng: gnssFix.lng,
-                    cota: Math.round(gnssFix.alt * 100) / 100,
-                  }
-                : v,
-            ),
-          }
-        : p,
-    );
+  const handleCaptureCurrentVertex = (averagedFix?: Partial<LiveGnssFix>) => {
+    const fixLat = averagedFix?.lat ?? gnssFix.lat;
+    const fixLng = averagedFix?.lng ?? gnssFix.lng;
+    const fixAlt = averagedFix?.alt ?? gnssFix.alt;
+    const fixEste = averagedFix?.esteRegven ?? gnssFix.esteRegven;
+    const fixNorte = averagedFix?.norteRegven ?? gnssFix.norteRegven;
+    const isLive = averagedFix?.isLiveHardware ?? gnssFix.isLiveHardware;
+
+    if (!activeParcel || !selectedProject || !isLive) return;
+
+    const nextParcels = parcels.map((p) => {
+      if (p.id !== activeParcel.id) return p;
+      const updatedVertices = p.vertices.map((v) =>
+        v.id === selectedVertexId
+          ? {
+              ...v,
+              esteRegven: fixEste,
+              norteRegven: fixNorte,
+              lat: fixLat,
+              lng: fixLng,
+              cota: Math.round(fixAlt * 100) / 100,
+            }
+          : v,
+      );
+      return buildFieldParcelFromVertices({
+        id: p.id,
+        code: p.code,
+        location: p.location,
+        sector: p.sector,
+        zoneTag: p.zoneTag,
+        owner: p.owner,
+        cadastralId: p.cadastralId,
+        huso: p.huso,
+        areaDocumentalM2: p.areaDocumentalM2,
+        geometryType: p.geometryType,
+        rawVertices: updatedVertices.map((v) => ({
+          id: v.id,
+          shortId: v.shortId,
+          code: v.code,
+          description: v.description,
+          esteRegven: v.esteRegven,
+          norteRegven: v.norteRegven,
+          lat: v.lat,
+          lng: v.lng,
+          cota: v.cota,
+        })),
+      });
+    });
+
     setParcels(nextParcels);
     saveLocalParcels(selectedProject.id, nextParcels);
     const nextProjects = markProjectPendingPush(
@@ -864,6 +898,73 @@ export default function GeoGis6MobileShell() {
       projectsRef.current,
     );
     setProjects(nextProjects);
+  };
+
+  const handleAddVertexFromGps = (averagedFix?: Partial<LiveGnssFix>) => {
+    const fixLat = averagedFix?.lat ?? gnssFix.lat;
+    const fixLng = averagedFix?.lng ?? gnssFix.lng;
+    const fixAlt = averagedFix?.alt ?? gnssFix.alt;
+    const fixEste = averagedFix?.esteRegven ?? gnssFix.esteRegven;
+    const fixNorte = averagedFix?.norteRegven ?? gnssFix.norteRegven;
+    const isLive = averagedFix?.isLiveHardware ?? gnssFix.isLiveHardware;
+
+    if (!activeParcel || !selectedProject || !isLive) return;
+
+    const nextIndex = activeParcel.vertices.length + 1;
+    const newId = `V-${String(nextIndex).padStart(2, '0')}`;
+    const newShort = `V${nextIndex}`;
+
+    const nextParcels = parcels.map((p) => {
+      if (p.id !== activeParcel.id) return p;
+      const combined = [
+        ...p.vertices.map((v) => ({
+          id: v.id,
+          shortId: v.shortId,
+          code: v.code,
+          description: v.description,
+          esteRegven: v.esteRegven,
+          norteRegven: v.norteRegven,
+          lat: v.lat,
+          lng: v.lng,
+          cota: v.cota,
+        })),
+        {
+          id: newId,
+          shortId: newShort,
+          code: `Hito_${nextIndex}`,
+          description: 'Vértice levantado con GPS en campo',
+          esteRegven: fixEste,
+          norteRegven: fixNorte,
+          lat: fixLat,
+          lng: fixLng,
+          cota: Math.round(fixAlt * 100) / 100,
+        },
+      ];
+      return buildFieldParcelFromVertices({
+        id: p.id,
+        code: p.code,
+        location: p.location,
+        sector: p.sector,
+        zoneTag: combined.length >= 3 ? 'Polígono' : p.zoneTag,
+        owner: p.owner,
+        cadastralId: p.cadastralId,
+        huso: p.huso,
+        areaDocumentalM2: p.areaDocumentalM2,
+        geometryType: combined.length >= 3 ? 'cerrada' : combined.length === 2 ? 'abierta' : 'puntos',
+        rawVertices: combined,
+      });
+    });
+
+    setParcels(nextParcels);
+    setSelectedVertexId(newId);
+    saveLocalParcels(selectedProject.id, nextParcels);
+    const nextProjects = markProjectPendingPush(
+      selectedProject.id,
+      nextParcels.length,
+      projectsRef.current,
+    );
+    setProjects(nextProjects);
+    notify(`Nuevo vértice ${newId} agregado a ${activeParcel.code}`);
   };
 
   const handleRestartRtk = () => {
@@ -1008,6 +1109,7 @@ export default function GeoGis6MobileShell() {
             project={selectedProject}
             parcels={parcels}
             activeParcel={activeParcel}
+            selectedVertexId={selectedVertexId}
             crsMode={crsMode}
             gnssFix={gnssFix}
             fitTrigger={mapFitTrigger}
@@ -1057,6 +1159,7 @@ export default function GeoGis6MobileShell() {
               setShiftNorte(dN);
             }}
             onCaptureCurrentVertex={handleCaptureCurrentVertex}
+            onAddVertexFromGps={handleAddVertexFromGps}
             onOpenProjects={() => setActiveScreen('auth')}
             onNotify={notify}
           />

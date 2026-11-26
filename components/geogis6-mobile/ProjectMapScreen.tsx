@@ -45,6 +45,7 @@ interface ProjectMapScreenProps {
   project: SyncedProject | null;
   parcels: FieldParcel[];
   activeParcel: FieldParcel | null;
+  selectedVertexId?: string;
   crsMode: CrsMode;
   gnssFix: LiveGnssFix;
   fitTrigger: number;
@@ -77,6 +78,7 @@ export default function ProjectMapScreen({
   project,
   parcels,
   activeParcel,
+  selectedVertexId,
   crsMode,
   gnssFix,
   fitTrigger,
@@ -278,6 +280,34 @@ export default function ProjectMapScreen({
             }),
           });
         }
+
+        const isSelected = Boolean(feature.get('isSelected'));
+        if (isSelected) {
+          return [
+            new Style({
+              image: new CircleStyle({
+                radius: 13,
+                fill: new Fill({ color: 'rgba(255, 185, 95, 0.22)' }),
+                stroke: new Stroke({ color: '#ffb95f', width: 2 }),
+              }),
+            }),
+            new Style({
+              image: new CircleStyle({
+                radius: 5.5,
+                fill: new Fill({ color: '#ffb95f' }),
+                stroke: new Stroke({ color: '#080e1d', width: 2 }),
+              }),
+              text: new Text({
+                text: `★ ${String(feature.get('shortId') || '')}`,
+                offsetY: -18,
+                font: '700 11px "JetBrains Mono", monospace',
+                fill: new Fill({ color: '#ffb95f' }),
+                stroke: new Stroke({ color: '#080e1d', width: 3.5 }),
+              }),
+            }),
+          ];
+        }
+
         return new Style({
           image: new CircleStyle({
             radius: resolution < 1.2 ? 6.5 : 4.5,
@@ -327,11 +357,30 @@ export default function ProjectMapScreen({
       },
     });
 
-    // Live GNSS Rover puck + accuracy circle
+    // Live GNSS Rover puck + accuracy circle + vector guía al vértice seleccionado
     const gnssLayer = new VectorLayer({
       source: gnssSourceRef.current,
       style: (feature) => {
         const kind = feature.get('kind');
+        if (kind === 'stake_guide') {
+          return new Style({
+            stroke: new Stroke({
+              color: '#4edea3',
+              width: 2.2,
+              lineDash: [7, 5],
+            }),
+          });
+        }
+        if (kind === 'stake_guide_label') {
+          return new Style({
+            text: new Text({
+              text: String(feature.get('label') || ''),
+              font: '700 10.5px "JetBrains Mono", monospace',
+              fill: new Fill({ color: '#4edea3' }),
+              stroke: new Stroke({ color: '#080e1d', width: 3.5 }),
+            }),
+          });
+        }
         if (kind === 'accuracy_ring') {
           return new Style({
             fill: new Fill({ color: 'rgba(78, 222, 163, 0.14)' }),
@@ -507,6 +556,7 @@ export default function ProjectMapScreen({
             kind: 'vertex',
             vertexId: v.id,
             shortId: v.shortId,
+            isSelected: Boolean(selectedVertexId && v.id === selectedVertexId),
           })
         );
 
@@ -525,7 +575,7 @@ export default function ProjectMapScreen({
         }
       }
     }
-  }, [parcels, activeParcel, showAllParcels]);
+  }, [parcels, activeParcel, selectedVertexId, showAllParcels]);
 
   // Fit extent whenever project changes or fitTrigger increments
   useEffect(() => {
@@ -533,7 +583,7 @@ export default function ProjectMapScreen({
     return () => clearTimeout(t);
   }, [fitAllParcels, fitTrigger, project?.id]);
 
-  // Update GNSS live marker + accuracy ring
+  // Update GNSS live marker + accuracy ring + vector guía al vértice seleccionado
   useEffect(() => {
     const gSrc = gnssSourceRef.current;
     gSrc.clear();
@@ -548,13 +598,49 @@ export default function ProjectMapScreen({
         kind: 'accuracy_ring',
       })
     );
+
+    if (gnssFix.isLiveHardware && activeParcel && activeParcel.vertices.length > 0) {
+      const targetV =
+        activeParcel.vertices.find((v) => v.id === selectedVertexId) ||
+        activeParcel.vertices[0];
+      if (targetV && Number.isFinite(targetV.lat) && Number.isFinite(targetV.lng)) {
+        const target3857 = fromLonLat([targetV.lng, targetV.lat]);
+        gSrc.addFeature(
+          new Feature({
+            geometry: new LineString([pos3857, target3857]),
+            kind: 'stake_guide',
+          })
+        );
+        const distM = Math.hypot(
+          targetV.esteRegven - gnssFix.esteRegven,
+          targetV.norteRegven - gnssFix.norteRegven,
+        );
+        const distLabel =
+          distM < 10
+            ? `${distM.toFixed(2)} m`
+            : distM < 1000
+              ? `${distM.toFixed(1)} m`
+              : `${(distM / 1000).toFixed(2)} km`;
+        gSrc.addFeature(
+          new Feature({
+            geometry: new Point([
+              (pos3857[0] + target3857[0]) / 2,
+              (pos3857[1] + target3857[1]) / 2,
+            ]),
+            kind: 'stake_guide_label',
+            label: `${targetV.shortId} · ${distLabel}`,
+          })
+        );
+      }
+    }
+
     gSrc.addFeature(
       new Feature({
         geometry: new Point(pos3857),
         kind: 'gnss_puck',
       })
     );
-  }, [gnssFix]);
+  }, [gnssFix, activeParcel, selectedVertexId]);
 
   // Update interactive measure features
   useEffect(() => {

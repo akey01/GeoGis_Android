@@ -138,6 +138,9 @@ export interface LiveGnssFix {
   norteRegven: number;
   isLiveHardware: boolean;
   timestamp: number;
+  heading?: number | null;
+  speed?: number | null;
+  altitudeAccuracy?: number | null;
 }
 
 export interface SatellitePoint {
