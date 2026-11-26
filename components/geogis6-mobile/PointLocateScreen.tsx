@@ -25,7 +25,7 @@ import {
 import { formatAzimuthDms, type CrsMode, type FieldParcel, type LiveGnssFix } from './data/fieldData';
 
 interface PointLocateScreenProps {
-  parcel: FieldParcel;
+  parcel: FieldParcel | null;
   selectedVertexId: string;
   crsMode: CrsMode;
   gnssFix: LiveGnssFix;
@@ -34,6 +34,7 @@ interface PointLocateScreenProps {
   onSelectVertex: (vertexId: string) => void;
   onApplyShift: (dE: number, dN: number) => void;
   onCaptureCurrentVertex: () => void;
+  onOpenProjects: () => void;
   onNotify: (msg: string) => void;
 }
 
@@ -47,6 +48,7 @@ export default function PointLocateScreen({
   onSelectVertex,
   onApplyShift,
   onCaptureCurrentVertex,
+  onOpenProjects,
   onNotify,
 }: PointLocateScreenProps) {
   const [viewMode, setViewMode] = useState<'radar' | 'ar'>('radar');
@@ -61,12 +63,12 @@ export default function PointLocateScreen({
   const [cameraActive, setCameraActive] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  const vertices = parcel.vertices;
+  const vertices = parcel?.vertices ?? [];
   const currentIdx = Math.max(
     0,
     vertices.findIndex((v) => v.id === selectedVertexId)
   );
-  const target = vertices[currentIdx] || vertices[0];
+  const target = vertices[currentIdx] || vertices[0] || null;
 
   // Try activating real rear camera when switching to AR mode on Android hardware
   useEffect(() => {
@@ -102,6 +104,32 @@ export default function PointLocateScreen({
       }
     };
   }, [viewMode]);
+
+  if (!parcel || !target) {
+    return (
+      <div className="flex flex-col w-full h-full items-center justify-center p-6 text-center bg-[#0d1322] text-[#dde2f8] gap-3">
+        <Radar className="w-10 h-10 text-[#4cd7f6] opacity-75" />
+        <h2 className="font-stitch-headline text-[16px] font-bold uppercase">
+          Sin vértice para replanteo
+        </h2>
+        <p className="font-stitch-mono text-[11px] text-[#bcc9cd] max-w-xs leading-relaxed">
+          Selecciona o crea un proyecto con al menos una parcela para iniciar la localización RTK.
+        </p>
+        {gnssFix.isLiveHardware && (
+          <div className="bg-[#151b2b] border border-[#242a3a] rounded-xl px-4 py-2.5 font-stitch-mono text-[11px] text-[#4edea3]">
+            GPS VIVO: {gnssFix.esteRegven.toFixed(2)}E · {gnssFix.norteRegven.toFixed(2)}N (±{gnssFix.accuracy.toFixed(1)}m)
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={onOpenProjects}
+          className="px-4 py-2.5 rounded-lg bg-[#06b6d4] text-[#003640] font-stitch-headline text-xs font-bold uppercase"
+        >
+          Ir a Proyectos
+        </button>
+      </div>
+    );
+  }
 
   const rawNorth = gnssFix.isLiveHardware
     ? target.norteRegven - gnssFix.norteRegven

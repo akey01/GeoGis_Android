@@ -1,9 +1,13 @@
 {
-  "versionCode": 611,
-  "versionName": "6.0.11",
-  "buildNumber": 11,
-  "publishedAt": "2026-11-21T20:18:13.886289+00:00",
+  "versionCode": 612,
+  "versionName": "6.0.12",
+  "bundleVersionCode": 612,
+  "nativeVersionCode": 612,
+  "buildNumber": 12,
+  "publishedAt": "2026-11-26T15:35:00+00:00",
   "downloadUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk",
+  "bundleUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/geogis6-web-bundle.zip",
+  "bundleSha256": null,
   "releaseApiUrl": "https://api.github.com/repos/akey01/GeoGis_Android/releases/latest",
-  "notes": "GeoGIS6 Mobile v6.0.11 (Build 611): 5 pantallas Stitch nativas activas por defecto (Auth/Proyectos, Mapa, Parcela, Localización RTK/AR y Satélites GNSS) compiladas con Next.js output:export."
+  "notes": "GeoGIS6 Mobile v6.0.12 (Build 612): Inicio en Login, trabajo offline sin demo, creación de proyectos vacíos con sincronización Desktop y actualización OTA en línea."
 }

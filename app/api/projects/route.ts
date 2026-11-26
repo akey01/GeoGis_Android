@@ -143,16 +143,26 @@ export async function POST(request: Request) {
 
     const targetId = parsedBody.id && parsedBody.id.trim() ? parsedBody.id.trim() : null;
 
-    const result = await db.query(
-      `INSERT INTO proyecto (id, nombre, usuario_id, content, creado, actualizado)
-       VALUES (COALESCE($1, 'prj_' || encode(gen_random_bytes(6), 'hex')), $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-       ON CONFLICT (id) DO UPDATE SET
-         nombre = EXCLUDED.nombre,
-         content = EXCLUDED.content,
-         actualizado = CURRENT_TIMESTAMP
-       RETURNING id, nombre, actualizado`,
-      [targetId, parsedBody.name.trim(), session.userId, projectContent],
-    );
+    const result = targetId
+      ? await db.query(
+          `INSERT INTO proyecto (id, nombre, usuario_id, content, creado, actualizado)
+           VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT (id) DO UPDATE SET
+             nombre = EXCLUDED.nombre,
+             content = EXCLUDED.content,
+             actualizado = CURRENT_TIMESTAMP
+           RETURNING id, nombre, actualizado`,
+          [targetId, parsedBody.name.trim(), session.userId, projectContent],
+        )
+      : await db.query(
+          `INSERT INTO proyecto (id, nombre, usuario_id, content, creado, actualizado)
+           VALUES ('prj_' || encode(gen_random_bytes(6), 'hex'), $1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT (nombre, usuario_id) DO UPDATE SET
+             content = EXCLUDED.content,
+             actualizado = CURRENT_TIMESTAMP
+           RETURNING id, nombre, actualizado`,
+          [parsedBody.name.trim(), session.userId, projectContent],
+        );
 
     if (!result.rows || result.rows.length === 0) {
       throw new Error('La base de datos no devolvió el ID del proyecto');

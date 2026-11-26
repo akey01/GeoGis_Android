@@ -12,13 +12,17 @@ const CORS_HEADERS = {
 };
 
 const FALLBACK_MANIFEST = {
-  versionCode: 609,
-  versionName: '6.0.9',
-  buildNumber: 9,
+  versionCode: 612,
+  versionName: '6.0.12',
+  bundleVersionCode: 612,
+  nativeVersionCode: 612,
+  buildNumber: 12,
   publishedAt: new Date().toISOString(),
   downloadUrl: 'https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk',
+  bundleUrl: 'https://github.com/akey01/GeoGis_Android/releases/latest/download/geogis6-web-bundle.zip',
+  bundleSha256: null,
   releaseApiUrl: 'https://api.github.com/repos/akey01/GeoGis_Android/releases/latest',
-  notes: 'GeoGIS6 Android Mobile Topographer + Parcelas + Proyectos + OTA Auto-Update.',
+  notes: 'GeoGIS6 Android Mobile Topographer + Parcelas + Proyectos Offline + OTA Live Update.',
 };
 
 export async function OPTIONS() {

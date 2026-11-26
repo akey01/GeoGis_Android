@@ -9,7 +9,7 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
-  Lock,
+  FolderOpen,
   MapPin,
   Network,
   Waypoints,
@@ -24,12 +24,12 @@ import {
 } from './data/fieldData';
 
 interface ParcelDetailScreenProps {
-  parcel: FieldParcel;
+  parcel: FieldParcel | null;
   crsMode: CrsMode;
   selectedVertexId: string;
-  isDemoMode: boolean;
   onToggleCrs: () => void;
   onBackToMap: () => void;
+  onOpenProjects: () => void;
   onStakeVertex: (vertexId: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -50,12 +50,42 @@ export default function ParcelDetailScreen({
   parcel,
   crsMode,
   selectedVertexId,
-  isDemoMode,
   onToggleCrs,
   onBackToMap,
+  onOpenProjects,
   onStakeVertex,
   onNotify,
 }: ParcelDetailScreenProps) {
+  if (!parcel) {
+    return (
+      <div className="flex flex-col w-full h-full items-center justify-center p-6 text-center bg-[#0d1322] text-[#dde2f8] gap-3">
+        <Waypoints className="w-10 h-10 text-[#4cd7f6] opacity-75" />
+        <h2 className="font-stitch-headline text-[16px] font-bold uppercase">
+          Sin parcela activa
+        </h2>
+        <p className="font-stitch-mono text-[11px] text-[#bcc9cd] max-w-xs leading-relaxed">
+          Este proyecto aún no tiene parcelas o no hay ningún proyecto seleccionado.
+        </p>
+        <div className="flex gap-2 mt-1">
+          <button
+            type="button"
+            onClick={onBackToMap}
+            className="px-3.5 py-2 rounded-lg bg-[#242a3a] text-[#dde2f8] font-stitch-headline text-xs font-bold"
+          >
+            Ir al Mapa
+          </button>
+          <button
+            type="button"
+            onClick={onOpenProjects}
+            className="px-3.5 py-2 rounded-lg bg-[#06b6d4] text-[#003640] font-stitch-headline text-xs font-bold flex items-center gap-1"
+          >
+            <FolderOpen className="w-3.5 h-3.5" /> Proyectos
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const areaDelta = parcel.areaGraficaM2 - parcel.areaDocumentalM2;
   const areaDeltaPct = parcel.areaDocumentalM2 > 0 ? (areaDelta / parcel.areaDocumentalM2) * 100 : 0;
 
@@ -79,11 +109,7 @@ export default function ParcelDetailScreen({
     onNotify(`Polígono AutoCAD (.dxf) generado en ${crsMode === 'regven' ? 'REGVEN 19N' : 'PSAD56 19N'}`);
   };
 
-  const handleExportKmlOrPro = () => {
-    if (isDemoMode) {
-      onNotify('Memoria Descriptiva (.pdf) bloqueada en Modo Demo (RBAC)');
-      return;
-    }
+  const handleExportKml = () => {
     const kml = buildParcelKml(parcel);
     triggerLocalDownload(kml, `PARCELA_${parcel.code}.kml`, 'application/vnd.google-earth.kml+xml');
     onNotify(`Parcela ${parcel.code} exportada a Google Earth (.kml)`);
@@ -346,7 +372,7 @@ export default function ParcelDetailScreen({
 
         <button
           type="button"
-          onClick={handleExportKmlOrPro}
+          onClick={handleExportKml}
           className="h-11 px-2.5 rounded-lg bg-[#242a3a] hover:bg-[#33394a] active:scale-[0.98] transition-all flex items-center justify-between"
         >
           <div className="flex items-center gap-1.5 text-left">
@@ -354,22 +380,18 @@ export default function ParcelDetailScreen({
             <div className="flex flex-col">
               <div className="flex items-center gap-1">
                 <span className="font-stitch-headline text-[11px] font-bold uppercase tracking-tight text-[#dde2f8] leading-none">
-                  {isDemoMode ? 'Memoria' : 'KML Earth'}
+                  KML Earth
                 </span>
-                <span className="bg-[#2f3445] text-[#dde2f8] text-[7.5px] font-stitch-mono px-1 rounded uppercase">
-                  PRO
+                <span className="bg-[#2f3445] text-[#4edea3] text-[7.5px] font-stitch-mono px-1 rounded uppercase">
+                  GIS
                 </span>
               </div>
               <span className="font-stitch-mono text-[8.5px] text-[#bcc9cd] leading-tight mt-0.5">
-                {isDemoMode ? 'Catastro (.pdf)' : 'Exportar (.kml)'}
+                Exportar (.kml)
               </span>
             </div>
           </div>
-          {isDemoMode ? (
-            <Lock className="w-3.5 h-3.5 text-[#bcc9cd]" />
-          ) : (
-            <Download className="w-3.5 h-3.5 text-[#bcc9cd]" />
-          )}
+          <Download className="w-3.5 h-3.5 text-[#bcc9cd]" />
         </button>
 
         <button

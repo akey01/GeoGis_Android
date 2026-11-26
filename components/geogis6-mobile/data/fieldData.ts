@@ -7,14 +7,19 @@ export type BaseMapLayerId = 'esri_sat' | 'hybrid' | 'google_sat' | 'cad_dark';
 
 export const PROD_API_URL =
   process.env.NEXT_PUBLIC_API_URL || 'https://geogis6-android.onrender.com';
+export const DESKTOP_FALLBACK_API_URL =
+  'https://geotransformer-monolith-fniu.onrender.com';
 export const APK_DOWNLOAD_URL =
   'https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk';
+export const BUNDLE_DOWNLOAD_URL =
+  'https://github.com/akey01/GeoGis_Android/releases/latest/download/geogis6-web-bundle.zip';
 export const GITHUB_RELEASE_API_URL =
   'https://api.github.com/repos/akey01/GeoGis_Android/releases/latest';
 
 // Stamped automatically by build-apk workflow (updated in production build)
-export const APP_VERSION_CODE = 611;
-export const APP_VERSION_NAME = '6.0.11';
+export const APP_VERSION_CODE = 612;
+export const APP_VERSION_NAME = '6.0.12';
+export const APP_NATIVE_VERSION_CODE = 612;
 
 // ── Registrar proyecciones oficiales IGVSB Venezuela (Zonas 18N a 21N) ───────
 let projDefsRegistered = false;
@@ -69,6 +74,7 @@ export interface SyncedProject {
   activeParcelCode: string;
   sectorLabel: string;
   source: 'cloud' | 'local';
+  syncState?: 'synced' | 'pending_push' | 'local_only';
   updatedAt?: string;
 }
 
@@ -535,105 +541,12 @@ export function parseCloudProjectParcels(rawContent: unknown, projectName: strin
   return results;
 }
 
-// ── Conjunto Multi-Parcela Offline/Demo Georreferenciado en Adícora, Falcón ──
-// Coordenadas reales en REGVEN UTM Huso 19N (Adícora: ~11.9445°N, -69.8053°W)
-export const DEFAULT_PROJECT_PARCELS: FieldParcel[] = [
-  buildFieldParcelFromVertices({
-    id: 'POL-5371-JAR',
-    code: '5371-JAR',
-    location: 'Adícora',
-    sector: 'Sector Falcón · Urbano',
-    zoneTag: 'Urbano',
-    owner: 'J. A. RODRÍGUEZ (ADÍCORA)',
-    cadastralId: '11-06-01-U-5371-JAR',
-    huso: 19,
-    areaDocumentalM2: 1250.0,
-    rawVertices: [
-      { id: 'V-01', shortId: 'V1', code: 'Cerco_NO', description: 'Hito Lindero Principal · REGVEN UTM 19N', esteRegven: 412265.22, norteRegven: 1320694.41, cota: 18.25 },
-      { id: 'V-02', shortId: 'V2', code: 'Cerco_NE', description: 'Esquina Noreste · Calle Marina Adícora', esteRegven: 412302.95, norteRegven: 1320701.85, cota: 18.31 },
-      { id: 'V-03', shortId: 'V3', code: 'Hito_SE', description: 'Hito Concreto Sureste · Colindancia 5375', esteRegven: 412309.45, norteRegven: 1320669.92, cota: 18.42 },
-      { id: 'V-04', shortId: 'V4', code: 'Hito_SO', description: 'Hito Suroeste · Límite Manzana MAN1', esteRegven: 412271.15, norteRegven: 1320662.3, cota: 18.19 },
-    ],
-  }),
-  buildFieldParcelFromVertices({
-    id: 'POL-5373-NOR',
-    code: '5373',
-    location: 'Adícora',
-    sector: 'Sector Falcón · Colindante Norte',
-    zoneTag: 'Urbano',
-    owner: 'SUC. GONZÁLEZ (ADÍCORA)',
-    cadastralId: '11-06-01-U-5373-NOR',
-    huso: 19,
-    rawVertices: [
-      { id: 'V-01', shortId: 'V1', code: 'N_NO', esteRegven: 412258.9, norteRegven: 1320726.1, cota: 18.15 },
-      { id: 'V-02', shortId: 'V2', code: 'N_NE', esteRegven: 412296.8, norteRegven: 1320733.5, cota: 18.22 },
-      { id: 'V-03', shortId: 'V3', code: 'N_SE', esteRegven: 412302.95, norteRegven: 1320701.85, cota: 18.31 },
-      { id: 'V-04', shortId: 'V4', code: 'N_SO', esteRegven: 412265.22, norteRegven: 1320694.41, cota: 18.25 },
-    ],
-  }),
-  buildFieldParcelFromVertices({
-    id: 'POL-5375-EST',
-    code: '5375',
-    location: 'Adícora',
-    sector: 'Sector Falcón · Colindante Este',
-    zoneTag: 'Urbano',
-    owner: 'INVERSIONES PARAGUANÁ C.A.',
-    cadastralId: '11-06-01-U-5375-EST',
-    huso: 19,
-    rawVertices: [
-      { id: 'V-01', shortId: 'V1', code: 'E_NO', esteRegven: 412302.95, norteRegven: 1320701.85, cota: 18.31 },
-      { id: 'V-02', shortId: 'V2', code: 'E_NE', esteRegven: 412343.1, norteRegven: 1320709.6, cota: 18.4 },
-      { id: 'V-03', shortId: 'V3', code: 'E_SE', esteRegven: 412349.6, norteRegven: 1320677.5, cota: 18.48 },
-      { id: 'V-04', shortId: 'V4', code: 'E_SO', esteRegven: 412309.45, norteRegven: 1320669.92, cota: 18.42 },
-    ],
-  }),
-  buildFieldParcelFromVertices({
-    id: 'POL-MAN1-RES',
-    code: 'MAN1-RESERVA',
-    location: 'Adícora',
-    sector: 'Reserva Municipal · Paraguaná',
-    zoneTag: 'Reserva',
-    owner: 'ALCALDÍA MUNICIPIO FALCÓN',
-    cadastralId: '11-06-01-R-MAN1',
-    huso: 19,
-    rawVertices: [
-      { id: 'V-01', shortId: 'V1', code: 'R_NO', esteRegven: 412271.15, norteRegven: 1320662.3, cota: 18.19 },
-      { id: 'V-02', shortId: 'V2', code: 'R_NE', esteRegven: 412349.6, norteRegven: 1320677.5, cota: 18.48 },
-      { id: 'V-03', shortId: 'V3', code: 'R_SE', esteRegven: 412357.2, norteRegven: 1320638.0, cota: 18.55 },
-      { id: 'V-04', shortId: 'V4', code: 'R_SO', esteRegven: 412278.5, norteRegven: 1320622.9, cota: 18.12 },
-    ],
-  }),
-];
-
-export const DEFAULT_PARCEL_5371_JAR: FieldParcel = DEFAULT_PROJECT_PARCELS[0];
-
-export const DEFAULT_SYNCED_PROJECTS: SyncedProject[] = [
-  {
-    id: 'prj-adicora-norte',
-    name: 'Adícora Sector Norte',
-    crsLabel: 'REGVEN 19N | RIGIDA02',
-    crsBadgeColor: 'secondary',
-    parcelsText: `${DEFAULT_PROJECT_PARCELS.length} Parcelas Catastrales (Local)`,
-    syncStatus: 'Caché GIS activa',
-    defaultCrs: 'regven',
-    activeParcelCode: '5371-JAR',
-    sectorLabel: 'Sector Falcón · Urbano',
-    source: 'local',
-  },
-  {
-    id: 'prj-pueblo-nuevo',
-    name: 'Pueblo Nuevo Catastro',
-    crsLabel: 'PSAD56 La Canoa',
-    crsBadgeColor: 'tertiary',
-    parcelsText: `${DEFAULT_PROJECT_PARCELS.length} Parcelas Relevadas (Local)`,
-    syncStatus: 'Modo Off-Grid',
-    syncHighlight: true,
-    defaultCrs: 'psad56',
-    activeParcelCode: '5371-JAR',
-    sectorLabel: 'Península de Paraguaná · Urbano',
-    source: 'local',
-  },
-];
+export const VENEZUELA_DEFAULT_CENTER = {
+  lat: 10.4806,
+  lng: -66.9036,
+  esteRegven: 729500,
+  norteRegven: 1159200,
+};
 
 export const GNSS_SATELLITES: SatellitePoint[] = [
   { prn: 'G04', constellation: 'GPS', elevationDeg: 72, azimuthDeg: 34, snrDbHz: 48, status: 'fixed', topPx: 36, leftPx: 138, highlightRing: true },

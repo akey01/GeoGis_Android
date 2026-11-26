@@ -11,5 +11,11 @@
       "github.com",
       "*.githubusercontent.com"
     ]
+  },
+  "plugins": {
+    "CapacitorUpdater": {
+      "autoUpdate": false,
+      "statsUrl": ""
+    }
   }
 }

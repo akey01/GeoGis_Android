@@ -8,6 +8,7 @@ export interface CapacitorConfig {
     androidScheme?: string;
     allowNavigation?: string[];
   };
+  plugins?: Record<string, unknown>;
 }
 
 const config: CapacitorConfig = {
@@ -24,6 +25,12 @@ const config: CapacitorConfig = {
       'github.com',
       '*.githubusercontent.com',
     ],
+  },
+  plugins: {
+    CapacitorUpdater: {
+      autoUpdate: false,
+      statsUrl: '',
+    },
   },
 };
 

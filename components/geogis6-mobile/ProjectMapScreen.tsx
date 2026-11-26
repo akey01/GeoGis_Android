@@ -42,16 +42,17 @@ import {
 } from './data/fieldData';
 
 interface ProjectMapScreenProps {
-  project: SyncedProject;
+  project: SyncedProject | null;
   parcels: FieldParcel[];
-  activeParcel: FieldParcel;
+  activeParcel: FieldParcel | null;
   crsMode: CrsMode;
-  isDemoMode: boolean;
   gnssFix: LiveGnssFix;
   fitTrigger: number;
   onToggleCrs: () => void;
   onSelectParcel: (parcelId: string) => void;
   onOpenParcel: () => void;
+  onOpenProjects: () => void;
+  onCreateStarterParcel?: () => void;
   onStakeVertex: (vertexId: string) => void;
   onCenterGps: () => void;
   onNotify: (msg: string) => void;
@@ -77,12 +78,13 @@ export default function ProjectMapScreen({
   parcels,
   activeParcel,
   crsMode,
-  isDemoMode,
   gnssFix,
   fitTrigger,
   onToggleCrs,
   onSelectParcel,
   onOpenParcel,
+  onOpenProjects,
+  onCreateStarterParcel,
   onStakeVertex,
   onCenterGps,
   onNotify,
@@ -130,7 +132,7 @@ export default function ProjectMapScreen({
     return total;
   }, [measurePts]);
 
-  // Fit map view to all parcels in current project
+  // Fit map view to all parcels in current project (or fallback to GNSS / Venezuela)
   const fitAllParcels = useCallback(
     (animate = true) => {
       const map = mapRef.current;
@@ -148,9 +150,21 @@ export default function ProjectMapScreen({
           maxZoom: 19.5,
           duration: animate ? 380 : 0,
         });
+      } else if (gnssFix.isLiveHardware && Number.isFinite(gnssFix.lat) && Number.isFinite(gnssFix.lng)) {
+        map.getView().animate({
+          center: fromLonLat([gnssFix.lng, gnssFix.lat]),
+          zoom: 17,
+          duration: animate ? 380 : 0,
+        });
+      } else {
+        map.getView().animate({
+          center: fromLonLat([-66.9036, 10.4806]),
+          zoom: 6,
+          duration: animate ? 380 : 0,
+        });
       }
     },
-    [parcels]
+    [gnssFix.isLiveHardware, gnssFix.lat, gnssFix.lng, parcels]
   );
 
   // Fit map view to a single parcel
@@ -335,8 +349,8 @@ export default function ProjectMapScreen({
     });
 
     const initialCenter = fromLonLat([
-      activeParcel.vertices[0]?.lng ?? -69.8053,
-      activeParcel.vertices[0]?.lat ?? 11.945,
+      activeParcel?.vertices[0]?.lng ?? (gnssFix.isLiveHardware ? gnssFix.lng : -66.9036),
+      activeParcel?.vertices[0]?.lat ?? (gnssFix.isLiveHardware ? gnssFix.lat : 10.4806),
     ]);
 
     const map = new Map({
@@ -352,7 +366,7 @@ export default function ProjectMapScreen({
       ],
       view: new View({
         center: initialCenter,
-        zoom: 18,
+        zoom: activeParcel ? 18 : 6,
         minZoom: 5,
         maxZoom: 21,
         constrainResolution: false,
@@ -416,7 +430,7 @@ export default function ProjectMapScreen({
       }
 
       if (hitParcelId) {
-        if (hitParcelId !== activeParcelRef.current.id) {
+        if (hitParcelId !== activeParcelRef.current?.id) {
           onSelectParcelRef.current(hitParcelId);
           onNotifyRef.current(`Parcela ${hitParcelCode} seleccionada`);
         } else {
@@ -448,13 +462,17 @@ export default function ProjectMapScreen({
     pSrc.clear();
     vSrc.clear();
 
-    const listToRender = showAllParcels ? parcels : [activeParcel];
+    const listToRender = showAllParcels
+      ? parcels
+      : activeParcel
+        ? [activeParcel]
+        : [];
 
     for (const p of listToRender) {
       const ring = getParcelRing3857(p);
       if (ring.length === 0) continue;
 
-      const isActive = p.id === activeParcel.id;
+      const isActive = Boolean(activeParcel && p.id === activeParcel.id);
       let geom;
       if (ring.length >= 3 && p.geometryType !== 'abierta' && p.geometryType !== 'puntos') {
         geom = new Polygon([[...ring, ring[0]]]);
@@ -476,32 +494,34 @@ export default function ProjectMapScreen({
     }
 
     // Active parcel vertices & side-length labels
-    const activeRing = getParcelRing3857(activeParcel);
-    for (let i = 0; i < activeParcel.vertices.length; i++) {
-      const v = activeParcel.vertices[i];
-      const coord = activeRing[i];
-      if (!coord) continue;
+    if (activeParcel) {
+      const activeRing = getParcelRing3857(activeParcel);
+      for (let i = 0; i < activeParcel.vertices.length; i++) {
+        const v = activeParcel.vertices[i];
+        const coord = activeRing[i];
+        if (!coord) continue;
 
-      vSrc.addFeature(
-        new Feature({
-          geometry: new Point(coord),
-          kind: 'vertex',
-          vertexId: v.id,
-          shortId: v.shortId,
-        })
-      );
+        vSrc.addFeature(
+          new Feature({
+            geometry: new Point(coord),
+            kind: 'vertex',
+            vertexId: v.id,
+            shortId: v.shortId,
+          })
+        );
 
-      if (activeRing.length >= 2 && (activeParcel.geometryType !== 'abierta' || i < activeRing.length - 1)) {
-        const nextCoord = activeRing[(i + 1) % activeRing.length];
-        if (nextCoord && v.segmentLengthToNext > 0) {
-          const mid: [number, number] = [(coord[0] + nextCoord[0]) / 2, (coord[1] + nextCoord[1]) / 2];
-          vSrc.addFeature(
-            new Feature({
-              geometry: new Point(mid),
-              kind: 'seg_label',
-              label: `${v.segmentLengthToNext.toFixed(2)}m`,
-            })
-          );
+        if (activeRing.length >= 2 && (activeParcel.geometryType !== 'abierta' || i < activeRing.length - 1)) {
+          const nextCoord = activeRing[(i + 1) % activeRing.length];
+          if (nextCoord && v.segmentLengthToNext > 0) {
+            const mid: [number, number] = [(coord[0] + nextCoord[0]) / 2, (coord[1] + nextCoord[1]) / 2];
+            vSrc.addFeature(
+              new Feature({
+                geometry: new Point(mid),
+                kind: 'seg_label',
+                label: `${v.segmentLengthToNext.toFixed(2)}m`,
+              })
+            );
+          }
         }
       }
     }
@@ -511,7 +531,7 @@ export default function ProjectMapScreen({
   useEffect(() => {
     const t = setTimeout(() => fitAllParcels(fitTrigger > 0), 80);
     return () => clearTimeout(t);
-  }, [fitAllParcels, fitTrigger, project.id]);
+  }, [fitAllParcels, fitTrigger, project?.id]);
 
   // Update GNSS live marker + accuracy ring
   useEffect(() => {
@@ -586,11 +606,11 @@ export default function ProjectMapScreen({
     if (map && Number.isFinite(gnssFix.lat) && Number.isFinite(gnssFix.lng)) {
       const targetCoord = gnssFix.isLiveHardware
         ? fromLonLat([gnssFix.lng, gnssFix.lat])
-        : fromLonLat([
-            activeParcel.vertices[0]?.lng ?? gnssFix.lng,
-            activeParcel.vertices[0]?.lat ?? gnssFix.lat,
-          ]);
-      map.getView().animate({ center: targetCoord, zoom: 19, duration: 380 });
+        : activeParcel?.vertices[0]
+          ? fromLonLat([activeParcel.vertices[0].lng, activeParcel.vertices[0].lat])
+          : fromLonLat([gnssFix.lng, gnssFix.lat]);
+      const targetZoom = gnssFix.isLiveHardware || activeParcel ? 19 : 6;
+      map.getView().animate({ center: targetCoord, zoom: targetZoom, duration: 380 });
     }
     onCenterGps();
   };
@@ -612,13 +632,13 @@ export default function ProjectMapScreen({
       <div className="h-10 shrink-0 px-3 bg-[#151b2b] flex items-center justify-between gap-2 z-20 shadow-md border-b border-[#242a3a]">
         <button
           type="button"
-          onClick={() => setShowParcelDrawer(true)}
+          onClick={() => (project ? setShowParcelDrawer(true) : onOpenProjects())}
           className="flex items-center gap-1.5 min-w-0 active:opacity-80"
           title="Ver todas las parcelas del proyecto"
         >
           <FolderOpen className="w-4 h-4 text-[#4cd7f6] shrink-0" />
           <span className="font-stitch-headline text-[12.5px] text-[#dde2f8] font-bold truncate">
-            {project.name}
+            {project ? project.name : 'Sin proyecto activo'}
           </span>
           <span className="font-stitch-mono text-[9.5px] bg-[#06b6d4]/20 text-[#4cd7f6] px-1.5 py-0.5 rounded font-bold shrink-0">
             {parcels.length}P
@@ -633,19 +653,21 @@ export default function ProjectMapScreen({
             title="Alternar Datum REGVEN 19N / PSAD56"
           >
             <span className="font-stitch-mono text-[9.5px] text-[#4cd7f6] font-semibold">
-              {crsMode === 'regven' ? `REGVEN ${activeParcel.huso}N` : `PSAD56 ${activeParcel.huso}N`}
+              {crsMode === 'regven'
+                ? `REGVEN ${activeParcel?.huso ?? 19}N`
+                : `PSAD56 ${activeParcel?.huso ?? 19}N`}
             </span>
           </button>
 
           <div className="flex items-center gap-1 bg-[#00a572]/20 text-[#4edea3] px-1.5 py-0.5 rounded">
             <span className="w-1.5 h-1.5 rounded-full bg-[#4edea3] animate-pulse" />
             <span className="font-stitch-mono text-[9.5px] font-semibold tracking-tight">
-              {gnssFix.isLiveHardware ? `±${gnssFix.accuracy.toFixed(1)}m` : 'RTK'}
+              {gnssFix.isLiveHardware ? `±${gnssFix.accuracy.toFixed(1)}m` : 'GNSS'}
             </span>
           </div>
 
-          <span className="bg-[#242a3a] text-[#bcc9cd] font-stitch-mono text-[9.5px] px-1.5 py-0.5 rounded font-semibold">
-            {isDemoMode ? 'DEMO' : 'PRO'}
+          <span className="bg-[#242a3a] text-[#4edea3] font-stitch-mono text-[9.5px] px-1.5 py-0.5 rounded font-semibold">
+            {project?.source === 'local' ? 'LOCAL' : 'PRO'}
           </span>
         </div>
       </div>
@@ -812,70 +834,106 @@ export default function ProjectMapScreen({
           </button>
         </div>
 
-        {/* Bottom Selected Parcel Telemetry Card */}
+        {/* Bottom Selected Parcel Telemetry Card / Empty State */}
         <div className="absolute bottom-3 inset-x-3 z-20">
-          <div className="bg-[#191f2f]/95 backdrop-blur-xl rounded-xl p-3 shadow-2xl flex flex-col gap-2 border border-[#2f3445]/80">
-            <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => flyToParcel(activeParcel)}
-                className="flex items-center gap-1.5 min-w-0 text-left"
-                title="Hacer zoom a esta parcela"
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-[#06b6d4] animate-pulse shrink-0" />
-                <span className="font-stitch-headline text-[17px] font-semibold text-[#dde2f8] truncate">
-                  {activeParcel.code}
+          {activeParcel ? (
+            <div className="bg-[#191f2f]/95 backdrop-blur-xl rounded-xl p-3 shadow-2xl flex flex-col gap-2 border border-[#2f3445]/80">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => flyToParcel(activeParcel)}
+                  className="flex items-center gap-1.5 min-w-0 text-left"
+                  title="Hacer zoom a esta parcela"
+                >
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#06b6d4] animate-pulse shrink-0" />
+                  <span className="font-stitch-headline text-[17px] font-semibold text-[#dde2f8] truncate">
+                    {activeParcel.code}
+                  </span>
+                  <span className="bg-[#242a3a] text-[#4cd7f6] font-stitch-mono text-[9px] px-1.5 py-0.5 rounded font-bold uppercase shrink-0">
+                    {activeParcel.zoneTag}
+                  </span>
+                </button>
+                <span className="font-stitch-mono text-[10px] text-[#bcc9cd] shrink-0">
+                  {activeParcel.geoCenterText}
                 </span>
-                <span className="bg-[#242a3a] text-[#4cd7f6] font-stitch-mono text-[9px] px-1.5 py-0.5 rounded font-bold uppercase shrink-0">
-                  {activeParcel.zoneTag}
-                </span>
-              </button>
-              <span className="font-stitch-mono text-[10px] text-[#bcc9cd] shrink-0">
-                {activeParcel.geoCenterText}
-              </span>
-            </div>
+              </div>
 
-            <div className="grid grid-cols-3 gap-2 bg-[#080e1d]/85 p-2 rounded">
-              <div className="flex flex-col">
-                <span className="text-[9.5px] text-[#869397] uppercase tracking-wider">Superficie</span>
-                <span className="font-stitch-mono text-[13px] text-[#dde2f8] font-semibold">
-                  {activeParcel.areaGraficaM2.toLocaleString('en-US', { minimumFractionDigits: 2 })}{' '}
-                  <span className="text-[10px] text-[#869397]">m²</span>
-                </span>
+              <div className="grid grid-cols-3 gap-2 bg-[#080e1d]/85 p-2 rounded">
+                <div className="flex flex-col">
+                  <span className="text-[9.5px] text-[#869397] uppercase tracking-wider">Superficie</span>
+                  <span className="font-stitch-mono text-[13px] text-[#dde2f8] font-semibold">
+                    {activeParcel.areaGraficaM2.toLocaleString('en-US', { minimumFractionDigits: 2 })}{' '}
+                    <span className="text-[10px] text-[#869397]">m²</span>
+                  </span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9.5px] text-[#869397] uppercase tracking-wider">Perímetro</span>
+                  <span className="font-stitch-mono text-[13px] text-[#dde2f8] font-semibold">
+                    {activeParcel.perimeterM.toFixed(2)} <span className="text-[10px] text-[#869397]">m</span>
+                  </span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9.5px] text-[#869397] uppercase tracking-wider">Linderos</span>
+                  <span className="font-stitch-mono text-[13px] text-[#4edea3] font-semibold">
+                    {activeParcel.vertices.length} Vértices
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-col">
-                <span className="text-[9.5px] text-[#869397] uppercase tracking-wider">Perímetro</span>
-                <span className="font-stitch-mono text-[13px] text-[#dde2f8] font-semibold">
-                  {activeParcel.perimeterM.toFixed(2)} <span className="text-[10px] text-[#869397]">m</span>
-                </span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[9.5px] text-[#869397] uppercase tracking-wider">Linderos</span>
-                <span className="font-stitch-mono text-[13px] text-[#4edea3] font-semibold">
-                  {activeParcel.vertices.length} Vértices
-                </span>
-              </div>
-            </div>
 
-            <div className="flex items-center gap-2 pt-0.5">
-              <button
-                type="button"
-                onClick={() => onStakeVertex(activeParcel.vertices[0]?.id || 'V-01')}
-                className="h-11 px-3 rounded bg-[#242a3a] text-[#dde2f8] hover:bg-[#33394a] flex items-center justify-center transition-colors"
-                title="Ir directo a Replanteo RTK"
-              >
-                <Share2 className="w-4 h-4 text-[#4cd7f6]" />
-              </button>
-              <button
-                type="button"
-                onClick={onOpenParcel}
-                className="flex-1 h-11 bg-[#06b6d4] hover:bg-[#4cd7f6] text-[#003640] font-stitch-headline text-[12.5px] uppercase tracking-wider rounded font-bold flex items-center justify-center gap-1.5 transition-colors shadow-md"
-              >
-                <span>Abrir Parcela</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => onStakeVertex(activeParcel.vertices[0]?.id || 'V-01')}
+                  className="h-11 px-3 rounded bg-[#242a3a] text-[#dde2f8] hover:bg-[#33394a] flex items-center justify-center transition-colors"
+                  title="Ir directo a Replanteo RTK"
+                >
+                  <Share2 className="w-4 h-4 text-[#4cd7f6]" />
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenParcel}
+                  className="flex-1 h-11 bg-[#06b6d4] hover:bg-[#4cd7f6] text-[#003640] font-stitch-headline text-[12.5px] uppercase tracking-wider rounded font-bold flex items-center justify-center gap-1.5 transition-colors shadow-md"
+                >
+                  <span>Abrir Parcela</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="bg-[#191f2f]/95 backdrop-blur-xl rounded-xl p-3 shadow-2xl flex flex-col gap-2 border border-[#2f3445]/80">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-stitch-headline text-[14.5px] font-semibold text-[#dde2f8] truncate">
+                  {project ? `${project.name} · Sin parcelas` : 'Sin proyecto seleccionado'}
+                </span>
+                <span className="font-stitch-mono text-[9.5px] px-1.5 py-0.5 rounded bg-[#242a3a] text-[#ffb95f] font-bold">
+                  {project ? 'VACÍO' : 'LOCAL'}
+                </span>
+              </div>
+              <p className="font-stitch-mono text-[10.5px] text-[#bcc9cd] leading-snug">
+                {project
+                  ? 'Este proyecto está vacío. Puedes capturar el primer punto GNSS ahora o abrir tus proyectos.'
+                  : 'Selecciona o crea un proyecto en la pantalla de inicio para comenzar.'}
+              </p>
+              <div className="flex items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={onOpenProjects}
+                  className="flex-1 h-10 rounded bg-[#242a3a] hover:bg-[#33394a] text-[#dde2f8] font-stitch-headline text-[11.5px] font-bold uppercase"
+                >
+                  Ir a Proyectos
+                </button>
+                {project && onCreateStarterParcel && (
+                  <button
+                    type="button"
+                    onClick={onCreateStarterParcel}
+                    className="flex-1 h-10 rounded bg-[#4edea3] hover:bg-[#6ffbbe] text-[#003824] font-stitch-headline text-[11.5px] font-bold uppercase"
+                  >
+                    + Capturar 1er Punto GPS
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Multi-Parcel Project Explorer Drawer (like Desktop ParcelList) */}
@@ -887,7 +945,9 @@ export default function ProjectMapScreen({
                   <h3 className="font-stitch-headline text-[15px] font-bold text-[#dde2f8]">
                     Parcelas del Proyecto ({parcels.length})
                   </h3>
-                  <span className="font-stitch-mono text-[10px] text-[#869397]">{project.name}</span>
+                  <span className="font-stitch-mono text-[10px] text-[#869397]">
+                    {project?.name || 'Sin proyecto'}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -913,7 +973,7 @@ export default function ProjectMapScreen({
 
               <div className="flex-1 overflow-y-auto no-scrollbar p-3 space-y-2">
                 {filteredParcels.map((p) => {
-                  const isSel = p.id === activeParcel.id;
+                  const isSel = Boolean(activeParcel && p.id === activeParcel.id);
                   const v0 = p.vertices[0];
                   return (
                     <button

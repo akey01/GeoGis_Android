@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import {
   Crosshair,
@@ -8,19 +8,17 @@ import {
   FolderLock,
   Map as MapIcon,
   Radar,
+  RefreshCw,
   Satellite,
   User,
   Waypoints,
   X,
 } from 'lucide-react';
 import {
-  APK_DOWNLOAD_URL,
   APP_VERSION_CODE,
   APP_VERSION_NAME,
-  DEFAULT_PROJECT_PARCELS,
-  DEFAULT_SYNCED_PROJECTS,
-  GITHUB_RELEASE_API_URL,
-  PROD_API_URL,
+  VENEZUELA_DEFAULT_CENTER,
+  buildFieldParcelFromVertices,
   geoToUtmGrs80,
   getOrCreateFieldDeviceId,
   parseCloudProjectParcels,
@@ -32,6 +30,32 @@ import {
   type LiveGnssFix,
   type SyncedProject,
 } from './data/fieldData';
+import {
+  checkBackendHealth,
+  mobileApiFetch,
+  type BackendHealthStatus,
+} from '@/lib/mobileApi';
+import {
+  clearSavedAuth,
+  createEmptyOfflineProject,
+  loadLocalParcels,
+  loadLocalProjects,
+  loadSavedAuth,
+  markProjectPendingPush,
+  mergeCloudProjectsWithLocal,
+  migrateLocalProjectToCloud,
+  saveLocalParcels,
+  saveLocalProjects,
+  saveSavedAuth,
+  serializeProjectForCloud,
+} from '@/lib/mobileOfflineStore';
+import {
+  INITIAL_OTA_STATUS,
+  applyOtaBundleInApp,
+  checkOtaManifest,
+  notifyOtaAppReady,
+  type OtaUpdateStatus,
+} from '@/lib/mobileOtaUpdater';
 import AuthProjectsScreen from './AuthProjectsScreen';
 import ParcelDetailScreen from './ParcelDetailScreen';
 import PointLocateScreen from './PointLocateScreen';
@@ -47,9 +71,6 @@ const ProjectMapScreen = dynamic(() => import('./ProjectMapScreen'), {
     </div>
   ),
 });
-
-const STORAGE_AUTH_KEY = 'geogis6_mobile_auth_v6';
-const STORAGE_PRJ_CACHE_PREFIX = 'geogis6_prj_parcels_v1_';
 
 const SCREEN_TITLES: Record<GeoGis6ScreenId, string> = {
   auth: 'Autenticación y Proyectos',
@@ -71,89 +92,362 @@ const BOTTOM_TABS: Array<{
 ];
 
 export default function GeoGis6MobileShell() {
-  const [activeScreen, setActiveScreen] = useState<GeoGis6ScreenId>('mapa');
+  // Siempre iniciar en pantalla de Login / Proyectos
+  const [activeScreen, setActiveScreen] = useState<GeoGis6ScreenId>('auth');
   const [deviceId, setDeviceId] = useState<string>('apk_rover');
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [user, setUser] = useState<CloudUser | null>(null);
-  const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
 
-  const [projects, setProjects] = useState<SyncedProject[]>(DEFAULT_SYNCED_PROJECTS);
-  const [selectedProject, setSelectedProject] = useState<SyncedProject>(DEFAULT_SYNCED_PROJECTS[0]);
-  const [parcels, setParcels] = useState<FieldParcel[]>(DEFAULT_PROJECT_PARCELS);
-  const [activeParcelId, setActiveParcelId] = useState<string>(DEFAULT_PROJECT_PARCELS[0].id);
+  const [projects, setProjects] = useState<SyncedProject[]>([]);
+  const [selectedProject, setSelectedProject] = useState<SyncedProject | null>(null);
+  const [parcels, setParcels] = useState<FieldParcel[]>([]);
+  const [activeParcelId, setActiveParcelId] = useState<string | null>(null);
   const [mapFitTrigger, setMapFitTrigger] = useState<number>(0);
 
   const [crsMode, setCrsMode] = useState<CrsMode>('regven');
   const [selectedVertexId, setSelectedVertexId] = useState<string>('V-01');
-  const [shiftEste, setShiftEste] = useState<number>(0.012);
-  const [shiftNorte, setShiftNorte] = useState<number>(-0.008);
+  const [shiftEste, setShiftEste] = useState<number>(0);
+  const [shiftNorte, setShiftNorte] = useState<number>(0);
   const [receiverMode, setReceiverMode] = useState<GnssReceiverMode>('external_rtk');
   const [antennaHeightM, setAntennaHeightM] = useState<number>(1.8);
   const [rtkReconverging, setRtkReconverging] = useState<boolean>(false);
   const [cloudSyncing, setCloudSyncing] = useState<boolean>(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
+  const [backendHealth, setBackendHealth] = useState<BackendHealthStatus>({
+    navigatorOnline: typeof navigator === 'undefined' ? true : navigator.onLine !== false,
+    serverReachable: false,
+    dbConnected: false,
+    activeBaseUrl: null,
+    dbError: null,
+  });
+
   const activeParcel = useMemo(
-    () => parcels.find((p) => p.id === activeParcelId) || parcels[0] || DEFAULT_PROJECT_PARCELS[0],
-    [parcels, activeParcelId]
+    () => parcels.find((p) => p.id === activeParcelId) || parcels[0] || null,
+    [parcels, activeParcelId],
+  );
+
+  const pendingSyncCount = useMemo(
+    () =>
+      projects.filter(
+        (p) => p.syncState === 'local_only' || p.syncState === 'pending_push',
+      ).length,
+    [projects],
   );
 
   const [gnssFix, setGnssFix] = useState<LiveGnssFix>({
-    lat: DEFAULT_PROJECT_PARCELS[0].vertices[0].lat,
-    lng: DEFAULT_PROJECT_PARCELS[0].vertices[0].lng,
-    alt: 18.28,
-    accuracy: 0.012,
-    esteRegven: DEFAULT_PROJECT_PARCELS[0].vertices[0].esteRegven,
-    norteRegven: DEFAULT_PROJECT_PARCELS[0].vertices[0].norteRegven,
+    lat: VENEZUELA_DEFAULT_CENTER.lat,
+    lng: VENEZUELA_DEFAULT_CENTER.lng,
+    alt: 0,
+    accuracy: 0,
+    esteRegven: VENEZUELA_DEFAULT_CENTER.esteRegven,
+    norteRegven: VENEZUELA_DEFAULT_CENTER.norteRegven,
     isLiveHardware: false,
     timestamp: Date.now(),
   });
 
   const [showOtaModal, setShowOtaModal] = useState<boolean>(false);
-  const [otaState, setOtaState] = useState({
-    checking: false,
-    hasUpdate: false,
-    latestCode: APP_VERSION_CODE,
-    latestName: APP_VERSION_NAME,
-    downloadUrl: APK_DOWNLOAD_URL,
-    notes: 'Versión oficial instalada y verificada.',
-  });
+  const [otaState, setOtaState] = useState<OtaUpdateStatus>(INITIAL_OTA_STATUS);
+
+  const syncInFlightRef = useRef<boolean>(false);
+  const authTokenRef = useRef<string | null>(authToken);
+  authTokenRef.current = authToken;
+  const projectsRef = useRef<SyncedProject[]>(projects);
+  projectsRef.current = projects;
+  const selectedProjectRef = useRef<SyncedProject | null>(selectedProject);
+  selectedProjectRef.current = selectedProject;
 
   const notify = useCallback((msg: string) => {
     setToastMsg(msg);
     setTimeout(() => {
       setToastMsg((curr) => (curr === msg ? null : curr));
-    }, 2800);
+    }, 3200);
   }, []);
 
-  // Hydrate persistent device ID & saved session
-  useEffect(() => {
-    setDeviceId(getOrCreateFieldDeviceId());
-    try {
-      const raw = localStorage.getItem(STORAGE_AUTH_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.token && parsed?.user) {
-          setAuthToken(parsed.token);
-          setUser(parsed.user);
-        }
-      }
-    } catch {
-      // ignore
-    }
+  const refreshHealth = useCallback(async () => {
+    const h = await checkBackendHealth(6500);
+    setBackendHealth(h);
+    return h;
   }, []);
+
+  // Pre-cachear parcelas de proyectos en la nube para disponibilidad offline
+  const precacheCloudProjects = useCallback(
+    async (cloudProjects: SyncedProject[], token: string, devId: string) => {
+      const queue = cloudProjects.filter((p) => p.source === 'cloud').slice(0, 12);
+      const workers = [0, 1].map(async () => {
+        while (queue.length > 0) {
+          const item = queue.shift();
+          if (!item) break;
+          try {
+            const { response } = await mobileApiFetch(
+              `/api/projects?id=${encodeURIComponent(item.id)}`,
+              {
+                headers: { Authorization: `Bearer ${token}`, 'x-device-id': devId },
+              },
+              { timeoutMs: 12000 },
+            );
+            const data = await response.json().catch(() => ({}));
+            if (response.ok && data.success && data.content) {
+              const parsed = parseCloudProjectParcels(data.content, item.name);
+              saveLocalParcels(item.id, parsed);
+              setProjects((prev) => {
+                const next = prev.map((pr) =>
+                  pr.id === item.id
+                    ? { ...pr, parcelsText: `${parsed.length} Parcelas (Dispositivo)` }
+                    : pr,
+                );
+                saveLocalProjects(next);
+                return next;
+              });
+            }
+          } catch {
+            // ignorar proyecto individual si falla en segundo plano
+          }
+        }
+      });
+      await Promise.allSettled(workers);
+    },
+    [],
+  );
+
+  // Sincronización bidireccional: sube pendientes/locales -> baja Escritorio -> pre-cachea
+  const syncPendingAndRefresh = useCallback(
+    async (
+      tokenOverride?: string | null,
+      baseProjectsOverride?: SyncedProject[],
+      silent = false,
+    ) => {
+      const token = tokenOverride ?? authTokenRef.current;
+      if (!token) {
+        if (!silent) {
+          notify('Trabajando con proyectos locales en el dispositivo');
+        }
+        return false;
+      }
+      if (syncInFlightRef.current) return false;
+      syncInFlightRef.current = true;
+      setCloudSyncing(true);
+
+      const devId = getOrCreateFieldDeviceId();
+      let workingProjects = [...(baseProjectsOverride ?? projectsRef.current)];
+      let uploadedCount = 0;
+
+      try {
+        // 1) Subir proyectos creados o editados offline
+        const pending = workingProjects.filter(
+          (p) => p.syncState === 'local_only' || p.syncState === 'pending_push',
+        );
+
+        for (const prj of pending) {
+          const localParcels = loadLocalParcels(prj.id);
+          const payload = serializeProjectForCloud(prj, localParcels);
+          const { response } = await mobileApiFetch(
+            '/api/projects',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+                'x-device-id': devId,
+              },
+              body: JSON.stringify({
+                id: prj.id.startsWith('local_') ? null : prj.id,
+                name: prj.name,
+                content: payload,
+              }),
+            },
+            { timeoutMs: 18000 },
+          );
+
+          if (response.status === 401) {
+            clearSavedAuth();
+            setAuthToken(null);
+            setUser(null);
+            notify('Sesión expirada: inicia sesión nuevamente para sincronizar con Escritorio');
+            return false;
+          }
+
+          const resData = await response.json().catch(() => ({}));
+          if (response.ok && resData.success && resData.projectId) {
+            const newId = String(resData.projectId);
+            workingProjects = migrateLocalProjectToCloud(
+              prj.id,
+              newId,
+              resData.actualizado,
+              workingProjects,
+            );
+            if (selectedProjectRef.current?.id === prj.id) {
+              const migrated = workingProjects.find((x) => x.id === newId) || null;
+              setSelectedProject(migrated);
+            }
+            uploadedCount++;
+          }
+        }
+
+        // 2) Descargar lista actualizada desde PostgreSQL (Escritorio + Móvil)
+        const { response: listRes } = await mobileApiFetch(
+          '/api/projects',
+          {
+            headers: { Authorization: `Bearer ${token}`, 'x-device-id': devId },
+          },
+          { timeoutMs: 18000 },
+        );
+
+        if (listRes.status === 401) {
+          clearSavedAuth();
+          setAuthToken(null);
+          setUser(null);
+          notify('Sesión expirada · Inicia sesión para sincronizar con Escritorio');
+          return false;
+        }
+
+        const listData = await listRes.json().catch(() => ({}));
+        if (listRes.ok && listData.success && Array.isArray(listData.projects)) {
+          const merged = mergeCloudProjectsWithLocal(listData.projects, workingProjects);
+          setProjects(merged);
+
+          if (!selectedProjectRef.current && merged.length > 0) {
+            setSelectedProject(merged[0]);
+            const cachedFirst = loadLocalParcels(merged[0].id);
+            setParcels(cachedFirst);
+            setActiveParcelId(cachedFirst[0]?.id ?? null);
+          }
+
+          setBackendHealth((prev) => ({
+            ...prev,
+            navigatorOnline: true,
+            serverReachable: true,
+            dbConnected: true,
+            dbError: null,
+          }));
+
+          if (!silent || uploadedCount > 0) {
+            notify(
+              uploadedCount > 0
+                ? `Sincronizado: ${uploadedCount} subido(s) y ${listData.projects.length} proyectos desde Escritorio`
+                : `${listData.projects.length} proyectos sincronizados con Escritorio`,
+            );
+          }
+
+          void precacheCloudProjects(merged, token, devId);
+          return true;
+        }
+
+        return false;
+      } catch {
+        if (!silent) {
+          notify('Sin conexión al servidor · Proyectos locales disponibles en el dispositivo');
+        }
+        return false;
+      } finally {
+        syncInFlightRef.current = false;
+        setCloudSyncing(false);
+      }
+    },
+    [notify, precacheCloudProjects],
+  );
+
+  // Hydrate persistent device ID, saved session & local projects on boot
+  useEffect(() => {
+    void notifyOtaAppReady();
+    const devId = getOrCreateFieldDeviceId();
+    setDeviceId(devId);
+
+    const savedAuth = loadSavedAuth();
+    if (savedAuth.token && savedAuth.user) {
+      setAuthToken(savedAuth.token);
+      setUser(savedAuth.user);
+    }
+
+    const cachedProjects = loadLocalProjects();
+    if (cachedProjects.length > 0) {
+      setProjects(cachedProjects);
+      const firstPrj = cachedProjects[0];
+      setSelectedProject(firstPrj);
+      setCrsMode(firstPrj.defaultCrs || 'regven');
+      const cachedParcels = loadLocalParcels(firstPrj.id);
+      setParcels(cachedParcels);
+      setActiveParcelId(cachedParcels[0]?.id ?? null);
+      setSelectedVertexId(cachedParcels[0]?.vertices[0]?.id || 'V-01');
+    }
+
+    void (async () => {
+      const h = await refreshHealth();
+      if (h.dbConnected && savedAuth.token) {
+        await syncPendingAndRefresh(savedAuth.token, cachedProjects, true);
+      }
+    })();
+  }, [refreshHealth, syncPendingAndRefresh]);
+
+  // Listen to online / offline & foreground resume to auto-sync with Desktop
+  useEffect(() => {
+    const handleOnline = () => {
+      void (async () => {
+        const h = await refreshHealth();
+        if (h.dbConnected) {
+          if (authTokenRef.current) {
+            await syncPendingAndRefresh(authTokenRef.current, projectsRef.current, false);
+          } else {
+            const pend = projectsRef.current.filter(
+              (p) => p.syncState === 'local_only' || p.syncState === 'pending_push',
+            ).length;
+            if (pend > 0) {
+              notify(`Conexión restaurada: inicia sesión para sincronizar ${pend} proyecto(s) con Escritorio`);
+            }
+          }
+        }
+      })();
+    };
+
+    const handleOffline = () => {
+      setBackendHealth((prev) => ({
+        ...prev,
+        navigatorOnline: false,
+        serverReachable: false,
+        dbConnected: false,
+        dbError: 'Sin conexión a internet en el dispositivo',
+      }));
+      notify('Modo sin conexión activo · Proyectos locales disponibles');
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine !== false) {
+        void (async () => {
+          const h = await refreshHealth();
+          if (h.dbConnected && authTokenRef.current) {
+            const hasPending = projectsRef.current.some(
+              (p) => p.syncState === 'local_only' || p.syncState === 'pending_push',
+            );
+            if (hasPending) {
+              await syncPendingAndRefresh(authTokenRef.current, projectsRef.current, false);
+            }
+          }
+        })();
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [notify, refreshHealth, syncPendingAndRefresh]);
 
   // Hardware GNSS real-time watcher
   useEffect(() => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+    const activeHuso = activeParcel?.huso || 19;
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const c = pos.coords;
-        const utm = geoToUtmGrs80(c.latitude, c.longitude, activeParcel.huso || 19);
+        const utm = geoToUtmGrs80(c.latitude, c.longitude, activeHuso);
         setGnssFix({
           lat: c.latitude,
           lng: c.longitude,
-          alt: c.altitude ?? 18.25,
+          alt: c.altitude ?? 0,
           accuracy: c.accuracy || 3.5,
           esteRegven: utm.este,
           norteRegven: utm.norte,
@@ -162,288 +456,338 @@ export default function GeoGis6MobileShell() {
         });
       },
       () => {
-        // Fallback smoothly indoors
+        // Sin señal GNSS en interiores
       },
-      { enableHighAccuracy: true, maximumAge: 1500, timeout: 15000 }
+      { enableHighAccuracy: true, maximumAge: 1500, timeout: 15000 },
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [activeParcel.huso]);
+  }, [activeParcel?.huso]);
 
-  // OTA Update checker (GitHub Releases + Render /api/apk-version)
+  // OTA Update checker (in-app bundle + APK fallback)
   const checkOtaUpdates = useCallback(
     async (manual = false) => {
-      setOtaState((prev) => ({ ...prev, checking: true }));
-      let bestCode = APP_VERSION_CODE;
-      let bestName = APP_VERSION_NAME;
-      let bestUrl = APK_DOWNLOAD_URL;
-      let bestNotes = 'GeoGIS6 Mobile actualizado a la última versión estable.';
+      setOtaState((prev) => ({ ...prev, checking: true, error: null }));
+      const next = await checkOtaManifest();
+      setOtaState(next);
 
-      try {
-        const [apiRes, ghRes] = await Promise.allSettled([
-          fetch(`${PROD_API_URL}/api/apk-version?t=${Date.now()}`, { cache: 'no-store' }).then((r) =>
-            r.ok ? r.json() : null
-          ),
-          fetch(GITHUB_RELEASE_API_URL, {
-            headers: { Accept: 'application/vnd.github+json' },
-            cache: 'no-store',
-          }).then((r) => (r.ok ? r.json() : null)),
-        ]);
-
-        if (apiRes.status === 'fulfilled' && apiRes.value && Number(apiRes.value.versionCode) > bestCode) {
-          bestCode = Number(apiRes.value.versionCode);
-          bestName = apiRes.value.versionName || bestName;
-          bestUrl = apiRes.value.downloadUrl || bestUrl;
-          bestNotes = apiRes.value.notes || bestNotes;
-        }
-        if (ghRes.status === 'fulfilled' && ghRes.value) {
-          const body = String(ghRes.value.body || '');
-          const mCode = body.match(/\[APK_VERSION_CODE=(\d+)\]/i);
-          const mName = body.match(/\[APK_VERSION_NAME=([^\]]+)\]/i);
-          const apkAsset = Array.isArray(ghRes.value.assets)
-            ? ghRes.value.assets.find((a: any) => String(a.name || '').endsWith('.apk'))
-            : null;
-          if (mCode && Number(mCode[1]) > bestCode) {
-            bestCode = Number(mCode[1]);
-            bestName = mName ? mName[1].trim() : bestName;
-            bestUrl = apkAsset?.browser_download_url || bestUrl;
-            bestNotes = body.replace(/\[APK_VERSION_[^\]]+\]/g, '').trim() || bestNotes;
-          }
-        }
-      } catch {
-        // offline field mode
+      if (next.hasUpdate) {
+        setShowOtaModal(true);
+      } else if (manual) {
+        notify(`GeoGIS6 v${APP_VERSION_NAME} está al día`);
       }
-
-      const hasUpdate = bestCode > APP_VERSION_CODE;
-      setOtaState({
-        checking: false,
-        hasUpdate,
-        latestCode: bestCode,
-        latestName: bestName,
-        downloadUrl: bestUrl,
-        notes: bestNotes,
-      });
-
-      if (hasUpdate) setShowOtaModal(true);
-      else if (manual) notify(`GeoGIS6 v${APP_VERSION_NAME} está al día`);
     },
-    [notify]
+    [notify],
   );
 
   useEffect(() => {
     void checkOtaUpdates(false);
   }, [checkOtaUpdates]);
 
-  const mapCloudProjects = (rawProjects: any[]): SyncedProject[] => {
-    const cloudMapped: SyncedProject[] = (rawProjects || []).map((p: any) => ({
-      id: String(p.id),
-      name: String(p.nombre || 'Proyecto Cloud'),
-      crsLabel: 'REGVEN 19N | CLOUD',
-      crsBadgeColor: 'secondary',
-      parcelsText: 'Sincronizado en PostgreSQL',
-      syncStatus: p.actualizado ? new Date(p.actualizado).toLocaleDateString('es-VE') : 'En línea',
-      defaultCrs: 'regven',
-      activeParcelCode: '',
-      sectorLabel: 'GeoGIS6 Cloud',
-      source: 'cloud',
-      updatedAt: p.actualizado,
-    }));
-    return [...cloudMapped, ...DEFAULT_SYNCED_PROJECTS];
-  };
+  const handleApplyOtaNow = useCallback(async () => {
+    if (otaState.installing) return;
 
-  // Load ALL parcels of a Cloud PostgreSQL project (with automatic localStorage offline fallback)
-  const loadCloudProjectContent = useCallback(
+    if (otaState.canApplyInApp && otaState.bundleUrl) {
+      setOtaState((prev) => ({ ...prev, installing: true, progress: 5, error: null }));
+      try {
+        await applyOtaBundleInApp(
+          {
+            bundleUrl: otaState.bundleUrl,
+            latestName: otaState.latestName,
+            bundleSha256: otaState.bundleSha256,
+          },
+          (pct) => {
+            setOtaState((prev) => ({ ...prev, progress: pct }));
+          },
+        );
+      } catch (err: any) {
+        setOtaState((prev) => ({
+          ...prev,
+          installing: false,
+          progress: 0,
+          error:
+            err?.message ||
+            'No se pudo descargar la actualización en línea. Verifica tu conexión.',
+        }));
+      }
+      return;
+    }
+
+    if (otaState.requiresApkUpdate) {
+      window.open(otaState.apkDownloadUrl, '_blank');
+      return;
+    }
+
+    window.location.reload();
+  }, [otaState]);
+
+  // Cargar parcelas de un proyecto seleccionado (con caché local automática)
+  const loadProjectContent = useCallback(
     async (project: SyncedProject, tokenOverride?: string | null) => {
-      const token = tokenOverride ?? authToken;
-      const cacheKey = `${STORAGE_PRJ_CACHE_PREFIX}${project.id}`;
+      const token = tokenOverride ?? authTokenRef.current;
+      const localCached = loadLocalParcels(project.id);
 
-      if (project.source !== 'cloud') {
-        setParcels(DEFAULT_PROJECT_PARCELS);
-        setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
-        setSelectedVertexId(DEFAULT_PROJECT_PARCELS[0].vertices[0]?.id || 'V-01');
+      // Si es proyecto local o tiene cambios pendientes, priorizar los datos del dispositivo
+      if (
+        project.source === 'local' ||
+        project.syncState === 'local_only' ||
+        project.syncState === 'pending_push'
+      ) {
+        setParcels(localCached);
+        setActiveParcelId(localCached[0]?.id ?? null);
+        setSelectedVertexId(localCached[0]?.vertices[0]?.id || 'V-01');
         setMapFitTrigger((n) => n + 1);
+        return;
+      }
+
+      if (!token) {
+        setParcels(localCached);
+        setActiveParcelId(localCached[0]?.id ?? null);
+        setSelectedVertexId(localCached[0]?.vertices[0]?.id || 'V-01');
+        setMapFitTrigger((n) => n + 1);
+        if (localCached.length > 0) {
+          notify(`Offline: ${localCached.length} parcelas cargadas desde el dispositivo`);
+        } else {
+          notify(`Proyecto "${project.name}" sin caché local aún`);
+        }
         return;
       }
 
       setCloudSyncing(true);
       try {
-        if (token) {
-          const res = await fetch(`${PROD_API_URL}/api/projects?id=${encodeURIComponent(project.id)}`, {
+        const { response } = await mobileApiFetch(
+          `/api/projects?id=${encodeURIComponent(project.id)}`,
+          {
             headers: { Authorization: `Bearer ${token}`, 'x-device-id': deviceId },
+          },
+          { timeoutMs: 15000 },
+        );
+        const data = await response.json().catch(() => ({}));
+        if (response.ok && data.success && data.content) {
+          const parsedParcels = parseCloudProjectParcels(data.content, project.name);
+          saveLocalParcels(project.id, parsedParcels);
+          setParcels(parsedParcels);
+          setActiveParcelId(parsedParcels[0]?.id ?? null);
+          setSelectedVertexId(parsedParcels[0]?.vertices[0]?.id || 'V-01');
+          setMapFitTrigger((n) => n + 1);
+          setProjects((prev) => {
+            const next = prev.map((pr) =>
+              pr.id === project.id
+                ? {
+                    ...pr,
+                    parcelsText:
+                      parsedParcels.length === 0
+                        ? '0 Parcelas (Vacío · Cloud)'
+                        : `${parsedParcels.length} Parcelas cargadas`,
+                  }
+                : pr,
+            );
+            saveLocalProjects(next);
+            return next;
           });
-          const data = await res.json().catch(() => ({}));
-          if (res.ok && data.success && data.content) {
-            const parsedParcels = parseCloudProjectParcels(data.content, project.name);
-            if (parsedParcels.length > 0) {
-              setParcels(parsedParcels);
-              setActiveParcelId(parsedParcels[0].id);
-              setSelectedVertexId(parsedParcels[0].vertices[0]?.id || 'V-01');
-              setMapFitTrigger((n) => n + 1);
-              setProjects((prev) =>
-                prev.map((pr) =>
-                  pr.id === project.id
-                    ? { ...pr, parcelsText: `${parsedParcels.length} Parcelas cargadas` }
-                    : pr
-                )
-              );
-              try {
-                localStorage.setItem(cacheKey, JSON.stringify(parsedParcels));
-              } catch {
-                // storage full
-              }
-              notify(`${parsedParcels.length} parcelas cargadas en mapa satelital`);
-              return;
-            }
-            notify(`Proyecto "${project.name}" sin polígonos aún · Mostrando referencia`);
-            setParcels(DEFAULT_PROJECT_PARCELS);
-            setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
-            setMapFitTrigger((n) => n + 1);
-            return;
-          }
+          notify(
+            parsedParcels.length > 0
+              ? `${parsedParcels.length} parcelas cargadas en el mapa`
+              : `Proyecto "${project.name}" listo (sin parcelas aún)`,
+          );
+          return;
         }
-        throw new Error('offline');
+        throw new Error('No se pudo cargar desde la nube');
       } catch {
-        // Fallback to offline cached parcels if previously synced
-        try {
-          const cachedRaw = localStorage.getItem(cacheKey);
-          if (cachedRaw) {
-            const cachedParcels = JSON.parse(cachedRaw) as FieldParcel[];
-            if (Array.isArray(cachedParcels) && cachedParcels.length > 0) {
-              setParcels(cachedParcels);
-              setActiveParcelId(cachedParcels[0].id);
-              setSelectedVertexId(cachedParcels[0].vertices[0]?.id || 'V-01');
-              setMapFitTrigger((n) => n + 1);
-              notify(`Offline: ${cachedParcels.length} parcelas cargadas desde caché local`);
-              return;
-            }
-          }
-        } catch {
-          // ignore
-        }
-        notify('Sin conexión al servidor · Usando parcelas de referencia local');
-        setParcels(DEFAULT_PROJECT_PARCELS);
-        setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
+        setParcels(localCached);
+        setActiveParcelId(localCached[0]?.id ?? null);
+        setSelectedVertexId(localCached[0]?.vertices[0]?.id || 'V-01');
         setMapFitTrigger((n) => n + 1);
+        if (localCached.length > 0) {
+          notify(`Offline: ${localCached.length} parcelas cargadas desde el dispositivo`);
+        } else {
+          notify('Sin conexión al servidor · El proyecto aún no está cacheado en este dispositivo');
+        }
       } finally {
         setCloudSyncing(false);
       }
     },
-    [authToken, deviceId, notify]
+    [deviceId, notify],
   );
 
   const handleRefreshProjects = useCallback(async () => {
-    if (!authToken) {
-      notify('Trabajando en modo local Off-Grid');
+    const h = await refreshHealth();
+    if (!authTokenRef.current) {
+      notify(
+        h.dbConnected
+          ? 'Inicia sesión para sincronizar con PostgreSQL / Escritorio'
+          : 'Sin conexión · Mostrando proyectos alojados en el dispositivo',
+      );
       return;
     }
-    setCloudSyncing(true);
-    try {
-      const res = await fetch(`${PROD_API_URL}/api/projects`, {
-        headers: { Authorization: `Bearer ${authToken}`, 'x-device-id': deviceId },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success && Array.isArray(data.projects)) {
-        setProjects(mapCloudProjects(data.projects));
-        notify(`${data.projects.length} proyectos sincronizados`);
-      }
-    } catch {
-      notify('Sin conexión al servidor · Usando caché local');
-    } finally {
-      setCloudSyncing(false);
-    }
-  }, [authToken, deviceId, notify]);
+    await syncPendingAndRefresh(authTokenRef.current, projectsRef.current, false);
+  }, [notify, refreshHealth, syncPendingAndRefresh]);
 
   const handleLoginCloud = useCallback(
     async (email: string, password: string) => {
       const devId = getOrCreateFieldDeviceId();
-      const res = await fetch(`${PROD_API_URL}/api/auth/apk-login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-device-id': devId },
-        body: JSON.stringify({ email, password, deviceId: devId }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.success || !data.token || !data.user) {
+      let response: Response;
+      try {
+        const resObj = await mobileApiFetch(
+          '/api/auth/apk-login',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-device-id': devId },
+            body: JSON.stringify({ email, password, deviceId: devId }),
+          },
+          { timeoutMs: 20000, onStatus: (msg) => notify(msg) },
+        );
+        response = resObj.response;
+      } catch (err: any) {
+        await refreshHealth();
+        throw new Error(
+          navigator.onLine === false
+            ? 'Sin conexión a internet. Usa "Trabajar sin conexión" para acceder a tus proyectos locales.'
+            : err?.message || 'No se pudo conectar con los servidores de GeoGIS6.',
+        );
+      }
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success || !data.token || !data.user) {
         throw new Error(data.error || 'Credenciales inválidas');
       }
+
+      saveSavedAuth(data.token, data.user);
       setAuthToken(data.token);
       setUser(data.user);
-      setIsDemoMode(false);
-      localStorage.setItem(STORAGE_AUTH_KEY, JSON.stringify({ token: data.token, user: data.user }));
-      if (Array.isArray(data.projects)) {
-        const mapped = mapCloudProjects(data.projects);
-        setProjects(mapped);
-        if (data.projects.length > 0) {
-          const firstCloud = mapped[0];
-          setSelectedProject(firstCloud);
-          void loadCloudProjectContent(firstCloud, data.token);
+      setBackendHealth((prev) => ({
+        ...prev,
+        navigatorOnline: true,
+        serverReachable: true,
+        dbConnected: true,
+        dbError: null,
+      }));
+
+      // Si había proyectos creados localmente offline, subirlos y sincronizar con Escritorio
+      const currentLocal = loadLocalProjects();
+      const hasPending = currentLocal.some(
+        (p) => p.syncState === 'local_only' || p.syncState === 'pending_push',
+      );
+
+      if (hasPending) {
+        await syncPendingAndRefresh(data.token, currentLocal, false);
+      } else if (Array.isArray(data.projects)) {
+        const merged = mergeCloudProjectsWithLocal(data.projects, currentLocal);
+        setProjects(merged);
+        if (merged.length > 0) {
+          setSelectedProject(merged[0]);
+          void loadProjectContent(merged[0], data.token);
+        } else {
+          setSelectedProject(null);
+          setParcels([]);
+          setActiveParcelId(null);
         }
+        void precacheCloudProjects(merged, data.token, devId);
       }
+
       setActiveScreen('mapa');
       notify(`Bienvenido ${data.user.nombre || data.user.username}`);
     },
-    [loadCloudProjectContent, notify]
+    [loadProjectContent, notify, precacheCloudProjects, refreshHealth, syncPendingAndRefresh],
   );
 
   const handleLogout = useCallback(() => {
+    clearSavedAuth();
     setAuthToken(null);
     setUser(null);
-    setProjects(DEFAULT_SYNCED_PROJECTS);
-    setSelectedProject(DEFAULT_SYNCED_PROJECTS[0]);
-    setParcels(DEFAULT_PROJECT_PARCELS);
-    setActiveParcelId(DEFAULT_PROJECT_PARCELS[0].id);
-    localStorage.removeItem(STORAGE_AUTH_KEY);
-    notify('Sesión cerrada · Modo Campo Local activo');
+    // Conserva los proyectos alojados en el dispositivo
+    const deviceProjects = loadLocalProjects();
+    setProjects(deviceProjects);
+    notify('Sesión cerrada · Proyectos locales conservados en el dispositivo');
   }, [notify]);
 
-  const handleSaveCurrentToCloud = useCallback(async () => {
-    if (!authToken) {
-      notify('Inicia sesión para guardar proyectos en PostgreSQL');
+  const handleCreateEmptyProject = useCallback(
+    async (input: { name: string; defaultCrs: CrsMode; sectorLabel?: string }) => {
+      const { project, projects: nextList } = createEmptyOfflineProject(input);
+      setProjects(nextList);
+      setSelectedProject(project);
+      setCrsMode(project.defaultCrs);
+      setParcels([]);
+      setActiveParcelId(null);
+      setSelectedVertexId('V-01');
+      setMapFitTrigger((n) => n + 1);
+
+      if (authTokenRef.current && navigator.onLine !== false) {
+        notify(`Creando "${project.name}" y sincronizando con Escritorio...`);
+        await syncPendingAndRefresh(authTokenRef.current, nextList, false);
+      } else {
+        notify(`Proyecto "${project.name}" creado offline · Se sincronizará al conectar`);
+      }
+      setActiveScreen('mapa');
+    },
+    [notify, syncPendingAndRefresh],
+  );
+
+  const handleCreateStarterParcelFromGps = useCallback(() => {
+    const prj = selectedProjectRef.current;
+    if (!prj) {
+      setActiveScreen('auth');
       return;
     }
-    setCloudSyncing(true);
-    try {
-      const content = {
-        meta: { nombre: selectedProject.name, notas: activeParcel.sector },
-        parcels: parcels.map((p) => ({
-          id: p.id,
-          nombre: p.code,
-          fecha: new Date().toLocaleDateString('es-VE'),
-          area: p.areaGraficaM2,
-          perim: p.perimeterM,
-          ha: p.areaGraficaM2 / 10000,
-          geometryType: p.geometryType || 'cerrada',
-          method: 'rigida02',
-          puntos: p.vertices.map((v) => ({
-            id: v.shortId,
-            ok: true,
-            direction: 'canoa_regven',
-            input: { id: v.shortId, este: v.estePsad56, norte: v.nortePsad56, huso: p.huso, alt: v.cota },
-            result: { este: v.esteRegven, norte: v.norteRegven, huso: p.huso, cota: v.cota, lat: v.lat, lng: v.lng },
-          })),
-        })),
-      };
-      const res = await fetch(`${PROD_API_URL}/api/projects`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-          'x-device-id': deviceId,
+
+    const lat = gnssFix.isLiveHardware ? gnssFix.lat : VENEZUELA_DEFAULT_CENTER.lat;
+    const lng = gnssFix.isLiveHardware ? gnssFix.lng : VENEZUELA_DEFAULT_CENTER.lng;
+    const utm = geoToUtmGrs80(lat, lng, 19);
+    const parcelCode = `P-${String(parcels.length + 1).padStart(2, '0')}`;
+    const starter = buildFieldParcelFromVertices({
+      id: `parcel_${Date.now().toString(36)}`,
+      code: parcelCode,
+      location: prj.name,
+      sector: prj.sectorLabel || 'Levantamiento de Campo',
+      zoneTag: 'Puntos',
+      owner: user?.nombre || 'Operador de Campo',
+      huso: 19,
+      geometryType: 'puntos',
+      rawVertices: [
+        {
+          id: 'V-01',
+          shortId: 'V1',
+          code: 'Hito_1',
+          description: gnssFix.isLiveHardware
+            ? 'Punto capturado con GNSS del dispositivo'
+            : 'Punto inicial de proyecto',
+          esteRegven: utm.este,
+          norteRegven: utm.norte,
+          lat,
+          lng,
+          cota: gnssFix.alt || 0,
         },
-        body: JSON.stringify({
-          id: selectedProject.source === 'cloud' ? selectedProject.id : null,
-          name: selectedProject.name,
-          content,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.success) throw new Error(data.error || 'Error al guardar en la nube');
-      notify(`Proyecto (${parcels.length} parcelas) guardado en PostgreSQL`);
-      await handleRefreshProjects();
-    } catch (err: any) {
-      notify(err?.message || 'Error guardando en la nube');
-    } finally {
-      setCloudSyncing(false);
+      ],
+    });
+
+    const nextParcels = [...parcels, starter];
+    saveLocalParcels(prj.id, nextParcels);
+    const nextProjects = markProjectPendingPush(prj.id, nextParcels.length, projectsRef.current);
+    setProjects(nextProjects);
+    setSelectedProject(nextProjects.find((x) => x.id === prj.id) || prj);
+    setParcels(nextParcels);
+    setActiveParcelId(starter.id);
+    setSelectedVertexId(starter.vertices[0].id);
+    setMapFitTrigger((n) => n + 1);
+
+    notify(`Parcela ${starter.code} creada en el dispositivo`);
+  }, [gnssFix, notify, parcels, user?.nombre]);
+
+  const handleSaveCurrentToCloud = useCallback(async () => {
+    const prj = selectedProjectRef.current;
+    if (!prj) {
+      notify('Selecciona o crea un proyecto primero');
+      return;
     }
-  }, [activeParcel.sector, authToken, deviceId, handleRefreshProjects, notify, parcels, selectedProject]);
+    saveLocalParcels(prj.id, parcels);
+    const nextProjects = markProjectPendingPush(prj.id, parcels.length, projectsRef.current);
+    setProjects(nextProjects);
+
+    if (!authTokenRef.current) {
+      notify('Guardado en el dispositivo · Inicia sesión para sincronizar con Escritorio');
+      return;
+    }
+    await syncPendingAndRefresh(authTokenRef.current, nextProjects, false);
+  }, [notify, parcels, syncPendingAndRefresh]);
 
   const handleToggleCrs = () => {
     setCrsMode((prev) => {
@@ -451,7 +795,7 @@ export default function GeoGis6MobileShell() {
       notify(
         next === 'regven'
           ? 'Sistema activo: REGVEN 19N (RIGIDA02)'
-          : 'Sistema activo: PSAD56 La Canoa 19N'
+          : 'Sistema activo: PSAD56 La Canoa 19N',
       );
       return next;
     });
@@ -461,7 +805,20 @@ export default function GeoGis6MobileShell() {
     setSelectedProject(project);
     setCrsMode(project.defaultCrs);
     if (openMap) setActiveScreen('mapa');
-    void loadCloudProjectContent(project);
+    void loadProjectContent(project);
+  };
+
+  const handleWorkOffline = () => {
+    if (selectedProject) {
+      setActiveScreen('mapa');
+      void loadProjectContent(selectedProject);
+      return;
+    }
+    if (projects.length > 0) {
+      handleSelectProject(projects[0], true);
+      return;
+    }
+    notify('Crea un proyecto vacío offline primero para abrir el mapa');
   };
 
   const handleSelectParcel = (parcelId: string) => {
@@ -472,34 +829,41 @@ export default function GeoGis6MobileShell() {
   };
 
   const handleStakeVertex = (vertexId: string) => {
+    if (!activeParcel) return;
     setSelectedVertexId(vertexId);
     setActiveScreen('localizacion');
     notify(`Objetivo RTK fijado: ${vertexId} (${activeParcel.code})`);
   };
 
   const handleCaptureCurrentVertex = () => {
-    if (!gnssFix.isLiveHardware) return;
-    setParcels((prevList) =>
-      prevList.map((p) =>
-        p.id === activeParcel.id
-          ? {
-              ...p,
-              vertices: p.vertices.map((v) =>
-                v.id === selectedVertexId
-                  ? {
-                      ...v,
-                      esteRegven: gnssFix.esteRegven,
-                      norteRegven: gnssFix.norteRegven,
-                      lat: gnssFix.lat,
-                      lng: gnssFix.lng,
-                      cota: Math.round(gnssFix.alt * 100) / 100,
-                    }
-                  : v
-              ),
-            }
-          : p
-      )
+    if (!activeParcel || !selectedProject || !gnssFix.isLiveHardware) return;
+    const nextParcels = parcels.map((p) =>
+      p.id === activeParcel.id
+        ? {
+            ...p,
+            vertices: p.vertices.map((v) =>
+              v.id === selectedVertexId
+                ? {
+                    ...v,
+                    esteRegven: gnssFix.esteRegven,
+                    norteRegven: gnssFix.norteRegven,
+                    lat: gnssFix.lat,
+                    lng: gnssFix.lng,
+                    cota: Math.round(gnssFix.alt * 100) / 100,
+                  }
+                : v,
+            ),
+          }
+        : p,
     );
+    setParcels(nextParcels);
+    saveLocalParcels(selectedProject.id, nextParcels);
+    const nextProjects = markProjectPendingPush(
+      selectedProject.id,
+      nextParcels.length,
+      projectsRef.current,
+    );
+    setProjects(nextProjects);
   };
 
   const handleRestartRtk = () => {
@@ -542,26 +906,42 @@ export default function GeoGis6MobileShell() {
                 </h1>
                 <span
                   className={`font-stitch-mono text-[10px] tracking-widest uppercase flex items-center gap-1 mt-0.5 ${
-                    rtkReconverging ? 'text-[#ffb95f]' : 'text-[#4edea3]'
+                    rtkReconverging
+                      ? 'text-[#ffb95f]'
+                      : backendHealth.dbConnected
+                        ? 'text-[#4edea3]'
+                        : 'text-[#ffb95f]'
                   }`}
                 >
                   <span
                     className={`w-1.5 h-1.5 rounded-full inline-block animate-pulse ${
-                      rtkReconverging ? 'bg-[#ffb95f]' : 'bg-[#4edea3]'
+                      rtkReconverging || !backendHealth.dbConnected ? 'bg-[#ffb95f]' : 'bg-[#4edea3]'
                     }`}
                   />
                   {rtkReconverging
                     ? 'RTK FLOAT · CONVERGIENDO...'
                     : gnssFix.isLiveHardware
                       ? `GNSS LIVE · ±${gnssFix.accuracy.toFixed(1)}M`
-                      : receiverMode === 'external_rtk'
-                        ? 'RTK FIXED · RMS: 0.008M'
-                        : 'DGNSS L1/L5 · RMS: 0.35M'}
+                      : backendHealth.dbConnected
+                        ? 'CLOUD SYNC OK'
+                        : 'MODO LOCAL DISPOSITIVO'}
                 </span>
               </div>
             </div>
 
             <div className="flex items-center gap-1.5">
+              {pendingSyncCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshProjects()}
+                  title="Sincronizar proyectos pendientes"
+                  className="px-2 py-1 rounded bg-[#ffb95f]/20 border border-[#ffb95f]/50 text-[#ffb95f] font-stitch-mono text-[9.5px] font-bold flex items-center gap-1"
+                >
+                  <RefreshCw className={`w-3 h-3 ${cloudSyncing ? 'animate-spin' : ''}`} />
+                  {pendingSyncCount}
+                </button>
+              )}
+
               {otaState.hasUpdate && (
                 <button
                   type="button"
@@ -605,15 +985,14 @@ export default function GeoGis6MobileShell() {
             projects={projects}
             selectedProject={selectedProject}
             cloudSyncing={cloudSyncing}
+            backendHealth={backendHealth}
+            pendingSyncCount={pendingSyncCount}
             otaHasUpdate={otaState.hasUpdate}
             otaLatestName={otaState.latestName}
             onSelectProject={handleSelectProject}
             onLoginCloud={handleLoginCloud}
-            onDemoEnter={() => {
-              setIsDemoMode(true);
-              setActiveScreen('mapa');
-              notify('Modo Campo Offline / Demo activo');
-            }}
+            onWorkOffline={handleWorkOffline}
+            onCreateEmptyProject={handleCreateEmptyProject}
             onLogout={handleLogout}
             onSaveCurrentToCloud={handleSaveCurrentToCloud}
             onRefreshProjects={handleRefreshProjects}
@@ -630,18 +1009,21 @@ export default function GeoGis6MobileShell() {
             parcels={parcels}
             activeParcel={activeParcel}
             crsMode={crsMode}
-            isDemoMode={isDemoMode}
             gnssFix={gnssFix}
             fitTrigger={mapFitTrigger}
             onToggleCrs={handleToggleCrs}
             onSelectParcel={handleSelectParcel}
             onOpenParcel={() => setActiveScreen('parcela')}
+            onOpenProjects={() => setActiveScreen('auth')}
+            onCreateStarterParcel={handleCreateStarterParcelFromGps}
             onStakeVertex={handleStakeVertex}
             onCenterGps={() =>
               notify(
                 gnssFix.isLiveHardware
                   ? `Centrado en GPS Real (${gnssFix.esteRegven.toFixed(2)}E, ${gnssFix.norteRegven.toFixed(2)}N)`
-                  : `Centrado en Parcela ${activeParcel.code}`
+                  : activeParcel
+                    ? `Centrado en Parcela ${activeParcel.code}`
+                    : 'Centrado en mapa',
               )
             }
             onNotify={notify}
@@ -653,9 +1035,9 @@ export default function GeoGis6MobileShell() {
             parcel={activeParcel}
             crsMode={crsMode}
             selectedVertexId={selectedVertexId}
-            isDemoMode={isDemoMode}
             onToggleCrs={handleToggleCrs}
             onBackToMap={() => setActiveScreen('mapa')}
+            onOpenProjects={() => setActiveScreen('auth')}
             onStakeVertex={handleStakeVertex}
             onNotify={notify}
           />
@@ -675,6 +1057,7 @@ export default function GeoGis6MobileShell() {
               setShiftNorte(dN);
             }}
             onCaptureCurrentVertex={handleCaptureCurrentVertex}
+            onOpenProjects={() => setActiveScreen('auth')}
             onNotify={notify}
           />
         )}
@@ -689,7 +1072,7 @@ export default function GeoGis6MobileShell() {
               notify(
                 m === 'external_rtk'
                   ? 'Receptor externo SOUTH INNO7 (RTK 1408ch) activo'
-                  : 'Receptor interno Android L1+L5 activo'
+                  : 'Receptor interno Android L1+L5 activo',
               );
             }}
             onChangeAntennaHeight={setAntennaHeightM}
@@ -738,23 +1121,39 @@ export default function GeoGis6MobileShell() {
         </nav>
       )}
 
-      {/* OTA Auto-Update Modal */}
+      {/* OTA In-App Auto-Update Modal */}
       {showOtaModal && (
         <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-2xl bg-[#151b2b] border border-[#4edea3]/45 shadow-2xl overflow-hidden">
             <div className="px-4 py-3 border-b border-[#242a3a] flex items-center justify-between bg-[#0d1322]">
               <span className="font-stitch-headline text-[14px] font-bold text-[#dde2f8]">
-                {otaState.hasUpdate ? '🚀 Nueva Versión APK Disponible' : '🔄 Actualizaciones GeoGIS6'}
+                {otaState.hasUpdate
+                  ? 'Nueva actualización disponible'
+                  : 'Actualizaciones GeoGIS6'}
               </span>
-              <button
-                type="button"
-                onClick={() => setShowOtaModal(false)}
-                className="w-7 h-7 rounded bg-[#242a3a] text-[#bcc9cd] flex items-center justify-center"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              {!otaState.installing && (
+                <button
+                  type="button"
+                  onClick={() => setShowOtaModal(false)}
+                  className="w-7 h-7 rounded bg-[#242a3a] text-[#bcc9cd] flex items-center justify-center"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
+
             <div className="p-4 space-y-3">
+              {otaState.hasUpdate && (
+                <p className="text-[12px] text-[#dde2f8] leading-snug">
+                  Está disponible la versión <strong className="text-[#4edea3]">v{otaState.latestName}</strong>.
+                  {otaState.canApplyInApp
+                    ? ' ¿Deseas descargarla e instalarla en línea dentro de la app?'
+                    : otaState.requiresApkUpdate
+                      ? ' Esta versión incluye cambios nativos y requiere descargar el instalador APK.'
+                      : ' ¿Deseas actualizar ahora?'}
+                </p>
+              )}
+
               <div className="grid grid-cols-2 gap-2 font-stitch-mono text-[10px]">
                 <div className="p-2.5 rounded-lg bg-[#080e1d] border border-[#242a3a]">
                   <span className="text-[#869397] block">INSTALADA</span>
@@ -762,28 +1161,66 @@ export default function GeoGis6MobileShell() {
                   <span className="text-[9px] text-[#869397] block">Build {APP_VERSION_CODE}</span>
                 </div>
                 <div className="p-2.5 rounded-lg bg-[#080e1d] border border-[#4edea3]/40">
-                  <span className="text-[#869397] block">ÚLTIMA RELEASE</span>
+                  <span className="text-[#869397] block">DISPONIBLE</span>
                   <strong className="text-[#4edea3] text-xs">v{otaState.latestName}</strong>
                   <span className="text-[9px] text-[#869397] block">Build {otaState.latestCode}</span>
                 </div>
               </div>
-              <p className="p-2.5 rounded-lg bg-[#080e1d] text-[11px] text-[#bcc9cd]">{otaState.notes}</p>
-              <div className="grid grid-cols-2 gap-2">
+
+              <p className="p-2.5 rounded-lg bg-[#080e1d] text-[11px] text-[#bcc9cd] max-h-24 overflow-y-auto">
+                {otaState.notes}
+              </p>
+
+              {otaState.installing && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between font-stitch-mono text-[10px] text-[#4edea3]">
+                    <span>Descargando actualización en línea...</span>
+                    <span>{otaState.progress}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-[#080e1d] overflow-hidden border border-[#242a3a]">
+                    <div
+                      className="h-full bg-[#4edea3] transition-all duration-200"
+                      style={{ width: `${otaState.progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {otaState.error && (
+                <div className="p-2 rounded bg-rose-500/15 border border-rose-500/40 font-stitch-mono text-[10px] text-rose-300">
+                  {otaState.error}
+                </div>
+              )}
+
+              {otaState.hasUpdate ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={otaState.installing}
+                    onClick={() => setShowOtaModal(false)}
+                    className="py-2.5 rounded-xl bg-[#242a3a] text-[#bcc9cd] font-stitch-headline font-bold text-xs disabled:opacity-40"
+                  >
+                    Más tarde
+                  </button>
+                  <button
+                    type="button"
+                    disabled={otaState.installing}
+                    onClick={() => void handleApplyOtaNow()}
+                    className="py-2.5 rounded-xl bg-[#4edea3] text-[#003824] font-stitch-headline font-bold text-xs flex items-center justify-center gap-1 disabled:opacity-60"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    {otaState.installing ? 'Actualizando...' : 'Actualizar ahora'}
+                  </button>
+                </div>
+              ) : (
                 <button
                   type="button"
                   onClick={() => void checkOtaUpdates(true)}
-                  className="py-2.5 rounded-xl bg-[#242a3a] text-[#4cd7f6] font-stitch-headline font-bold text-xs"
+                  className="w-full py-2.5 rounded-xl bg-[#242a3a] text-[#4cd7f6] font-stitch-headline font-bold text-xs"
                 >
-                  {otaState.checking ? 'Buscando...' : 'Verificar'}
+                  {otaState.checking ? 'Buscando...' : 'Verificar nuevamente'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => window.open(otaState.downloadUrl, '_blank')}
-                  className="py-2.5 rounded-xl bg-[#4edea3] text-[#003824] font-stitch-headline font-bold text-xs flex items-center justify-center gap-1"
-                >
-                  <Download className="w-3.5 h-3.5" /> Actualizar APK
-                </button>
-              </div>
+              )}
             </div>
           </div>
         </div>

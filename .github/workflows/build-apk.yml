@@ -52,41 +52,30 @@ jobs:
         id: ota_version
         run: |
           python3 - <<'EOF'
-          import json
           import os
           import re
-          from datetime import datetime, timezone
           from pathlib import Path
 
-          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "10"))
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "12"))
           version_code = 600 + run_number
           version_name = f"6.0.{run_number}"
+          native_version_code = 612
 
           field_data = Path("components/geogis6-mobile/data/fieldData.ts")
           if field_data.exists():
               ts = field_data.read_text(encoding="utf-8")
               ts = re.sub(r"export const APP_VERSION_CODE\s*=\s*\d+;", f"export const APP_VERSION_CODE = {version_code};", ts, count=1)
               ts = re.sub(r"export const APP_VERSION_NAME\s*=\s*'[^']+';", f"export const APP_VERSION_NAME = '{version_name}';", ts, count=1)
+              ts = re.sub(r"export const APP_NATIVE_VERSION_CODE\s*=\s*\d+;", f"export const APP_NATIVE_VERSION_CODE = {native_version_code};", ts, count=1)
               field_data.write_text(ts, encoding="utf-8")
-
-          manifest_path = Path("public/apk-version.json")
-          manifest = {
-              "versionCode": version_code,
-              "versionName": version_name,
-              "buildNumber": run_number,
-              "publishedAt": datetime.now(timezone.utc).isoformat(),
-              "downloadUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk",
-              "releaseApiUrl": "https://api.github.com/repos/akey01/GeoGis_Android/releases/latest",
-              "notes": f"GeoGIS6 Mobile v{version_name} (Build {version_code}): 5 pantallas Stitch nativas activas por defecto (Auth/Proyectos, Mapa, Parcela, Localización RTK/AR y Satélites GNSS) compiladas con Next.js output:export."
-          }
-          manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
           gh_out = os.environ.get("GITHUB_OUTPUT")
           if gh_out:
               with open(gh_out, "a", encoding="utf-8") as f:
                   f.write(f"version_code={version_code}\n")
                   f.write(f"version_name={version_name}\n")
-          print(f"Stamped OTA version v{version_name} (code={version_code})")
+                  f.write(f"native_version_code={native_version_code}\n")
+          print(f"Stamped OTA version v{version_name} (code={version_code}, native={native_version_code})")
           EOF
 
       - name: Build Next.js Static Export (out/)
@@ -95,6 +84,44 @@ jobs:
           NEXT_PUBLIC_API_URL: "https://geogis6-android.onrender.com"
           NEXT_PUBLIC_APP_PLATFORM: "android"
         run: npm run build:apk
+
+      - name: Package Live OTA Web Bundle & update apk-version.json
+        run: |
+          python3 - <<'EOF'
+          import hashlib
+          import json
+          import os
+          import shutil
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "12"))
+          version_code = 600 + run_number
+          version_name = f"6.0.{run_number}"
+          native_version_code = 612
+
+          bundle_path = Path(shutil.make_archive("geogis6-web-bundle", "zip", root_dir="out"))
+          sha256 = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+
+          manifest = {
+              "versionCode": version_code,
+              "versionName": version_name,
+              "bundleVersionCode": version_code,
+              "nativeVersionCode": native_version_code,
+              "buildNumber": run_number,
+              "publishedAt": datetime.now(timezone.utc).isoformat(),
+              "downloadUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk",
+              "bundleUrl": "https://github.com/akey01/GeoGis_Android/releases/latest/download/geogis6-web-bundle.zip",
+              "bundleSha256": sha256,
+              "releaseApiUrl": "https://api.github.com/repos/akey01/GeoGis_Android/releases/latest",
+              "notes": f"GeoGIS6 Mobile v{version_name} (Build {version_code}): Login inicial, trabajo offline sin demo, proyectos locales vacíos con sincronización Desktop y actualización OTA en línea."
+          }
+          Path("public/apk-version.json").write_text(
+              json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          print(f"Packaged {bundle_path} ({bundle_path.stat().st_size} bytes, sha256={sha256})")
+          EOF
 
       - name: Generate native Capacitor Android project and sync out/
         run: |
@@ -317,10 +344,11 @@ jobs:
           name: GeoGIS6 Mobile v6.0.0 (Android APK)
           body: |
             APK oficial de producción de GeoGIS6 Mobile (Release firmada v1+v2) compilado con Next.js output:export + Capacitor 7 + Android SDK.
-            [APK_VERSION_CODE=${{ steps.ota_version.outputs.version_code }}] [APK_VERSION_NAME=${{ steps.ota_version.outputs.version_name }}]
-            Incluye las 5 pantallas nuevas Stitch activas por defecto: Autenticación/Proyectos, Mapa del Proyecto, Parcela Individual, Localización RTK/AR y Satélites GNSS.
+            [APK_VERSION_CODE=${{ steps.ota_version.outputs.version_code }}] [APK_VERSION_NAME=${{ steps.ota_version.outputs.version_name }}] [NATIVE_VERSION_CODE=${{ steps.ota_version.outputs.native_version_code }}]
+            Incluye inicio en Login, modo offline sin demo, creación de proyectos vacíos con sincronización Desktop y actualización OTA en línea.
           files: |
             GeoGis6_Android.apk
+            geogis6-web-bundle.zip
             public/apk-version.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
