@@ -5,6 +5,10 @@ import path from 'node:path';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const GITHUB_MANIFEST_URL =
+  'https://github.com/akey01/GeoGis_Android/releases/download/v6.0.0/apk-version.json';
+const CACHE_TTL_MS = 30_000;
+
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
@@ -12,36 +16,94 @@ const CORS_HEADERS = {
 };
 
 const FALLBACK_MANIFEST = {
-  versionCode: 612,
-  versionName: '6.0.12',
-  bundleVersionCode: 612,
+  versionCode: 624,
+  versionName: '6.0.24',
+  bundleVersionCode: 624,
   nativeVersionCode: 612,
-  buildNumber: 12,
+  buildNumber: 24,
   publishedAt: new Date().toISOString(),
   downloadUrl: 'https://github.com/akey01/GeoGis_Android/releases/latest/download/GeoGis6_Android.apk',
-  bundleUrl: 'https://github.com/akey01/GeoGis_Android/releases/latest/download/geogis6-web-bundle.zip',
+  bundleUrl: 'https://geogis6-android.onrender.com/api/ota-bundle',
   bundleSha256: null,
   releaseApiUrl: 'https://api.github.com/repos/akey01/GeoGis_Android/releases/latest',
   notes: 'GeoGIS6 Android Mobile Topographer + Parcelas + Proyectos Offline + OTA Live Update.',
 };
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+let cachedManifest: { data: Record<string, any>; ts: number } | null = null;
+
+function resolveRequestOrigin(request: Request): string {
+  const fwdHost = request.headers.get('x-forwarded-host') || request.headers.get('host');
+  const fwdProto = request.headers.get('x-forwarded-proto');
+  if (fwdHost) {
+    const cleanHost = fwdHost.split(',')[0].trim();
+    const proto = cleanHost.endsWith('.onrender.com')
+      ? 'https'
+      : (fwdProto ? fwdProto.split(',')[0].trim() : 'https');
+    return `${proto}://${cleanHost}`;
+  }
+  const urlOrigin = new URL(request.url).origin;
+  return urlOrigin.includes('.onrender.com')
+    ? urlOrigin.replace(/^http:\/\//i, 'https://')
+    : urlOrigin;
 }
 
-export async function GET() {
+async function getLiveManifest(): Promise<Record<string, any>> {
+  const now = Date.now();
+  if (cachedManifest && now - cachedManifest.ts < CACHE_TTL_MS) {
+    return cachedManifest.data;
+  }
+
+  try {
+    const res = await fetch(`${GITHUB_MANIFEST_URL}?t=${now}`, {
+      redirect: 'follow',
+      cache: 'no-store',
+      headers: { 'User-Agent': 'GeoGIS6-Version-Check/1.0' },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (res.ok) {
+      const ghJson = await res.json();
+      if (ghJson && typeof ghJson === 'object') {
+        cachedManifest = { data: ghJson, ts: now };
+        return ghJson;
+      }
+    }
+  } catch {
+    // Fallback al manifiesto empaquetado localmente
+  }
+
   try {
     const jsonPath = path.join(process.cwd(), 'public', 'apk-version.json');
     const raw = await fs.readFile(jsonPath, 'utf-8');
     const parsed = JSON.parse(raw);
-    return NextResponse.json(
-      { success: true, ...FALLBACK_MANIFEST, ...parsed },
-      { status: 200, headers: CORS_HEADERS },
-    );
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
   } catch {
-    return NextResponse.json(
-      { success: true, ...FALLBACK_MANIFEST },
-      { status: 200, headers: CORS_HEADERS },
-    );
+    // Fallback al constante por defecto
   }
+
+  return FALLBACK_MANIFEST;
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+export async function GET(request: Request) {
+  const origin = resolveRequestOrigin(request);
+  const live = await getLiveManifest();
+  const versionCode = Number(live.bundleVersionCode ?? live.versionCode ?? FALLBACK_MANIFEST.versionCode);
+
+  return NextResponse.json(
+    {
+      success: true,
+      ...FALLBACK_MANIFEST,
+      ...live,
+      versionCode,
+      bundleVersionCode: versionCode,
+      bundleUrl: `${origin}/api/ota-bundle?v=${versionCode}`,
+      bundleSha256: null,
+    },
+    { status: 200, headers: CORS_HEADERS },
+  );
 }

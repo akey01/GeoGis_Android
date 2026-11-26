@@ -498,6 +498,7 @@ export default function GeoGis6MobileShell() {
         await applyOtaBundleInApp(
           {
             bundleUrl: otaState.bundleUrl,
+            latestCode: otaState.latestCode,
             latestName: otaState.latestName,
             bundleSha256: otaState.bundleSha256,
           },
@@ -1290,8 +1291,15 @@ export default function GeoGis6MobileShell() {
               )}
 
               {otaState.error && (
-                <div className="p-2 rounded bg-rose-500/15 border border-rose-500/40 font-stitch-mono text-[10px] text-rose-300">
-                  {otaState.error}
+                <div className="p-2 rounded bg-rose-500/15 border border-rose-500/40 font-stitch-mono text-[10px] text-rose-300 space-y-1.5">
+                  <div>{otaState.error}</div>
+                  <button
+                    type="button"
+                    onClick={() => window.open(otaState.apkDownloadUrl, '_blank')}
+                    className="w-full py-1.5 rounded bg-[#242a3a] text-[#4cd7f6] font-bold"
+                  >
+                    Descargar APK directo
+                  </button>
                 </div>
               )}
 
