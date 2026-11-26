@@ -41,9 +41,9 @@ export function ensureVenezuelaProjections() {
   proj4.defs('EPSG:32620', '+proj=utm +zone=20 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
   proj4.defs('EPSG:32621', '+proj=utm +zone=21 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
 
-  // PSAD56 / La Canoa UTM (Husos 18N a 21N)
+  // PSAD56 / La Canoa UTM (Husos 18N a 21N — equivalente Helmert exacto PATVEN-98 Badekas)
   const canoaParams =
-    '+ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs';
+    '+ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs';
   proj4.defs('EPSG:24818', `+proj=utm +zone=18 ${canoaParams}`);
   proj4.defs('EPSG:24819', `+proj=utm +zone=19 ${canoaParams}`);
   proj4.defs('EPSG:24820', `+proj=utm +zone=20 ${canoaParams}`);

@@ -73,15 +73,15 @@ proj4.defs('EPSG:32619', '+proj=utm +zone=19 +ellps=WGS84 +datum=WGS84 +units=m 
 proj4.defs('EPSG:32620', '+proj=utm +zone=20 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
 proj4.defs('EPSG:32621', '+proj=utm +zone=21 +ellps=WGS84 +datum=WGS84 +units=m +no_defs');
 
-// PSAD56 / La Canoa UTM por zona (24818..24821 y alias estándar 24878..24881)
-proj4.defs('EPSG:24818', '+proj=utm +zone=18 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24819', '+proj=utm +zone=19 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24820', '+proj=utm +zone=20 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24821', '+proj=utm +zone=21 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24878', '+proj=utm +zone=18 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24879', '+proj=utm +zone=19 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24880', '+proj=utm +zone=20 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
-proj4.defs('EPSG:24881', '+proj=utm +zone=21 +ellps=intl +towgs84=-270.933,115.599,-360.226,-5.266,-1.238,2.381,-5.109 +units=m +no_defs');
+// PSAD56 / La Canoa UTM por zona (equivalente Helmert exacto de PATVEN-98 Molodensky-Badekas)
+proj4.defs('EPSG:24818', '+proj=utm +zone=18 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24819', '+proj=utm +zone=19 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24820', '+proj=utm +zone=20 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24821', '+proj=utm +zone=21 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24878', '+proj=utm +zone=18 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24879', '+proj=utm +zone=19 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24880', '+proj=utm +zone=20 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
+proj4.defs('EPSG:24881', '+proj=utm +zone=21 +ellps=intl +towgs84=-197.4328,139.3852,-192.8019,5.266,1.238,-2.381,-5.109 +units=m +no_defs');
 
 register(proj4);
 

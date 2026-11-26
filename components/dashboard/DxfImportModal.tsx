@@ -17,7 +17,10 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { routine, method, rigidCorrection, adicoraCorrection, autoResiduoMalla, direction, setDxfPreview, huso: storeHuso } = useAppStore();
-  const [sourceDatum, setSourceDatum] = useState<'psad56' | 'regven' | 'wgs84'>('psad56');
+  const [importMode, setImportMode] = useState<'ploteo' | 'transform'>(
+    routine === 'ploteo' ? 'ploteo' : 'transform'
+  );
+  const [sourceDatum, setSourceDatum] = useState<'psad56' | 'regven' | 'wgs84'>('regven');
   const [importHuso, setImportHuso] = useState(storeHuso);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [transforming, setTransforming] = useState(false);
@@ -90,7 +93,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
   const transformPolygon = (poly: DXFPolygon): DXFPolygon => {
     const huso = importHuso;
     const sourceIsPsad56 = sourceDatum === 'psad56';
-    const destIsPsad56 = routine === 'ploteo' ? sourceIsPsad56 : direction === 'regven_canoa';
+    const destIsPsad56 = importMode === 'ploteo' ? sourceIsPsad56 : direction === 'regven_canoa';
     const resultDir: 'canoa_regven' | 'regven_canoa' = destIsPsad56 ? 'regven_canoa' : 'canoa_regven';
     const resultEpsg = destIsPsad56 ? `EPSG:248${huso}` : `EPSG:220${huso - 17}`;
 
@@ -320,6 +323,32 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
 
   const totalVerts = polygons.reduce((s, p) => s + p.vertices.length, 0);
 
+  const previewAudit = React.useMemo(() => {
+    const firstPoly = polygons.find((p) => selectedIds.has(p.id)) || polygons[0];
+    if (!firstPoly || firstPoly.vertices.length === 0) return null;
+    try {
+      const tr = transformPolygon(firstPoly);
+      const v0 = tr.vertices[0];
+      const raw0 = firstPoly.vertices[0];
+      if (!v0?.result) return null;
+      const destIsPsad = tr.resultEpsg?.startsWith('EPSG:248');
+      const dE = v0.result.este - raw0.e;
+      const dN = v0.result.norte - raw0.n;
+      return {
+        rawE: raw0.e,
+        rawN: raw0.n,
+        outE: v0.result.este,
+        outN: v0.result.norte,
+        targetLabel: destIsPsad ? `PSAD56 ${importHuso}N` : `REGVEN ${importHuso}N`,
+        shiftM: firstPoly.isGeographic ? 0 : Math.hypot(dE, dN),
+        destIsPsad,
+      };
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polygons, selectedIds, sourceDatum, importHuso, importMode, method, direction, rigidCorrection, adicoraCorrection, autoResiduoMalla]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto mx-4">
@@ -368,16 +397,44 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
 
           {polygons.length > 0 && (
             <>
+              <div className="grid grid-cols-2 gap-1.5 bg-slate-950/60 p-1 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportMode('ploteo');
+                    if (sourceDatum === 'psad56') setSourceDatum('regven');
+                  }}
+                  className={`py-2 px-2 rounded-lg text-[11px] font-bold transition-all ${
+                    importMode === 'ploteo'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Ploteo Directo (Sin desplazar)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportMode('transform')}
+                  className={`py-2 px-2 rounded-lg text-[11px] font-bold transition-all ${
+                    importMode === 'transform'
+                      ? 'bg-indigo-600 text-white shadow'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Transformar Datum ({method.toUpperCase()})
+                </button>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Datum Origen</label>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">Datum Origen del DXF</label>
                   <select
                     value={sourceDatum}
                     onChange={(e) => setSourceDatum(e.target.value as any)}
                     className="w-full bg-slate-800/50 border border-slate-700 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/50 appearance-none cursor-pointer"
                   >
+                    <option value="regven">REGVEN (SIRGAS / Foto GPS)</option>
                     <option value="psad56">PSAD56 (La Canoa)</option>
-                    <option value="regven">REGVEN (SIRGAS)</option>
                     <option value="wgs84">WGS84</option>
                   </select>
                 </div>
@@ -402,6 +459,36 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
                   </div>
                 </div>
               </div>
+
+              {sourceDatum === 'psad56' && (
+                <div className="flex items-center justify-between gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-xl text-[10.5px] text-amber-300">
+                  <span>
+                    DXF marcado como <strong>PSAD56 (La Canoa)</strong>. Si ya está en REGVEN/foto satelital, cámbialo a REGVEN para evitar ~370 m de desfase.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSourceDatum('regven')}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold shrink-0"
+                  >
+                    Usar REGVEN
+                  </button>
+                </div>
+              )}
+
+              {previewAudit && (
+                <div className="px-3 py-2 bg-slate-950/60 border border-slate-800 rounded-xl text-[10px] font-mono space-y-1">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Auditoría P1 → <strong className="text-emerald-400">{previewAudit.targetLabel}</strong></span>
+                    <span className={previewAudit.shiftM > 1 ? 'text-amber-400 font-bold' : 'text-emerald-400'}>
+                      Δ {previewAudit.shiftM.toFixed(2)} m
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>DXF: {previewAudit.rawE.toFixed(2)}E, {previewAudit.rawN.toFixed(2)}N</span>
+                    <span>Mapa: {previewAudit.outE.toFixed(2)}E, {previewAudit.outN.toFixed(2)}N</span>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">
@@ -471,7 +558,7 @@ export default function DxfImportModal({ onClose }: DxfImportModalProps) {
                 <span>
                   Modo activo:{' '}
                   <strong className="text-emerald-400">
-                    {routine === 'ploteo' ? 'Ploteo Directo' : `Transformación (${method.toUpperCase()})`}
+                    {importMode === 'ploteo' ? 'Ploteo Directo' : `Transformación (${method.toUpperCase()})`}
                   </strong>
                 </span>
                 <span>
