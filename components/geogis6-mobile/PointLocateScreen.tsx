@@ -50,6 +50,7 @@ interface PointLocateScreenProps {
   gnssFix: LiveGnssFix;
   shiftEste: number;
   shiftNorte: number;
+  shiftAppliedInFix?: boolean;
   onSelectParcel?: (parcelId: string) => void;
   onSelectVertex: (vertexId: string) => void;
   onApplyShift: (dE: number, dN: number) => void;
@@ -73,6 +74,7 @@ export default function PointLocateScreen({
   gnssFix,
   shiftEste,
   shiftNorte,
+  shiftAppliedInFix = false,
   onSelectParcel,
   onSelectVertex,
   onApplyShift,
@@ -243,10 +245,12 @@ export default function PointLocateScreen({
 
   // Cálculos reales en vivo hacia el vértice seleccionado
   const hasLiveGps = Boolean(gnssFix.isLiveHardware);
+  const pendingShiftN = shiftAppliedInFix ? 0 : shiftNorte;
+  const pendingShiftE = shiftAppliedInFix ? 0 : shiftEste;
   const deltaNorthM =
-    hasLiveGps && target ? target.norteRegven - gnssFix.norteRegven + shiftNorte : null;
+    hasLiveGps && target ? target.norteRegven - gnssFix.norteRegven + pendingShiftN : null;
   const deltaEastM =
-    hasLiveGps && target ? target.esteRegven - gnssFix.esteRegven + shiftEste : null;
+    hasLiveGps && target ? target.esteRegven - gnssFix.esteRegven + pendingShiftE : null;
   const distanceM =
     deltaNorthM !== null && deltaEastM !== null ? Math.hypot(deltaNorthM, deltaEastM) : null;
   const targetAzimuthDeg =
@@ -287,12 +291,12 @@ export default function PointLocateScreen({
     if (!sortByNearest || !hasLiveGps) return vertices;
     return [...vertices].sort((a, b) => {
       const da = Math.hypot(
-        a.norteRegven - gnssFix.norteRegven + shiftNorte,
-        a.esteRegven - gnssFix.esteRegven + shiftEste,
+        a.norteRegven - gnssFix.norteRegven + pendingShiftN,
+        a.esteRegven - gnssFix.esteRegven + pendingShiftE,
       );
       const db = Math.hypot(
-        b.norteRegven - gnssFix.norteRegven + shiftNorte,
-        b.esteRegven - gnssFix.esteRegven + shiftEste,
+        b.norteRegven - gnssFix.norteRegven + pendingShiftN,
+        b.esteRegven - gnssFix.esteRegven + pendingShiftE,
       );
       return da - db;
     });
@@ -300,8 +304,8 @@ export default function PointLocateScreen({
     gnssFix.esteRegven,
     gnssFix.norteRegven,
     hasLiveGps,
-    shiftEste,
-    shiftNorte,
+    pendingShiftE,
+    pendingShiftN,
     sortByNearest,
     vertices,
   ]);
@@ -995,8 +999,8 @@ export default function PointLocateScreen({
               {sortedVertices.map((v) => {
                 const isActive = v.id === target.id;
                 const isDone = stakedIds.includes(v.id);
-                const dN = hasLiveGps ? v.norteRegven - gnssFix.norteRegven + shiftNorte : null;
-                const dE = hasLiveGps ? v.esteRegven - gnssFix.esteRegven + shiftEste : null;
+                const dN = hasLiveGps ? v.norteRegven - gnssFix.norteRegven + pendingShiftN : null;
+                const dE = hasLiveGps ? v.esteRegven - gnssFix.esteRegven + pendingShiftE : null;
                 const vDist = dN !== null && dE !== null ? Math.hypot(dN, dE) : null;
                 const vAz =
                   dN !== null && dE !== null

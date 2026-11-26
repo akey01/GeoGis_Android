@@ -26,10 +26,19 @@ import {
   type CrsMode,
   type FieldParcel,
   type GeoGis6ScreenId,
-  type GnssReceiverMode,
   type LiveGnssFix,
   type SyncedProject,
 } from './data/fieldData';
+import {
+  applyGnssFilterAndCorrection,
+  computeGnssFieldStats,
+  DEFAULT_GNSS_CORRECTION,
+  loadGnssCorrectionConfig,
+  saveGnssCorrectionConfig,
+  type GnssCorrectionConfig,
+  type GnssEpochSample,
+} from '@/lib/mobileGnssCorrection';
+import { useNativeGnssStatus } from '@/lib/mobileNativeGnss';
 import {
   checkBackendHealth,
   mobileApiFetch,
@@ -106,13 +115,13 @@ export default function GeoGis6MobileShell() {
 
   const [crsMode, setCrsMode] = useState<CrsMode>('regven');
   const [selectedVertexId, setSelectedVertexId] = useState<string>('V-01');
-  const [shiftEste, setShiftEste] = useState<number>(0);
-  const [shiftNorte, setShiftNorte] = useState<number>(0);
-  const [receiverMode, setReceiverMode] = useState<GnssReceiverMode>('external_rtk');
-  const [antennaHeightM, setAntennaHeightM] = useState<number>(1.8);
-  const [rtkReconverging, setRtkReconverging] = useState<boolean>(false);
+  const [gnssCorrection, setGnssCorrection] = useState<GnssCorrectionConfig>(DEFAULT_GNSS_CORRECTION);
+  const [gnssSamples, setGnssSamples] = useState<GnssEpochSample[]>([]);
+  const [rejectedEpochs, setRejectedEpochs] = useState<number>(0);
+  const [gnssWatchGen, setGnssWatchGen] = useState<number>(0);
   const [cloudSyncing, setCloudSyncing] = useState<boolean>(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const nativeGnss = useNativeGnssStatus(true);
 
   const [backendHealth, setBackendHealth] = useState<BackendHealthStatus>({
     navigatorOnline: typeof navigator === 'undefined' ? true : navigator.onLine !== false,
@@ -135,7 +144,7 @@ export default function GeoGis6MobileShell() {
     [projects],
   );
 
-  const [gnssFix, setGnssFix] = useState<LiveGnssFix>({
+  const [rawGnssFix, setRawGnssFix] = useState<LiveGnssFix>({
     lat: VENEZUELA_DEFAULT_CENTER.lat,
     lng: VENEZUELA_DEFAULT_CENTER.lng,
     alt: 0,
@@ -156,6 +165,35 @@ export default function GeoGis6MobileShell() {
   projectsRef.current = projects;
   const selectedProjectRef = useRef<SyncedProject | null>(selectedProject);
   selectedProjectRef.current = selectedProject;
+  const gnssCorrectionRef = useRef<GnssCorrectionConfig>(gnssCorrection);
+  gnssCorrectionRef.current = gnssCorrection;
+
+  const updateGnssCorrection = useCallback((next: GnssCorrectionConfig) => {
+    setGnssCorrection(next);
+    saveGnssCorrectionConfig(next);
+  }, []);
+
+  const correctedGnssFix = useMemo(
+    () =>
+      applyGnssFilterAndCorrection(
+        rawGnssFix,
+        gnssSamples,
+        gnssCorrection,
+        activeParcel?.huso || 19,
+      ),
+    [activeParcel?.huso, gnssCorrection, gnssSamples, rawGnssFix],
+  );
+
+  const gnssStats = useMemo(
+    () =>
+      computeGnssFieldStats(
+        gnssSamples,
+        rejectedEpochs,
+        rawGnssFix.isLiveHardware,
+        correctedGnssFix.accuracy,
+      ),
+    [correctedGnssFix.accuracy, gnssSamples, rawGnssFix.isLiveHardware, rejectedEpochs],
+  );
 
   const notify = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -352,6 +390,7 @@ export default function GeoGis6MobileShell() {
     void notifyOtaAppReady();
     const devId = getOrCreateFieldDeviceId();
     setDeviceId(devId);
+    setGnssCorrection(loadGnssCorrectionConfig());
 
     const savedAuth = loadSavedAuth();
     if (savedAuth.token && savedAuth.user) {
@@ -443,22 +482,50 @@ export default function GeoGis6MobileShell() {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const c = pos.coords;
+        const acc = c.accuracy || 3.5;
+        const limit = gnssCorrectionRef.current.maxAccuracyM;
+        if (limit !== null && acc > limit) {
+          setRejectedEpochs((n) => n + 1);
+          return;
+        }
+
         const utm = geoToUtmGrs80(c.latitude, c.longitude, activeHuso);
-        setGnssFix({
+        const headingVal =
+          typeof c.heading === 'number' && Number.isFinite(c.heading) ? c.heading : null;
+        const speedVal =
+          typeof c.speed === 'number' && Number.isFinite(c.speed) ? c.speed : null;
+        const altAccVal =
+          typeof c.altitudeAccuracy === 'number' && Number.isFinite(c.altitudeAccuracy)
+            ? c.altitudeAccuracy
+            : null;
+        const ts = pos.timestamp || Date.now();
+
+        const nextSample: GnssEpochSample = {
           lat: c.latitude,
           lng: c.longitude,
           alt: c.altitude ?? 0,
-          accuracy: c.accuracy || 3.5,
+          accuracy: acc,
+          altitudeAccuracy: altAccVal,
           esteRegven: utm.este,
           norteRegven: utm.norte,
+          speed: speedVal,
+          heading: headingVal,
+          timestamp: ts,
+        };
+
+        setGnssSamples((prev) => [...prev.slice(-59), nextSample]);
+        setRawGnssFix({
+          lat: nextSample.lat,
+          lng: nextSample.lng,
+          alt: nextSample.alt,
+          accuracy: nextSample.accuracy,
+          esteRegven: nextSample.esteRegven,
+          norteRegven: nextSample.norte,
           isLiveHardware: true,
-          timestamp: pos.timestamp,
-          heading: typeof c.heading === 'number' && Number.isFinite(c.heading) ? c.heading : null,
-          speed: typeof c.speed === 'number' && Number.isFinite(c.speed) ? c.speed : null,
-          altitudeAccuracy:
-            typeof c.altitudeAccuracy === 'number' && Number.isFinite(c.altitudeAccuracy)
-              ? c.altitudeAccuracy
-              : null,
+          timestamp: ts,
+          heading: headingVal,
+          speed: speedVal,
+          altitudeAccuracy: altAccVal,
         });
       },
       () => {
@@ -467,7 +534,7 @@ export default function GeoGis6MobileShell() {
       { enableHighAccuracy: true, maximumAge: 1500, timeout: 15000 },
     );
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [activeParcel?.huso]);
+  }, [activeParcel?.huso, gnssWatchGen]);
 
   // OTA Update checker (in-app bundle + APK fallback)
   const checkOtaUpdates = useCallback(
@@ -736,9 +803,11 @@ export default function GeoGis6MobileShell() {
       return;
     }
 
-    const lat = gnssFix.isLiveHardware ? gnssFix.lat : VENEZUELA_DEFAULT_CENTER.lat;
-    const lng = gnssFix.isLiveHardware ? gnssFix.lng : VENEZUELA_DEFAULT_CENTER.lng;
-    const utm = geoToUtmGrs80(lat, lng, 19);
+    const lat = correctedGnssFix.isLiveHardware ? correctedGnssFix.lat : VENEZUELA_DEFAULT_CENTER.lat;
+    const lng = correctedGnssFix.isLiveHardware ? correctedGnssFix.lng : VENEZUELA_DEFAULT_CENTER.lng;
+    const utm = correctedGnssFix.isLiveHardware
+      ? { este: correctedGnssFix.esteRegven, norte: correctedGnssFix.norteRegven }
+      : geoToUtmGrs80(lat, lng, 19);
     const parcelCode = `P-${String(parcels.length + 1).padStart(2, '0')}`;
     const starter = buildFieldParcelFromVertices({
       id: `parcel_${Date.now().toString(36)}`,
@@ -754,14 +823,14 @@ export default function GeoGis6MobileShell() {
           id: 'V-01',
           shortId: 'V1',
           code: 'Hito_1',
-          description: gnssFix.isLiveHardware
-            ? 'Punto capturado con GNSS del dispositivo'
+          description: correctedGnssFix.isLiveHardware
+            ? 'Punto capturado con GNSS corregido'
             : 'Punto inicial de proyecto',
           esteRegven: utm.este,
           norteRegven: utm.norte,
           lat,
           lng,
-          cota: gnssFix.alt || 0,
+          cota: correctedGnssFix.alt || 0,
         },
       ],
     });
@@ -777,7 +846,7 @@ export default function GeoGis6MobileShell() {
     setMapFitTrigger((n) => n + 1);
 
     notify(`Parcela ${starter.code} creada en el dispositivo`);
-  }, [gnssFix, notify, parcels, user?.nombre]);
+  }, [correctedGnssFix, notify, parcels, user?.nombre]);
 
   const handleSaveCurrentToCloud = useCallback(async () => {
     const prj = selectedProjectRef.current;
@@ -843,12 +912,12 @@ export default function GeoGis6MobileShell() {
   };
 
   const handleCaptureCurrentVertex = (averagedFix?: Partial<LiveGnssFix>) => {
-    const fixLat = averagedFix?.lat ?? gnssFix.lat;
-    const fixLng = averagedFix?.lng ?? gnssFix.lng;
-    const fixAlt = averagedFix?.alt ?? gnssFix.alt;
-    const fixEste = averagedFix?.esteRegven ?? gnssFix.esteRegven;
-    const fixNorte = averagedFix?.norteRegven ?? gnssFix.norteRegven;
-    const isLive = averagedFix?.isLiveHardware ?? gnssFix.isLiveHardware;
+    const fixLat = averagedFix?.lat ?? correctedGnssFix.lat;
+    const fixLng = averagedFix?.lng ?? correctedGnssFix.lng;
+    const fixAlt = averagedFix?.alt ?? correctedGnssFix.alt;
+    const fixEste = averagedFix?.esteRegven ?? correctedGnssFix.esteRegven;
+    const fixNorte = averagedFix?.norteRegven ?? correctedGnssFix.norteRegven;
+    const isLive = averagedFix?.isLiveHardware ?? correctedGnssFix.isLiveHardware;
 
     if (!activeParcel || !selectedProject || !isLive) return;
 
@@ -902,12 +971,12 @@ export default function GeoGis6MobileShell() {
   };
 
   const handleAddVertexFromGps = (averagedFix?: Partial<LiveGnssFix>) => {
-    const fixLat = averagedFix?.lat ?? gnssFix.lat;
-    const fixLng = averagedFix?.lng ?? gnssFix.lng;
-    const fixAlt = averagedFix?.alt ?? gnssFix.alt;
-    const fixEste = averagedFix?.esteRegven ?? gnssFix.esteRegven;
-    const fixNorte = averagedFix?.norteRegven ?? gnssFix.norteRegven;
-    const isLive = averagedFix?.isLiveHardware ?? gnssFix.isLiveHardware;
+    const fixLat = averagedFix?.lat ?? correctedGnssFix.lat;
+    const fixLng = averagedFix?.lng ?? correctedGnssFix.lng;
+    const fixAlt = averagedFix?.alt ?? correctedGnssFix.alt;
+    const fixEste = averagedFix?.esteRegven ?? correctedGnssFix.esteRegven;
+    const fixNorte = averagedFix?.norteRegven ?? correctedGnssFix.norteRegven;
+    const isLive = averagedFix?.isLiveHardware ?? correctedGnssFix.isLiveHardware;
 
     if (!activeParcel || !selectedProject || !isLive) return;
 
@@ -968,15 +1037,50 @@ export default function GeoGis6MobileShell() {
     notify(`Nuevo vértice ${newId} agregado a ${activeParcel.code}`);
   };
 
-  const handleRestartRtk = () => {
-    if (rtkReconverging) return;
-    setRtkReconverging(true);
-    notify('Reiniciando ambigüedades RTK (FLOAT)...');
-    setTimeout(() => {
-      setRtkReconverging(false);
-      notify('RTK FIXED restaurado · RMS 0.008 m');
-    }, 1200);
-  };
+  const handleClearFilterBuffer = useCallback(() => {
+    setGnssSamples([]);
+    setRejectedEpochs(0);
+    notify('Búfer de filtro GNSS reiniciado');
+  }, [notify]);
+
+  const handleRestartGnss = useCallback(() => {
+    setGnssSamples([]);
+    setRejectedEpochs(0);
+    setGnssWatchGen((n) => n + 1);
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const c = pos.coords;
+          const activeHuso = activeParcel?.huso || 19;
+          const utm = geoToUtmGrs80(c.latitude, c.longitude, activeHuso);
+          const nextRaw: LiveGnssFix = {
+            lat: c.latitude,
+            lng: c.longitude,
+            alt: c.altitude ?? 0,
+            accuracy: c.accuracy || 3.5,
+            esteRegven: utm.este,
+            norteRegven: utm.norte,
+            isLiveHardware: true,
+            timestamp: pos.timestamp || Date.now(),
+            heading: typeof c.heading === 'number' && Number.isFinite(c.heading) ? c.heading : null,
+            speed: typeof c.speed === 'number' && Number.isFinite(c.speed) ? c.speed : null,
+            altitudeAccuracy:
+              typeof c.altitudeAccuracy === 'number' && Number.isFinite(c.altitudeAccuracy)
+                ? c.altitudeAccuracy
+                : null,
+          };
+          setRawGnssFix(nextRaw);
+          notify(`Fix GNSS fresco recibido (±${nextRaw.accuracy.toFixed(1)}m)`);
+        },
+        () => {
+          notify('Receptor GNSS reiniciado · Esperando señal...');
+        },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
+      );
+    } else {
+      notify('Geolocalización no disponible en este dispositivo');
+    }
+  }, [activeParcel?.huso, notify]);
 
   const showMobileChrome = activeScreen !== 'auth';
 
@@ -1007,26 +1111,36 @@ export default function GeoGis6MobileShell() {
                   {SCREEN_TITLES[activeScreen]}
                 </h1>
                 <span
-                  className={`font-stitch-mono text-[10px] tracking-widest uppercase flex items-center gap-1 mt-0.5 ${
-                    rtkReconverging
-                      ? 'text-[#ffb95f]'
+                  className="font-stitch-mono text-[10px] tracking-widest uppercase flex items-center gap-1 mt-0.5"
+                  style={{
+                    color: correctedGnssFix.isLiveHardware
+                      ? gnssStats.solutionTier.colorHex
                       : backendHealth.dbConnected
-                        ? 'text-[#4edea3]'
-                        : 'text-[#ffb95f]'
-                  }`}
+                        ? '#4edea3'
+                        : '#ffb95f',
+                  }}
                 >
                   <span
-                    className={`w-1.5 h-1.5 rounded-full inline-block animate-pulse ${
-                      rtkReconverging || !backendHealth.dbConnected ? 'bg-[#ffb95f]' : 'bg-[#4edea3]'
-                    }`}
+                    className="w-1.5 h-1.5 rounded-full inline-block animate-pulse"
+                    style={{
+                      backgroundColor: correctedGnssFix.isLiveHardware
+                        ? gnssStats.solutionTier.colorHex
+                        : backendHealth.dbConnected
+                          ? '#4edea3'
+                          : '#ffb95f',
+                    }}
                   />
-                  {rtkReconverging
-                    ? 'RTK FLOAT · CONVERGIENDO...'
-                    : gnssFix.isLiveHardware
-                      ? `GNSS LIVE · ±${gnssFix.accuracy.toFixed(1)}M`
-                      : backendHealth.dbConnected
-                        ? 'CLOUD SYNC OK'
-                        : 'MODO LOCAL DISPOSITIVO'}
+                  {correctedGnssFix.isLiveHardware
+                    ? `${gnssStats.solutionTier.shortLabel} · ±${correctedGnssFix.accuracy.toFixed(1)}M${
+                        gnssCorrection.enabled &&
+                        (Math.abs(gnssCorrection.shiftEsteM) > 0.001 ||
+                          Math.abs(gnssCorrection.shiftNorteM) > 0.001)
+                          ? ' · CAL'
+                          : ''
+                      }`
+                    : backendHealth.dbConnected
+                      ? 'CLOUD SYNC OK'
+                      : 'MODO LOCAL DISPOSITIVO'}
                 </span>
               </div>
             </div>
@@ -1058,10 +1172,15 @@ export default function GeoGis6MobileShell() {
                 type="button"
                 onClick={() => setActiveScreen('satelites')}
                 className="flex items-center gap-1 bg-[#151b2b] hover:bg-[#242a3a] px-2 py-1 rounded border border-[#242a3a]"
+                title="Diagnóstico GNSS y Corrección de Coordenadas"
               >
                 <Satellite className="w-3.5 h-3.5 text-[#4edea3]" />
                 <span className="font-stitch-mono text-[11px] text-[#dde2f8] font-semibold">
-                  {receiverMode === 'external_rtk' ? 28 : 19}
+                  {nativeGnss.available && nativeGnss.visibleCount > 0
+                    ? `${nativeGnss.usedCount}/${nativeGnss.visibleCount}`
+                    : correctedGnssFix.isLiveHardware
+                      ? `±${correctedGnssFix.accuracy.toFixed(1)}m`
+                      : '--'}
                 </span>
               </button>
 
@@ -1112,7 +1231,7 @@ export default function GeoGis6MobileShell() {
             activeParcel={activeParcel}
             selectedVertexId={selectedVertexId}
             crsMode={crsMode}
-            gnssFix={gnssFix}
+            gnssFix={correctedGnssFix}
             fitTrigger={mapFitTrigger}
             onToggleCrs={handleToggleCrs}
             onSelectParcel={handleSelectParcel}
@@ -1123,8 +1242,8 @@ export default function GeoGis6MobileShell() {
             onStakeVertex={handleStakeVertex}
             onCenterGps={() =>
               notify(
-                gnssFix.isLiveHardware
-                  ? `Centrado en GPS Real (${gnssFix.esteRegven.toFixed(2)}E, ${gnssFix.norteRegven.toFixed(2)}N)`
+                correctedGnssFix.isLiveHardware
+                  ? `Centrado en GPS (${correctedGnssFix.esteRegven.toFixed(2)}E, ${correctedGnssFix.norteRegven.toFixed(2)}N)`
                   : activeParcel
                     ? `Centrado en Parcela ${activeParcel.code}`
                     : 'Centrado en mapa',
@@ -1153,14 +1272,23 @@ export default function GeoGis6MobileShell() {
             parcels={parcels}
             selectedVertexId={selectedVertexId}
             crsMode={crsMode}
-            gnssFix={gnssFix}
-            shiftEste={shiftEste}
-            shiftNorte={shiftNorte}
+            gnssFix={correctedGnssFix}
+            shiftEste={gnssCorrection.enabled ? gnssCorrection.shiftEsteM : 0}
+            shiftNorte={gnssCorrection.enabled ? gnssCorrection.shiftNorteM : 0}
+            shiftAppliedInFix={true}
             onSelectParcel={handleSelectParcel}
             onSelectVertex={setSelectedVertexId}
             onApplyShift={(dE, dN) => {
-              setShiftEste(dE);
-              setShiftNorte(dN);
+              updateGnssCorrection({
+                ...gnssCorrection,
+                enabled: true,
+                shiftEsteM: dE,
+                shiftNorteM: dN,
+                calibrationLabel:
+                  Math.abs(dE) > 0.0001 || Math.abs(dN) > 0.0001
+                    ? 'Ajuste manual ΔE/ΔN'
+                    : null,
+              });
             }}
             onCaptureCurrentVertex={handleCaptureCurrentVertex}
             onAddVertexFromGps={handleAddVertexFromGps}
@@ -1171,19 +1299,18 @@ export default function GeoGis6MobileShell() {
 
         {activeScreen === 'satelites' && (
           <GnssDiagnosticsScreen
-            receiverMode={receiverMode}
-            antennaHeightM={antennaHeightM}
-            rtkReconverging={rtkReconverging}
-            onChangeReceiver={(m) => {
-              setReceiverMode(m);
-              notify(
-                m === 'external_rtk'
-                  ? 'Receptor externo SOUTH INNO7 (RTK 1408ch) activo'
-                  : 'Receptor interno Android L1+L5 activo',
-              );
-            }}
-            onChangeAntennaHeight={setAntennaHeightM}
-            onRestartRtk={handleRestartRtk}
+            rawGnssFix={rawGnssFix}
+            correctedGnssFix={correctedGnssFix}
+            gnssStats={gnssStats}
+            nativeGnss={nativeGnss}
+            correctionConfig={gnssCorrection}
+            crsMode={crsMode}
+            huso={activeParcel?.huso || 19}
+            parcels={parcels}
+            activeParcel={activeParcel}
+            onUpdateCorrection={updateGnssCorrection}
+            onRestartGnss={handleRestartGnss}
+            onClearFilterBuffer={handleClearFilterBuffer}
             onNotify={notify}
           />
         )}

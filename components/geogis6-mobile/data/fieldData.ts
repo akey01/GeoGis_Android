@@ -143,30 +143,6 @@ export interface LiveGnssFix {
   altitudeAccuracy?: number | null;
 }
 
-export interface SatellitePoint {
-  prn: string;
-  constellation: 'GPS' | 'GLONASS' | 'GALILEO' | 'BEIDOU';
-  elevationDeg: number;
-  azimuthDeg: number;
-  snrDbHz: number;
-  status: 'fixed' | 'tracked' | 'masked';
-  topPx: number;
-  leftPx: number;
-  highlightRing?: boolean;
-}
-
-export interface ConstellationSummary {
-  id: 'GPS' | 'GLONASS' | 'GALILEO' | 'BEIDOU';
-  label: string;
-  used: number;
-  visible: number;
-  percent: number;
-  bands: string;
-  avgSnr: number;
-  accentHex: string;
-  barHex: string;
-}
-
 export const ADICORA_RIGIDA02_SHIFT = {
   deltaEste: -204.33,
   deltaNorte: -311.54,
@@ -550,30 +526,6 @@ export const VENEZUELA_DEFAULT_CENTER = {
   esteRegven: 729500,
   norteRegven: 1159200,
 };
-
-export const GNSS_SATELLITES: SatellitePoint[] = [
-  { prn: 'G04', constellation: 'GPS', elevationDeg: 72, azimuthDeg: 34, snrDbHz: 48, status: 'fixed', topPx: 36, leftPx: 138, highlightRing: true },
-  { prn: 'G12', constellation: 'GPS', elevationDeg: 58, azimuthDeg: 68, snrDbHz: 46, status: 'fixed', topPx: 72, leftPx: 154 },
-  { prn: 'G18', constellation: 'GPS', elevationDeg: 44, azimuthDeg: 118, snrDbHz: 44, status: 'fixed', topPx: 130, leftPx: 160 },
-  { prn: 'G24', constellation: 'GPS', elevationDeg: 81, azimuthDeg: 325, snrDbHz: 49, status: 'fixed', topPx: 92, leftPx: 104, highlightRing: true },
-  { prn: 'R08', constellation: 'GLONASS', elevationDeg: 49, azimuthDeg: 318, snrDbHz: 44, status: 'fixed', topPx: 50, leftPx: 62 },
-  { prn: 'R14', constellation: 'GLONASS', elevationDeg: 42, azimuthDeg: 224, snrDbHz: 43, status: 'fixed', topPx: 152, leftPx: 74 },
-  { prn: 'R21', constellation: 'GLONASS', elevationDeg: 21, azimuthDeg: 158, snrDbHz: 34, status: 'tracked', topPx: 180, leftPx: 140 },
-  { prn: 'E11', constellation: 'GALILEO', elevationDeg: 54, azimuthDeg: 274, snrDbHz: 46, status: 'fixed', topPx: 112, leftPx: 56 },
-  { prn: 'E19', constellation: 'GALILEO', elevationDeg: 66, azimuthDeg: 308, snrDbHz: 47, status: 'fixed', topPx: 76, leftPx: 90 },
-  { prn: 'E27', constellation: 'GALILEO', elevationDeg: 39, azimuthDeg: 196, snrDbHz: 42, status: 'fixed', topPx: 164, leftPx: 104 },
-  { prn: 'C24', constellation: 'BEIDOU', elevationDeg: 76, azimuthDeg: 95, snrDbHz: 46, status: 'fixed', topPx: 104, leftPx: 132 },
-  { prn: 'C30', constellation: 'BEIDOU', elevationDeg: 52, azimuthDeg: 146, snrDbHz: 44, status: 'fixed', topPx: 142, leftPx: 138 },
-  { prn: 'C35', constellation: 'BEIDOU', elevationDeg: 11, azimuthDeg: 338, snrDbHz: 24, status: 'masked', topPx: 22, leftPx: 74 },
-  { prn: 'G09', constellation: 'GPS', elevationDeg: 18, azimuthDeg: 205, snrDbHz: 31, status: 'tracked', topPx: 198, leftPx: 88 },
-];
-
-export const CONSTELLATION_SUMMARIES: ConstellationSummary[] = [
-  { id: 'GPS', label: 'GPS (NAVSTAR)', used: 10, visible: 12, percent: 88, bands: 'L1/C/A + L5', avgSnr: 46, accentHex: '#4cd7f6', barHex: '#4cd7f6' },
-  { id: 'GLONASS', label: 'GLONASS', used: 7, visible: 10, percent: 70, bands: 'G1 + G2 FDMA', avgSnr: 43, accentHex: '#ffb95f', barHex: '#ffb95f' },
-  { id: 'GALILEO', label: 'GALILEO', used: 8, visible: 12, percent: 80, bands: 'E1 + E5a/b', avgSnr: 45, accentHex: '#4edea3', barHex: '#4edea3' },
-  { id: 'BEIDOU', label: 'BEIDOU-3', used: 7, visible: 12, percent: 75, bands: 'B1I + B2a/B3I', avgSnr: 44, accentHex: '#acedff', barHex: '#06b6d4' },
-];
 
 export function getOrCreateFieldDeviceId(): string {
   if (typeof window === 'undefined') return 'apk_server_ssr';

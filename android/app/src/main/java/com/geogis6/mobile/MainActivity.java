@@ -25,6 +25,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(GeoGisGnssPlugin.class);
         super.onCreate(savedInstanceState);
 
         Window window = getWindow();
