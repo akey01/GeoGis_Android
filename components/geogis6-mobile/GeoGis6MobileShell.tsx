@@ -520,7 +520,7 @@ export default function GeoGis6MobileShell() {
           alt: nextSample.alt,
           accuracy: nextSample.accuracy,
           esteRegven: nextSample.esteRegven,
-          norteRegven: nextSample.norte,
+          norteRegven: nextSample.norteRegven,
           isLiveHardware: true,
           timestamp: ts,
           heading: headingVal,
