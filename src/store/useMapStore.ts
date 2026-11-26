@@ -16,7 +16,7 @@ import { create } from 'zustand';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ─── Tipos de capa base disponibles ───────────────────────────────────────────
-export type BaseLayerType = 'streets' | 'satellite' | 'hybrid' | 'esri';
+export type BaseLayerType = 'streets' | 'satellite' | 'hybrid' | 'esri' | 'cad_dark';
 
 // ─── Interfaz principal de Parcela Catastral ──────────────────────────────────
 /**

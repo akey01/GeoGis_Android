@@ -28,7 +28,7 @@ import Translate from 'ol/interaction/Translate';
 import { defaults as defaultInteractions, MouseWheelZoom } from 'ol/interaction';
 import Feature from 'ol/Feature';
 import { Polygon, LineString, MultiPoint } from 'ol/geom';
-import { transform, get as getProjection } from 'ol/proj';
+import { transform, get as getProjection, toLonLat } from 'ol/proj';
 import { Style, Fill, Stroke, Text, Circle as CircleStyle } from 'ol/style';
 import type { Coordinate } from 'ol/coordinate';
 import type { DrawEvent } from 'ol/interaction/Draw';
@@ -38,8 +38,8 @@ import type RenderEvent from 'ol/render/Event';
 import type { FeatureLike } from 'ol/Feature';
 import { toast } from 'react-hot-toast';
 import { cn } from '@/lib/utils';
-import { Move, Crosshair, X, MousePointer, Maximize2, SlidersHorizontal, RotateCcw, Mountain } from 'lucide-react';
-import LayerBand from '@/src/components/map/LayerBand';
+import { Move, Crosshair, X, Maximize2, Mountain, Navigation } from 'lucide-react';
+import TacticalMapRail, { type TacticalPopoverType } from '@/src/components/map/TacticalMapRail';
 import MeasureToolbar from '@/src/components/map/measure/MeasureToolbar';
 import { useMeasureTool } from '@/src/components/map/measure/useMeasureTool';
 import { useMeasureStore } from '@/src/components/map/measure/useMeasureStore';
@@ -98,6 +98,14 @@ VENEZUELA_UTM_CODES.forEach((code) => {
 
 // Centro por defecto: Venezuela central (~Caracas)
 const CENTRO_VENEZUELA_UTM: Coordinate = [625000, 1160000];
+
+const BASE_LAYER_SHORT: Record<BaseLayerType, string> = {
+  satellite: 'SAT',
+  hybrid: 'HÍB',
+  esri: 'ESRI',
+  streets: 'MAPA',
+  cad_dark: 'CAD',
+};
 
 // ── Cache Acotada de Estilos Globales de Capa ────────────────────────────────
 const MAX_STYLE_CACHE_SIZE = 200;
@@ -302,14 +310,15 @@ export default function MapViewer({ className }: MapViewerProps) {
   const [lastDrawnUTM, setLastDrawnUTM] = useState<[number, number][] | null>(null);
   const [showRoads, setShowRoads] = useState<boolean>(true);
   const [showPlaces, setShowPlaces] = useState<boolean>(false);
+  const [showAllParcels, setShowAllParcels] = useState<boolean>(true);
   const [labelSizeOffset, setLabelSizeOffset] = useState<number>(0);
-  const [showMovePanel, setShowMovePanel] = useState<boolean>(false);
+  const [activePopover, setActivePopover] = useState<TacticalPopoverType>('none');
   const [selectedParcelId, setSelectedParcelId] = useState<string | null>(null);
   const [satOffset, setSatOffset] = useState<{ dE: number; dN: number }>({ dE: 0, dN: 0 });
-  const [showSatCalib, setShowSatCalib] = useState<boolean>(false);
-  const [mobileToolsOpen, setMobileToolsOpen] = useState<boolean>(false);
   const [calibStep, setCalibStep] = useState<'off' | 'vertex' | 'photo'>('off');
   const [calibRealUTM, setCalibRealUTM] = useState<{ e: number; n: number } | null>(null);
+  const [mapZoom, setMapZoom] = useState<number>(7);
+  const [scaleInfo, setScaleInfo] = useState<{ denom: number; meters: number }>({ denom: 500000, meters: 10000 });
 
   // ── Subscripción a useAppStore ─────────────────────────────────────────────
   const savedParcels = useAppStore((s) => s.savedParcels);
@@ -366,6 +375,9 @@ export default function MapViewer({ className }: MapViewerProps) {
   const activeParcelIdRef = useRef(activeParcelId);
   useEffect(() => { activeParcelIdRef.current = activeParcelId; }, [activeParcelId]);
 
+  const showAllParcelsRef = useRef(showAllParcels);
+  useEffect(() => { showAllParcelsRef.current = showAllParcels; }, [showAllParcels]);
+
   const labelSizeOffsetRef = useRef(labelSizeOffset);
   useEffect(() => { labelSizeOffsetRef.current = labelSizeOffset; }, [labelSizeOffset]);
 
@@ -414,7 +426,7 @@ export default function MapViewer({ className }: MapViewerProps) {
   // Funciones Globales de Estilo a Nivel de Capa (Reutilización de Estilos & 60 FPS)
   // ───────────────────────────────────────────────────────────────────────────
 
-  const parcelsLayerStyle = useCallback((feature: FeatureLike, resolution: number): Style => {
+  const parcelsLayerStyle = useCallback((feature: FeatureLike, resolution: number): Style | undefined => {
     const isDxf = feature.get('isDxf') === true;
     if (isDxf) {
       const dxfColor = String(feature.get('dxfColor') || '#f43f5e');
@@ -442,6 +454,12 @@ export default function MapViewer({ className }: MapViewerProps) {
 
     const parcel = feature.get('parcelData') as Parcel | undefined;
     const pid = feature.get('parcelId') as string;
+    if (!showAllParcelsRef.current) {
+      const focusPid = selectedParcelIdRef.current || activeParcelIdRef.current;
+      if (focusPid && pid && pid !== focusPid) {
+        return undefined;
+      }
+    }
     const geomType = feature.get('geometryType') || 'cerrada';
 
     const isSelected = selectedParcelIdRef.current === pid || activeParcelIdRef.current === pid;
@@ -564,6 +582,12 @@ export default function MapViewer({ className }: MapViewerProps) {
   // Estilo de Vértices: 100% libre de etiquetas de texto (P1..Pn eliminados para máximos FPS)
   const verticesLayerStyle = useCallback((feature: FeatureLike, resolution: number): Style | undefined => {
     const pid = feature.get('parcelId') as string;
+    if (!showAllParcelsRef.current) {
+      const focusPid = selectedParcelIdRef.current || activeParcelIdRef.current;
+      if (focusPid && pid && pid !== focusPid) {
+        return undefined;
+      }
+    }
     const isSelected = selectedParcelIdRef.current === pid || activeParcelIdRef.current === pid;
     const isMovable = mapToolRef.current === 'move' || movableParcelIdsRef.current.includes(pid);
 
@@ -658,7 +682,7 @@ export default function MapViewer({ className }: MapViewerProps) {
         transition: 0,
       }),
       preload: 0,
-      visible: baseLayer === 'hybrid' || (baseLayer !== 'streets' && showRoads),
+      visible: baseLayer === 'hybrid' || (baseLayer !== 'streets' && baseLayer !== 'cad_dark' && showRoads),
       properties: { name: 'roads' },
     });
 
@@ -678,7 +702,7 @@ export default function MapViewer({ className }: MapViewerProps) {
         transition: 0,
       }),
       preload: 0,
-      visible: baseLayer !== 'streets' && showPlaces,
+      visible: baseLayer !== 'streets' && baseLayer !== 'cad_dark' && showPlaces,
       properties: { name: 'places' },
     });
 
@@ -797,7 +821,22 @@ export default function MapViewer({ className }: MapViewerProps) {
       ]),
     });
 
-    // ResizeObserver
+    // ResizeObserver & Escala/Zoom tácticos
+    const updateScale = () => {
+      const res = view.getResolution() || 1;
+      const zoom = view.getZoom() ?? 7;
+      const center = view.getCenter();
+      const latRad = center ? (toLonLat(center)[1] * Math.PI) / 180 : (10.48 * Math.PI) / 180;
+      const metersPerPx = res * Math.cos(latRad);
+      const barMeters = Math.max(1, Math.round(metersPerPx * 64));
+      const denom = Math.max(50, Math.round(metersPerPx * 3780));
+      setMapZoom(Math.round(zoom * 10) / 10);
+      setScaleInfo({ denom, meters: barMeters });
+    };
+    view.on('change:resolution', updateScale);
+    map.on('moveend', updateScale);
+    updateScale();
+
     const resizeObserver = new ResizeObserver(() => {
       map.updateSize();
     });
@@ -1103,13 +1142,14 @@ export default function MapViewer({ className }: MapViewerProps) {
     const isStreets = baseLayer === 'streets';
     const isGoogleSat = baseLayer === 'satellite' || baseLayer === 'hybrid';
     const isEsriSat = baseLayer === 'esri';
+    const isCadDark = baseLayer === 'cad_dark';
     const isAnySat = isGoogleSat || isEsriSat;
 
     streetsLayerRef.current.setVisible(isStreets);
     satelliteLayerRef.current.setVisible(isGoogleSat);
     esriLayerRef.current.setVisible(isEsriSat);
-    roadsLayerRef.current.setVisible(baseLayer === 'hybrid' || (isAnySat && showRoads));
-    placesLayerRef.current.setVisible(isAnySat && showPlaces);
+    roadsLayerRef.current.setVisible(!isCadDark && (baseLayer === 'hybrid' || (isAnySat && showRoads)));
+    placesLayerRef.current.setVisible(!isCadDark && isAnySat && showPlaces);
   }, [baseLayer, mapType, showRoads, showPlaces]);
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -1121,6 +1161,7 @@ export default function MapViewer({ className }: MapViewerProps) {
   const contourLoadingIds = useContourStore((s) => s.loadingParcelIds);
   const toggleParcelContours = useContourStore((s) => s.toggleParcelContours);
   const measureActive = useMeasureStore((s) => s.mode !== 'off');
+  const measurePanelOpen = useMeasureStore((s) => s.panelOpen);
   useEffect(() => {
     // Medir y "Nuevo Predio" son mutuamente excluyentes
     if (measureActive && isDrawingRef.current) {
@@ -1128,6 +1169,11 @@ export default function MapViewer({ className }: MapViewerProps) {
       setIsDrawing(false);
     }
   }, [measureActive]);
+  useEffect(() => {
+    if (measurePanelOpen) {
+      setActivePopover('none');
+    }
+  }, [measurePanelOpen]);
 
   // ───────────────────────────────────────────────────────────────────────────
   // Repintado Instantáneo (60 FPS) sin destruir geometrías ante cambios de estilo
@@ -1136,7 +1182,7 @@ export default function MapViewer({ className }: MapViewerProps) {
     parcelsLayerRef.current?.changed();
     activeLayerRef.current?.changed();
     verticesLayerRef.current?.changed();
-  }, [selectedParcelId, activeParcelId, movableParcelIds, mapTool, labelSizeOffset, hatchColor, hatchOpacity]);
+  }, [selectedParcelId, activeParcelId, movableParcelIds, mapTool, labelSizeOffset, hatchColor, hatchOpacity, showAllParcels]);
 
   // ───────────────────────────────────────────────────────────────────────────
   // EFECTO 1: Carga y Actualización Estructural de savedParcels y dxfPreview
@@ -1505,14 +1551,124 @@ export default function MapViewer({ className }: MapViewerProps) {
   }, [viewTarget.trigger, viewTarget.id, viewTarget.type, savedParcels, results, activeParcelId, huso]);
 
   // ── Handlers de UI ─────────────────────────────────────────────────────────
+  const handleChangePopover = useCallback((next: TacticalPopoverType) => {
+    if (next !== 'none' && useMeasureStore.getState().panelOpen) {
+      useMeasureStore.getState().closePanel();
+    }
+    setActivePopover(next);
+  }, []);
+
   const handleToggleDraw = useCallback(() => {
     const draw = drawInteractionRef.current;
     if (!draw) return;
-    const next = !isDrawing;
-    if (next) useMeasureStore.getState().setMode('off');
+    const next = !isDrawingRef.current;
+    if (next) {
+      useMeasureStore.getState().closePanel();
+      setActivePopover('none');
+      setMapTool('select');
+    }
     draw.setActive(next);
     setIsDrawing(next);
-  }, [isDrawing]);
+  }, []);
+
+  const handleSelectTool = useCallback(() => {
+    setMapTool('select');
+    useMeasureStore.getState().closePanel();
+    setActivePopover('none');
+    if (isDrawingRef.current) {
+      drawInteractionRef.current?.setActive(false);
+      setIsDrawing(false);
+    }
+  }, []);
+
+  const handleToggleMoveTool = useCallback(() => {
+    setMapTool((prev) => {
+      const next = prev === 'move' ? 'select' : 'move';
+      if (next === 'move') {
+        useMeasureStore.getState().closePanel();
+        if (isDrawingRef.current) {
+          drawInteractionRef.current?.setActive(false);
+          setIsDrawing(false);
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleMeasure = useCallback(() => {
+    const ms = useMeasureStore.getState();
+    if (ms.panelOpen) {
+      ms.closePanel();
+    } else {
+      setActivePopover('none');
+      if (isDrawingRef.current) {
+        drawInteractionRef.current?.setActive(false);
+        setIsDrawing(false);
+      }
+      ms.openPanel();
+    }
+  }, []);
+
+  const handleFitAll = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const pExt = parcelsSourceRef.current.getExtent();
+    const aExt = activeSourceRef.current.getExtent();
+    const hasP = pExt && isFinite(pExt[0]) && isFinite(pExt[1]);
+    const hasA = aExt && isFinite(aExt[0]) && isFinite(aExt[1]);
+    const targetExt = hasP ? pExt : hasA ? aExt : null;
+    if (targetExt) {
+      map.getView().fit(targetExt, { duration: 450, padding: [70, 70, 70, 70], maxZoom: 19 });
+      toast('Encuadradas todas las parcelas del proyecto', { id: 'fit-all-toast', duration: 2000 });
+    } else {
+      const centro = transform(CENTRO_VENEZUELA_UTM, 'EPSG:32619', 'EPSG:3857');
+      map.getView().animate({ center: centro, zoom: 7, duration: 450 });
+    }
+  }, []);
+
+  const handleToggleShowAllParcels = useCallback(() => {
+    setShowAllParcels((prev) => {
+      const next = !prev;
+      toast(next ? `Mostrando todas (${savedParcelsRef.current.length} parcelas)` : 'Solo parcela activa visible', {
+        id: 'layer-scope-toast',
+        duration: 2000,
+      });
+      return next;
+    });
+  }, []);
+
+  const handleZoomBy = useCallback((delta: number) => {
+    const view = mapRef.current?.getView();
+    if (!view) return;
+    const current = view.getZoom() ?? 7;
+    view.animate({ zoom: Math.max(3, Math.min(24, current + delta)), duration: 220 });
+  }, []);
+
+  const handleResetSatCalib = useCallback(() => {
+    setSatOffset({ dE: 0, dN: 0 });
+    setCalibStep('off');
+    setCalibRealUTM(null);
+  }, []);
+
+  const handleToggleCalibPin = useCallback(() => {
+    if (calibStepRef.current !== 'off') {
+      setCalibStep('off');
+      setCalibRealUTM(null);
+      return;
+    }
+    if (isDrawingRef.current) {
+      drawInteractionRef.current?.setActive(false);
+      setIsDrawing(false);
+    }
+    useMeasureStore.getState().closePanel();
+    setCalibStep('vertex');
+    setCalibRealUTM(null);
+    toast('Paso 1/2: Haz clic sobre el vértice conocido de tu polígono', {
+      icon: '🎯',
+      id: 'calib-step-toast',
+      duration: 4000,
+    });
+  }, []);
 
   // Activar siempre la capa satelital al iniciar la aplicación (salvo que el perfil la tenga bloqueada en el panel)
   useEffect(() => {
@@ -1525,14 +1681,14 @@ export default function MapViewer({ className }: MapViewerProps) {
 
   // Si el administrador desactiva explícitamente la capa satelital para el perfil del usuario, cambiar a callejero
   useEffect(() => {
-    if (Boolean(user?.rol) && !canUseSatellite && baseLayer !== 'streets') {
+    if (Boolean(user?.rol) && !canUseSatellite && baseLayer !== 'streets' && baseLayer !== 'cad_dark') {
       toggleBaseLayer('streets');
       setMapType('standard');
     }
   }, [user?.rol, canUseSatellite, baseLayer, toggleBaseLayer, setMapType]);
 
-  const handleToggleLayer = (mode: BaseLayerType) => {
-    if (mode !== 'streets' && !canUseSatellite) {
+  const handleToggleLayer = useCallback((mode: BaseLayerType) => {
+    if (mode !== 'streets' && mode !== 'cad_dark' && !canUseSatellite) {
       toast.error('Modo DEMO: Ortofotos y capas satelitales están bloqueadas.');
       return;
     }
@@ -1542,15 +1698,15 @@ export default function MapViewer({ className }: MapViewerProps) {
       setShowRoads(false);
     }
     toggleBaseLayer(mode);
-    setMapType(mode === 'streets' ? 'standard' : 'satellite');
-  };
+    setMapType(mode === 'streets' || mode === 'cad_dark' ? 'standard' : 'satellite');
+  }, [canUseSatellite, toggleBaseLayer, setMapType]);
 
-  const handleToggleRoads = () => {
+  const handleToggleRoads = useCallback(() => {
     if (!canUseSatellite) {
       toast.error('Modo DEMO: Capas satelitales bloqueadas.');
       return;
     }
-    if (baseLayer === 'streets') {
+    if (baseLayer === 'streets' || baseLayer === 'cad_dark') {
       handleToggleLayer('satellite');
     } else if (baseLayer === 'hybrid') {
       toggleBaseLayer('satellite');
@@ -1558,39 +1714,106 @@ export default function MapViewer({ className }: MapViewerProps) {
       return;
     }
     setShowRoads((prev) => !prev);
-  };
+  }, [canUseSatellite, baseLayer, handleToggleLayer, toggleBaseLayer]);
 
-  const handleTogglePlaces = () => {
+  const handleTogglePlaces = useCallback(() => {
     if (!canUseSatellite) {
       toast.error('Modo DEMO: Capas satelitales bloqueadas.');
       return;
     }
-    if (baseLayer === 'streets') {
+    if (baseLayer === 'streets' || baseLayer === 'cad_dark') {
       handleToggleLayer('satellite');
     }
     setShowPlaces((prev) => !prev);
-  };
+  }, [canUseSatellite, baseLayer, handleToggleLayer]);
 
-  const handleIncreaseText = () => {
+  const handleIncreaseText = useCallback(() => {
     setLabelSizeOffset((prev) => Math.min(8, prev + 1));
-  };
+  }, []);
 
-  const handleDecreaseText = () => {
+  const handleDecreaseText = useCallback(() => {
     setLabelSizeOffset((prev) => Math.max(-4, prev - 1));
-  };
+  }, []);
 
-  const handleResetText = () => {
+  const handleResetText = useCallback(() => {
     setLabelSizeOffset(0);
-  };
+  }, []);
+
+  // Atajos de teclado tácticos de escritorio
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === 'v') {
+        handleSelectTool();
+      } else if (key === 'm') {
+        handleToggleMoveTool();
+      } else if (key === 'd') {
+        handleToggleDraw();
+      } else if (key === 'r') {
+        handleToggleMeasure();
+      } else if (key === 'f') {
+        handleFitAll();
+      } else if (key === 'l') {
+        handleToggleShowAllParcels();
+      } else if (key === 'b') {
+        handleChangePopover(activePopover === 'layers' ? 'none' : 'layers');
+      } else if (key === 'c') {
+        handleChangePopover(activePopover === 'calib' ? 'none' : 'calib');
+      } else if (e.key === '+' || e.key === '=') {
+        handleZoomBy(1);
+      } else if (e.key === '-') {
+        handleZoomBy(-1);
+      } else if (e.key === 'Escape') {
+        setCalibStep('off');
+        setCalibRealUTM(null);
+        handleSelectTool();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    activePopover,
+    handleChangePopover,
+    handleFitAll,
+    handleSelectTool,
+    handleToggleDraw,
+    handleToggleMeasure,
+    handleToggleMoveTool,
+    handleToggleShowAllParcels,
+    handleZoomBy,
+  ]);
 
   return (
-    <div className={`relative w-full h-full overflow-hidden rounded-xl flex flex-col ${className ?? ''}`}>
-     {/* Área del mapa: los overlays absolutos se posicionan respecto a este contenedor, por encima de la banda inferior */}
+    <div className={`relative w-full h-full overflow-hidden rounded-xl flex flex-col bg-[#080e1d] ${className ?? ''}`}>
+     {/* Área del mapa táctico completo (sin banda inferior de capas) */}
      <div className="relative flex-1 min-h-0 w-full">
-      {/* Contenedor Canvas OpenLayers con protección de menú contextual en modo Demo */}
+      {/* Contenedor Canvas OpenLayers con retícula CAD Oscuro opcional y protección en modo Demo */}
       <div
         ref={mapContainerRef}
         className="w-full h-full"
+        style={
+          baseLayer === 'cad_dark'
+            ? {
+                backgroundColor: '#080e1d',
+                backgroundImage:
+                  'radial-gradient(rgba(134, 147, 151, 0.25) 1px, transparent 1px), linear-gradient(to right, rgba(76, 215, 246, 0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(76, 215, 246, 0.05) 1px, transparent 1px)',
+                backgroundSize: '36px 36px, 72px 72px, 72px 72px',
+              }
+            : undefined
+        }
         onContextMenu={(e) => {
           if (isDemo) {
             e.preventDefault();
@@ -1602,8 +1825,8 @@ export default function MapViewer({ className }: MapViewerProps) {
 
       {/* ── Banner / HUD de Modo Mover Activo ──────────────────────────────── */}
       {mapTool === 'move' && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 animate-bounce">
-          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-500 text-slate-950 text-xs font-bold shadow-2xl shadow-amber-500/50 border border-amber-300">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 animate-bounce">
+          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#ffb95f] text-[#563400] text-xs font-bold shadow-2xl border border-[#ffd8a3]">
             <Move className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '4s' }} />
             <span>Modo Mover Activo: Arrastra cualquier parcela con el ratón</span>
           </div>
@@ -1612,8 +1835,8 @@ export default function MapViewer({ className }: MapViewerProps) {
 
       {/* ── Banner / HUD de Herramienta Interactiva "Amarrar con Punto" ────── */}
       {calibStep !== 'off' && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30">
-          <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-emerald-600/95 text-white text-xs font-bold shadow-2xl shadow-emerald-500/40 border border-emerald-300 backdrop-blur-md">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30">
+          <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#00a572]/95 text-[#080e1d] text-xs font-bold shadow-2xl border border-[#6ffbbe] backdrop-blur-md">
             <Crosshair className="w-4 h-4 animate-pulse shrink-0" />
             <span>
               {calibStep === 'vertex'
@@ -1625,7 +1848,7 @@ export default function MapViewer({ className }: MapViewerProps) {
                 setCalibStep('off');
                 setCalibRealUTM(null);
               }}
-              className="ml-1 p-0.5 rounded-full bg-black/25 hover:bg-black/40 text-white transition-colors"
+              className="ml-1 p-0.5 rounded-full bg-black/20 hover:bg-black/35 text-white transition-colors"
               title="Cancelar amarre"
             >
               <X className="w-3.5 h-3.5" />
@@ -1640,17 +1863,17 @@ export default function MapViewer({ className }: MapViewerProps) {
         if (!targetId) return null;
         const parcel = savedParcels.find((p) => p.id === targetId);
         const name = parcel?.nombre || (targetId === 'active' ? 'Parcela Activa (En Cálculo)' : 'Parcela');
-        const color = parcel?.hatchColor || '#38bdf8';
+        const color = parcel?.hatchColor || '#4cd7f6';
         const isMovableThis = mapTool === 'move' || movableParcelIds.includes(targetId);
 
         return (
-          <div className="absolute top-16 left-4 z-20 max-w-sm bg-slate-900/95 backdrop-blur-xl border border-cyan-500/40 rounded-xl p-3 shadow-2xl shadow-black/70 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="absolute top-14 left-3 z-20 max-w-sm bg-[#191f2f]/95 backdrop-blur-xl border border-[#2f3445] rounded-xl p-3 shadow-2xl shadow-black/70 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex items-start justify-between gap-3 mb-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="w-3 h-3 rounded-full shrink-0 border border-white/40" style={{ backgroundColor: color }} />
                 <div className="min-w-0">
-                  <h4 className="text-xs font-bold text-white truncate">{name}</h4>
-                  <p className="text-[10px] text-cyan-400 font-mono">
+                  <h4 className="text-xs font-bold text-[#dde2f8] truncate">{name}</h4>
+                  <p className="text-[10px] text-[#4cd7f6] font-mono tabular-nums">
                     {parcel?.area ? `${parcel.area.toFixed(2)} m²` : 'Seleccionada con ratón'}
                     {parcel?.perim ? ` · ${parcel.perim.toFixed(2)} ml` : ''}
                   </p>
@@ -1658,21 +1881,21 @@ export default function MapViewer({ className }: MapViewerProps) {
               </div>
               <button
                 onClick={() => setSelectedParcelId(null)}
-                className="text-slate-400 hover:text-white transition-colors p-0.5"
+                className="text-[#869397] hover:text-[#dde2f8] transition-colors p-0.5"
                 title="Deseleccionar"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5 pt-1 border-t border-white/10">
+            <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#242a3a]">
               <button
                 onClick={() => toggleParcelMovement(targetId)}
                 className={cn(
                   'flex-1 flex items-center justify-center gap-1.5 py-1 px-2 rounded-lg text-[11px] font-bold transition-all duration-200 border',
                   isMovableThis
-                    ? 'bg-amber-500 border-amber-400 text-slate-950 shadow-md shadow-amber-500/30'
-                    : 'bg-slate-800 border-slate-600 text-slate-300 hover:border-amber-400 hover:text-white'
+                    ? 'bg-[#ffb95f] border-[#ffb95f] text-[#563400] shadow-md'
+                    : 'bg-[#0d1322] border-[#242a3a] text-[#bcc9cd] hover:border-[#ffb95f] hover:text-[#dde2f8]'
                 )}
                 title="Habilitar arrastre con el ratón solo para esta parcela"
               >
@@ -1682,10 +1905,10 @@ export default function MapViewer({ className }: MapViewerProps) {
 
               <button
                 onClick={() => centerOnParcel(targetId)}
-                className="flex items-center justify-center gap-1 py-1 px-2.5 rounded-lg text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 border border-white/10 text-slate-300 hover:text-white transition-colors"
+                className="flex items-center justify-center gap-1 py-1 px-2.5 rounded-lg text-[11px] font-semibold bg-[#0d1322] hover:bg-[#242a3a] border border-[#242a3a] text-[#bcc9cd] hover:text-[#4cd7f6] transition-colors"
                 title="Centrar mapa en esta parcela"
               >
-                <Maximize2 className="w-3 h-3 text-cyan-400" />
+                <Maximize2 className="w-3 h-3 text-[#4cd7f6]" />
                 Centrar
               </button>
 
@@ -1711,8 +1934,8 @@ export default function MapViewer({ className }: MapViewerProps) {
                     className={cn(
                       'flex items-center justify-center gap-1 py-1 px-2 rounded-lg text-[11px] font-bold border transition-colors disabled:opacity-50',
                       hasC
-                        ? 'bg-amber-500/20 border-amber-400 text-amber-300'
-                        : 'bg-slate-800 hover:bg-slate-700 border-white/10 text-slate-300 hover:text-amber-300'
+                        ? 'bg-[#ffb95f]/20 border-[#ffb95f] text-[#ffb95f]'
+                        : 'bg-[#0d1322] hover:bg-[#242a3a] border-[#242a3a] text-[#bcc9cd] hover:text-[#ffb95f]'
                     )}
                     title="Proyectar u ocultar curvas de nivel satelitales en esta parcela"
                   >
@@ -1726,438 +1949,129 @@ export default function MapViewer({ className }: MapViewerProps) {
         );
       })()}
 
-      {/* ── Herramientas de Medición (estilo Google Earth, módulo independiente) ── */}
-      <MeasureToolbar />
+      {/* ── Panel de Medición Anclado a la Paleta Única ────────────────────── */}
+      <MeasureToolbar hideTrigger />
 
       {/* ── HUD Altimétrico y Modal Imprimible de Curvas de Nivel ────────────── */}
       <ContourMapHUD />
       <ContourPrintModal />
 
-      {/* ── Selector de Capas Base y Controles del Viewport (Colapsable en Móvil) ── */}
-      <div className="absolute top-3 right-3 z-30 flex flex-col items-end gap-2">
+      {/* ── Micro-HUD Táctico Superior Derecho: Norte y Escala (estilo Android) ─ */}
+      <div className="absolute top-3 right-3 flex flex-col items-end gap-1.5 z-20 pointer-events-auto">
         <button
           type="button"
-          onClick={() => setMobileToolsOpen((v) => !v)}
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border shadow-2xl backdrop-blur-md transition-all duration-150',
-            mobileToolsOpen || isDrawing || mapTool === 'move' || satOffset.dE !== 0 || satOffset.dN !== 0
-              ? 'bg-emerald-500/90 border-emerald-400 text-slate-950 shadow-emerald-500/30'
-              : 'bg-slate-900/90 border-white/10 text-slate-200 hover:border-cyan-500/50'
-          )}
+          onClick={() => {
+            mapRef.current?.getView().animate({ rotation: 0, duration: 250 });
+            toast('Norte Geodésico restablecido (Az 0°)', { id: 'north-reset', duration: 1800 });
+          }}
+          title="Restablecer Norte Geodésico (Az 0°)"
+          className="w-9 h-9 rounded-full bg-[#191f2f]/90 backdrop-blur-md flex flex-col items-center justify-center shadow-lg active:scale-95 transition-transform border border-[#2f3445] hover:border-[#4cd7f6]/60"
         >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          <span>{mobileToolsOpen ? 'Ocultar' : 'Herramientas'}</span>
+          <span className="font-mono text-[8.5px] font-bold text-[#ffb4ab] leading-none">N</span>
+          <Navigation className="w-3.5 h-3.5 text-[#4cd7f6]" />
         </button>
 
-        {mobileToolsOpen && (
-          <div className="flex flex-col gap-2 w-48 max-h-[60vh] overflow-y-auto p-1.5 bg-slate-900/95 border border-white/10 backdrop-blur-xl rounded-2xl shadow-2xl">
-        {/* Barra de Modos de Interacción (Seleccionar vs Mover vs Dibujar) */}
-        <div className="flex flex-col gap-1 p-1 bg-slate-950/60 border border-white/5 rounded-xl">
-          <div className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-wider px-1.5 pt-0.5">
-            Herramienta
-          </div>
-          <div className="grid grid-cols-2 gap-1">
-            <button
-              onClick={() => {
-                setMapTool('select');
-                useMeasureStore.getState().setMode('off');
-                if (isDrawing) {
-                  drawInteractionRef.current?.setActive(false);
-                  setIsDrawing(false);
-                }
-              }}
-              className={cn(
-                'flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-bold transition-all duration-150 border',
-                mapTool === 'select' && !isDrawing
-                  ? 'bg-cyan-500 border-cyan-400 text-white shadow-md shadow-cyan-500/30'
-                  : 'bg-slate-800/80 border-transparent text-slate-400 hover:text-white'
-              )}
-              title="Modo Selección: Clic sobre cualquier parcela o vértice para seleccionarla"
-            >
-              <MousePointer className="w-3.5 h-3.5" />
-              <span>Elegir</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setMapTool('move');
-                useMeasureStore.getState().setMode('off');
-                if (isDrawing) {
-                  drawInteractionRef.current?.setActive(false);
-                  setIsDrawing(false);
-                }
-              }}
-              className={cn(
-                'flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs font-bold transition-all duration-150 border',
-                mapTool === 'move'
-                  ? 'bg-amber-500 border-amber-400 text-slate-950 shadow-md shadow-amber-500/30 animate-pulse'
-                  : 'bg-slate-800/80 border-transparent text-slate-400 hover:text-amber-300'
-              )}
-              title="Modo Mover: Arrastra cualquier parcela directamente con el ratón"
-            >
-              <Move className="w-3.5 h-3.5" />
-              <span>Mover</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Ajuste de Tamaño de Texto de Parcelas (A- / A+) */}
-        <div className="flex flex-col gap-1 pt-1.5 border-t border-white/10">
-          <div className="flex items-center justify-between px-1 text-[10px] text-slate-400 font-medium">
-            <span>Texto Parcela</span>
-            <span className="font-mono text-cyan-400 font-bold">
-              {labelSizeOffset > 0 ? `+${labelSizeOffset}` : labelSizeOffset === 0 ? 'Normal' : `${labelSizeOffset}`}
+        <div className="bg-[#191f2f]/90 backdrop-blur-md px-2 py-1 rounded-lg flex flex-col items-end shadow-md border border-[#242a3a]">
+          <span className="font-mono text-[9.5px] text-[#bcc9cd] tabular-nums">
+            1:{scaleInfo.denom.toLocaleString('en-US')} · {scaleInfo.meters}m
+          </span>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="font-mono text-[8.5px] text-[#4cd7f6] font-bold tabular-nums">
+              Z{mapZoom.toFixed(1)} · {BASE_LAYER_SHORT[baseLayer]}
             </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={handleDecreaseText}
-              disabled={labelSizeOffset <= -4}
-              title="Disminuir altura de texto de parcelas (A-)"
-              className="flex-1 flex items-center justify-center py-1.5 rounded-md bg-slate-900/80 border border-white/10 text-xs font-bold text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-40 transition-colors shadow-md"
-            >
-              A -
-            </button>
-            <button
-              onClick={handleResetText}
-              title="Restablecer tamaño predeterminado (1:1)"
-              className="px-2 py-1.5 rounded-md bg-slate-900/80 border border-white/10 text-[10px] font-mono text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shadow-md"
-            >
-              1:1
-            </button>
-            <button
-              onClick={handleIncreaseText}
-              disabled={labelSizeOffset >= 8}
-              title="Aumentar altura de texto de parcelas (A+)"
-              className="flex-1 flex items-center justify-center py-1.5 rounded-md bg-slate-900/80 border border-white/10 text-xs font-bold text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-40 transition-colors shadow-md"
-            >
-              A +
-            </button>
-          </div>
-        </div>
-
-        {/* Acción Nuevo Predio */}
-        <div className="pt-1.5 border-t border-white/10">
-          <button
-            onClick={handleToggleDraw}
-            className={['w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold shadow-xl border transition-all duration-200',
-              isDrawing
-                ? 'bg-orange-500 border-orange-400 text-white scale-105 animate-pulse shadow-orange-500/30'
-                : 'bg-slate-900/80 border-white/10 text-slate-300 hover:border-orange-500/50 hover:text-white backdrop-blur-sm',
-            ].join(' ')}
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-            {isDrawing ? 'Cancelar' : 'Nuevo Predio'}
-          </button>
-        </div>
-
-        {/* Calibración de Imagen Satelital (Offset Local ΔE / ΔN en metros) */}
-        <div className="relative pt-1.5 border-t border-white/10">
-          <button
-            onClick={() => setShowSatCalib((v) => !v)}
-            title="Alinear visualmente la ortofoto satelital (ΔE / ΔN en metros) sin alterar coordenadas de parcelas"
-            className={cn(
-              'w-full flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold shadow-xl border transition-all duration-200 backdrop-blur-sm',
-              satOffset.dE !== 0 || satOffset.dN !== 0
-                ? 'bg-emerald-500/90 border-emerald-400 text-white shadow-emerald-500/30'
-                : showSatCalib
-                  ? 'bg-slate-800 border-cyan-500/50 text-white'
-                  : 'bg-slate-900/80 border-white/10 text-slate-300 hover:border-cyan-500/50 hover:text-white'
-            )}
-          >
-            <span className="flex items-center gap-1.5 truncate">
-              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Calibrar Satélite</span>
-            </span>
-            {(satOffset.dE !== 0 || satOffset.dN !== 0) && (
-              <span className="text-[9px] px-1 rounded bg-black/30 font-mono font-bold shrink-0">
-                ON
-              </span>
-            )}
-          </button>
-
-          {showSatCalib && (
-            <div className="mt-1.5 p-2.5 bg-slate-900/95 border border-white/15 backdrop-blur-xl rounded-xl shadow-2xl flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono font-bold text-cyan-400 uppercase tracking-wider">
-                  Calibrar Satélite
-                </span>
-                <button
-                  onClick={() => {
-                    setSatOffset({ dE: 0, dN: 0 });
-                    setCalibStep('off');
-                    setCalibRealUTM(null);
-                  }}
-                  disabled={satOffset.dE === 0 && satOffset.dN === 0 && calibStep === 'off'}
-                  title="Restablecer desplazamiento a 0 m"
-                  className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-white/10 text-slate-300 hover:text-white hover:border-cyan-500/40 disabled:opacity-40 transition-colors font-mono"
-                >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                  Reset
-                </button>
-              </div>
-
-              {/* Botón Interactivo de 2 Clics: Amarrar con Punto */}
-              <button
-                onClick={() => {
-                  if (calibStep !== 'off') {
-                    setCalibStep('off');
-                    setCalibRealUTM(null);
-                  } else {
-                    if (isDrawing) {
-                      drawInteractionRef.current?.setActive(false);
-                      setIsDrawing(false);
-                    }
-                    useMeasureStore.getState().setMode('off');
-                    setCalibStep('vertex');
-                    setCalibRealUTM(null);
-                    toast('Paso 1/2: Haz clic sobre el vértice conocido de tu polígono', {
-                      icon: '🎯',
-                      id: 'calib-step-toast',
-                      duration: 4000,
-                    });
-                  }
-                }}
-                title="Alinear foto en 2 clics: 1) Clic en vértice del polígono, 2) Clic en rincón real sobre la foto satelital"
-                className={cn(
-                  'w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-bold border transition-all duration-150',
-                  calibStep !== 'off'
-                    ? 'bg-emerald-500 border-emerald-300 text-slate-950 shadow-md shadow-emerald-500/30 animate-pulse'
-                    : 'bg-cyan-500/15 border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/25 hover:text-white'
-                )}
-              >
-                <Crosshair className="w-3.5 h-3.5 shrink-0" />
-                <span>
-                  {calibStep === 'vertex'
-                    ? '1/2 Clic en Vértice...'
-                    : calibStep === 'photo'
-                      ? '2/2 Clic en Foto...'
-                      : 'Amarrar con Punto'}
-                </span>
-              </button>
-
-              <div className="grid grid-cols-2 gap-1.5">
-                <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] font-mono text-slate-400">ΔE (m)</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={satOffset.dE}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      setSatOffset((prev) => ({ ...prev, dE: Number.isFinite(val) ? val : 0 }));
-                    }}
-                    className="w-full px-1.5 py-1 rounded bg-slate-950 border border-white/10 text-xs font-mono text-cyan-300 focus:outline-none focus:border-cyan-400"
-                  />
-                </label>
-                <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] font-mono text-slate-400">ΔN (m)</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={satOffset.dN}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      setSatOffset((prev) => ({ ...prev, dN: Number.isFinite(val) ? val : 0 }));
-                    }}
-                    className="w-full px-1.5 py-1 rounded bg-slate-950 border border-white/10 text-xs font-mono text-emerald-300 focus:outline-none focus:border-emerald-400"
-                  />
-                </label>
-              </div>
-              <p className="text-[9px] text-slate-400 leading-tight">
-                Alinea visualmente la ortofoto con los vértices GNSS sin alterar coordenadas.
-              </p>
+            <div className="w-10 h-1 bg-[#2f3445] flex">
+              <div className="w-1/2 h-full bg-[#dde2f8]" />
+              <div className="w-1/2 h-full bg-[#242a3a]" />
             </div>
-          )}
-        </div>
           </div>
-        )}
+        </div>
       </div>
 
-      {/* ── Panel de Control de Movimiento por Parcela ─────────────────────── */}
-      {savedParcels.length > 0 && (
-      <div className="absolute bottom-14 right-3 z-20">
-        <button
-          onClick={() => setShowMovePanel((v) => !v)}
-          className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold shadow-2xl border transition-all duration-200 backdrop-blur-md',
-            movableParcelIds.length > 0
-              ? 'bg-amber-500/90 border-amber-400 text-white shadow-amber-500/30 animate-pulse'
-              : showMovePanel
-                ? 'bg-slate-700 border-white/20 text-white'
-                : 'bg-slate-900/85 border-white/10 text-slate-300 hover:text-white hover:border-white/20'
-          )}
-          title={movableParcelIds.length > 0 ? `${movableParcelIds.length} parcela(s) en modo movimiento` : 'Control de movimiento de parcelas'}
-        >
-          <Move className="w-3.5 h-3.5" />
-          {movableParcelIds.length > 0 ? `Moviendo ${movableParcelIds.length}` : 'Mover parcelas'}
-        </button>
+      {/* ── Paleta Táctica Única Vertical (Estilo Android + Exclusivos Desktop) ─ */}
+      <TacticalMapRail
+        baseLayer={baseLayer}
+        roadsActive={baseLayer === 'hybrid' || (showRoads && baseLayer !== 'streets' && baseLayer !== 'cad_dark')}
+        placesActive={showPlaces && baseLayer !== 'streets' && baseLayer !== 'cad_dark'}
+        canUseSatellite={canUseSatellite}
+        showAllParcels={showAllParcels}
+        parcelsCount={savedParcels.length}
+        onFitAll={handleFitAll}
+        onToggleShowAllParcels={handleToggleShowAllParcels}
+        onSelectLayer={handleToggleLayer}
+        onToggleRoads={handleToggleRoads}
+        onTogglePlaces={handleTogglePlaces}
+        onZoomIn={() => handleZoomBy(1)}
+        onZoomOut={() => handleZoomBy(-1)}
+        mapTool={mapTool}
+        isDrawing={isDrawing}
+        measureOpen={measurePanelOpen}
+        savedParcels={savedParcels}
+        selectedParcelId={selectedParcelId}
+        movableParcelIds={movableParcelIds}
+        onSelectTool={handleSelectTool}
+        onToggleMoveTool={handleToggleMoveTool}
+        onToggleParcelMovement={toggleParcelMovement}
+        onClearAllParcelMovement={clearAllParcelMovement}
+        onToggleDraw={handleToggleDraw}
+        onToggleMeasure={handleToggleMeasure}
+        satOffset={satOffset}
+        calibStep={calibStep}
+        onChangeSatOffset={setSatOffset}
+        onResetSatCalib={handleResetSatCalib}
+        onToggleCalibPin={handleToggleCalibPin}
+        labelSizeOffset={labelSizeOffset}
+        onIncreaseText={handleIncreaseText}
+        onDecreaseText={handleDecreaseText}
+        onResetText={handleResetText}
+        activePopover={activePopover}
+        onChangePopover={handleChangePopover}
+      />
 
-        {showMovePanel && (
-          <div className="absolute bottom-full mb-2 right-0 w-64 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl shadow-black/60 overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/10 bg-slate-800/60">
-              <div className="flex items-center gap-2">
-                <Move className="w-3.5 h-3.5 text-amber-400" />
-                <span className="text-[11px] font-bold text-white uppercase tracking-wide">Mover Parcelas</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {movableParcelIds.length > 0 && (
-                  <button
-                    onClick={() => clearAllParcelMovement()}
-                    className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-colors font-bold"
-                    title="Desactivar movimiento en todas las parcelas"
-                  >
-                    Limpiar
-                  </button>
-                )}
-                <button
-                  onClick={() => setShowMovePanel(false)}
-                  className="text-slate-500 hover:text-white transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/20">
-              <p className="text-[9px] text-amber-300/80 leading-tight">
-                <Crosshair className="inline w-2.5 h-2.5 mr-1 mb-0.5" />
-                Activa el movimiento por parcela y arrástrala en el mapa. También puedes hacer clic sobre una parcela en el mapa para seleccionarla.
-              </p>
-            </div>
-
-            <div className="max-h-56 overflow-y-auto divide-y divide-white/5">
-              {savedParcels.map((parcel) => {
-                const isMovable = movableParcelIds.includes(parcel.id);
-                const isSelected = selectedParcelId === parcel.id;
-                return (
-                  <div
-                    key={parcel.id}
-                    className={cn(
-                      'flex items-center gap-2.5 px-3 py-2.5 transition-colors',
-                      isSelected ? 'bg-cyan-500/15 border-l-2 border-cyan-400' : 'hover:bg-slate-800/50'
-                    )}
-                  >
-                    <div
-                      className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/20"
-                      style={{ backgroundColor: parcel.hatchColor || '#ffff00' }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[11px] font-semibold text-slate-200 truncate">{parcel.nombre}</p>
-                      {isSelected && (
-                        <p className="text-[9px] text-cyan-400 font-mono">Seleccionada en mapa</p>
-                      )}
-                    </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleParcelMovement(parcel.id); }}
-                      className={cn(
-                        'flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wide border transition-all duration-200 shrink-0',
-                        isMovable
-                          ? 'bg-amber-500/90 border-amber-400 text-white shadow-sm shadow-amber-500/30'
-                          : 'bg-slate-800 border-slate-600 text-slate-400 hover:border-amber-500/50 hover:text-amber-300'
-                      )}
-                      title={isMovable ? 'Desactivar movimiento para esta parcela' : 'Activar movimiento para esta parcela'}
-                    >
-                      <Move className="w-2.5 h-2.5" />
-                      {isMovable ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-      )}
-
-      {/* Indicador de Estado del Proyecto */}
-      <div className="absolute top-3 left-3 z-10 max-w-[56vw]">
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900/85 border border-white/10 backdrop-blur-sm text-[11px] text-slate-300 shadow-xl truncate">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-          <span className="font-semibold text-white truncate">{projectMeta.nombre || 'Proyecto Activo'}</span>
-          <span className="text-slate-500">|</span>
-          <span className="text-emerald-400 font-mono font-medium shrink-0">{savedParcels.length}p</span>
+      {/* Indicador de Estado del Proyecto (Estilo Android) */}
+      <div className="absolute top-3 left-3 z-10 max-w-[55vw]">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#151b2b]/92 border border-[#242a3a] backdrop-blur-md text-xs text-[#bcc9cd] shadow-xl">
+          <div className="w-2 h-2 rounded-full bg-[#4edea3] shrink-0 shadow-[0_0_8px_rgba(78,222,163,0.8)]" />
+          <span className="font-semibold text-[#dde2f8] truncate">{projectMeta.nombre || 'Proyecto Activo'}</span>
+          <span className="text-[#3d494c]">|</span>
+          <span className="font-mono text-[10px] bg-[#06b6d4]/20 text-[#4cd7f6] px-1.5 py-0.5 rounded font-bold shrink-0 tabular-nums">
+            {savedParcels.length} parcelas
+          </span>
           {results.length > 0 && (
             <>
-              <span className="text-slate-500">|</span>
-              <span className="text-cyan-400 font-mono shrink-0">{results.length}pts</span>
+              <span className="text-[#3d494c]">|</span>
+              <span className="text-[#4edea3] font-mono text-[10.5px] font-semibold shrink-0 tabular-nums">
+                {results.length} pts
+              </span>
             </>
           )}
         </div>
       </div>
 
-      {/* ── Controles de Zoom Flotantes (+ / −) ────────────────────────────── */}
-      <div className={cn(
-        'absolute right-3 z-20 flex flex-col items-center bg-slate-900/90 border border-white/10 backdrop-blur-md rounded-xl shadow-2xl p-1 gap-1',
-        savedParcels.length > 0 ? 'bottom-24' : 'bottom-14'
-      )}>
-        <button
-          onClick={() => {
-            const view = mapRef.current?.getView();
-            if (view) {
-              const current = view.getZoom() || 7;
-              view.animate({ zoom: Math.min(24, current + 1), duration: 220 });
-            }
-          }}
-          className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-200 hover:text-white font-bold text-lg transition-colors border border-white/5 shadow-md active:scale-95"
-          title="Acercar (Zoom In)"
-        >
-          +
-        </button>
-        <div className="w-5 h-px bg-white/10" />
-        <button
-          onClick={() => {
-            const view = mapRef.current?.getView();
-            if (view) {
-              const current = view.getZoom() || 7;
-              view.animate({ zoom: Math.max(3, current - 1), duration: 220 });
-            }
-          }}
-          className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-200 hover:text-white font-bold text-lg transition-colors border border-white/5 shadow-md active:scale-95"
-          title="Alejar (Zoom Out)"
-        >
-          −
-        </button>
-      </div>
-
       {/* HUD de Coordenadas UTM Cursor (Metros REGVEN Zona Dinámica, 0 Re-renders) */}
-      <div className="absolute bottom-2 left-2 z-10 pointer-events-none">
-        <div className="flex gap-2 px-2 py-1 rounded-lg bg-slate-900/90 border border-white/10 backdrop-blur-sm text-[10px] font-mono text-slate-300 shadow-xl">
-          <span className="text-slate-400 font-bold">{huso}N</span>
-          <span ref={esteRef} className="text-cyan-400">E ---</span>
-          <span ref={norteRef} className="text-emerald-400">N ---</span>
+      <div className="absolute bottom-3 left-3 z-10 pointer-events-none">
+        <div className="flex gap-3 px-3 py-1.5 rounded-lg bg-[#151b2b]/92 border border-[#242a3a] backdrop-blur-md text-xs font-mono text-[#bcc9cd] shadow-xl tabular-nums">
+          <span className="text-[#869397] font-bold">REGVEN {huso}N</span>
+          <span ref={esteRef} className="text-[#4cd7f6]">E ---.- m</span>
+          <span ref={norteRef} className="text-[#4edea3]">N ---.- m</span>
         </div>
       </div>
 
       {/* Predio Dibujado Temporalmente */}
       {lastDrawnUTM && (
-        <div className="absolute bottom-14 left-4 z-10 max-w-xs">
-          <div className="px-3 py-2 rounded-lg bg-orange-900/90 border border-orange-500/50 backdrop-blur-sm text-xs text-orange-200 shadow-2xl">
-            <p className="font-semibold text-orange-300 mb-0.5">Predio dibujado · {lastDrawnUTM.length} vértices</p>
-            <p className="text-orange-400/80 text-[11px]">Coordenadas UTM REGVEN {huso}N capturadas con precisión.</p>
+        <div className="absolute bottom-14 left-3 z-10 max-w-xs">
+          <div className="px-3 py-2 rounded-lg bg-[#191f2f]/95 border border-[#ffb95f]/60 backdrop-blur-md text-xs text-[#dde2f8] shadow-2xl">
+            <p className="font-semibold text-[#ffb95f] mb-0.5">Predio dibujado · {lastDrawnUTM.length} vértices</p>
+            <p className="text-[#bcc9cd] text-[11px]">Coordenadas UTM REGVEN {huso}N capturadas con precisión.</p>
             <button
               onClick={() => setLastDrawnUTM(null)}
-              className="mt-1 text-orange-400 hover:text-white transition-colors text-xs underline font-medium"
+              className="mt-1 text-[#ffb95f] hover:text-white transition-colors text-xs underline font-medium"
             >
               Descartar
             </button>
           </div>
         </div>
       )}
-      </div>
-
-      {/* ── Banda inferior anclada de capas (no oculta el mapa) ─────────────── */}
-      <LayerBand
-        baseLayer={baseLayer}
-        roadsActive={baseLayer === 'hybrid' || (showRoads && baseLayer !== 'streets')}
-        placesActive={showPlaces && baseLayer !== 'streets'}
-        onSelectLayer={handleToggleLayer}
-        onToggleRoads={handleToggleRoads}
-        onTogglePlaces={handleTogglePlaces}
-        satCalibActive={showSatCalib}
-        satCalibOffsetNonZero={satOffset.dE !== 0 || satOffset.dN !== 0}
-        onToggleSatCalib={() => setShowSatCalib((v) => !v)}
-      />
+     </div>
     </div>
   );
 }
